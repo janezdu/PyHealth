@@ -1,0 +1,99 @@
+{
+  "meta": {
+    "selection": "stratified",
+    "seed": 0,
+    "n_clients": 8,
+    "min_hospital_samples": 50,
+    "test_frac": 0.2,
+    "eicu_root": "/work/hdd/bgyw/janezdu/data/eicu/eicu-crd/2.0",
+    "n_hospitals_total": 207,
+    "n_hospitals_eligible": 177,
+    "dataset_total_samples": 119297,
+    "cohort_total": 4641,
+    "cohort_train": 3712,
+    "cohort_test": 929,
+    "calibration_sec_per_sample_epoch": 0.117
+  },
+  "hospitals": [
+    {
+      "hospital_id": "411",
+      "size_bin": 0,
+      "n_total": 1374,
+      "n_train": 1099,
+      "n_test": 275,
+      "avg_visits_per_patient": 1.63,
+      "avg_codes_per_visit": 1.789,
+      "n_unique_codes": 247
+    },
+    {
+      "hospital_id": "79",
+      "size_bin": 1,
+      "n_total": 1018,
+      "n_train": 814,
+      "n_test": 204,
+      "avg_visits_per_patient": 1.26,
+      "avg_codes_per_visit": 26.662,
+      "n_unique_codes": 484
+    },
+    {
+      "hospital_id": "452",
+      "size_bin": 2,
+      "n_total": 689,
+      "n_train": 551,
+      "n_test": 138,
+      "avg_visits_per_patient": 1.231,
+      "avg_codes_per_visit": 10.466,
+      "n_unique_codes": 276
+    },
+    {
+      "hospital_id": "282",
+      "size_bin": 3,
+      "n_total": 548,
+      "n_train": 438,
+      "n_test": 110,
+      "avg_visits_per_patient": 1.23,
+      "avg_codes_per_visit": 4.331,
+      "n_unique_codes": 201
+    },
+    {
+      "hospital_id": "419",
+      "size_bin": 4,
+      "n_total": 391,
+      "n_train": 313,
+      "n_test": 78,
+      "avg_visits_per_patient": 1.148,
+      "avg_codes_per_visit": 70.134,
+      "n_unique_codes": 325
+    },
+    {
+      "hospital_id": "155",
+      "size_bin": 5,
+      "n_total": 289,
+      "n_train": 231,
+      "n_test": 58,
+      "avg_visits_per_patient": 1.415,
+      "avg_codes_per_visit": 10.188,
+      "n_unique_codes": 143
+    },
+    {
+      "hospital_id": "69",
+      "size_bin": 6,
+      "n_total": 211,
+      "n_train": 169,
+      "n_test": 42,
+      "avg_visits_per_patient": 1.204,
+      "avg_codes_per_visit": 6.78,
+      "n_unique_codes": 163
+    },
+    {
+      "hospital_id": "123",
+      "size_bin": 7,
+      "n_total": 121,
+      "n_train": 97,
+      "n_test": 24,
+      "avg_visits_per_patient": 1.264,
+      "avg_codes_per_visit": 18.013,
+      "n_unique_codes": 129
+    }
+  ]
+}

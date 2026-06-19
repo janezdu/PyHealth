@@ -23,7 +23,7 @@ without conditioning on CCS labels.
 import copy
 import math
 import os
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 import numpy as np
 import torch
@@ -547,7 +547,8 @@ class HALO(BaseModel):
             return torch.device("cuda" if torch.cuda.is_available() else "cpu")
         return torch.device(device)
 
-    def train_model(self, train_dataset, val_dataset=None, device=None) -> None:
+    def train_model(self, train_dataset, val_dataset=None, device=None,
+                    on_epoch_end: Callable[[int, float], None] = None) -> None:
         """Train the HALO model with a custom loop.
 
         Named ``train_model`` (not ``train``) to avoid shadowing
@@ -562,6 +563,11 @@ class HALO(BaseModel):
             device: Device to train on, e.g. ``"cuda"``, ``"cuda:1"``, or
                 ``"cpu"``. If ``None`` (default), uses CUDA when available and
                 falls back to CPU.
+            on_epoch_end: Optional callback ``(epoch, mean_train_loss)`` invoked
+                after each epoch with that epoch's mean batch loss. Lets callers
+                (e.g. the federated example) log per-epoch loss curves without
+                this method needing to know about TensorBoard. Default ``None``
+                is a no-op, so existing callers are unaffected.
         """
         device = self._resolve_device(device)
         self.to(device)
@@ -584,6 +590,7 @@ class HALO(BaseModel):
         for epoch in tqdm(range(self._epochs), desc="Epochs"):
             self.halo_model.train()
             batch_iter = tqdm(train_loader, desc=f"Epoch {epoch}", leave=False)
+            epoch_loss_sum, epoch_batches = 0.0, 0
             for batch in batch_iter:
                 visits = batch["visits"].to(self.device)
                 batch_ehr, batch_mask = self._encode_visits(visits)
@@ -598,7 +605,12 @@ class HALO(BaseModel):
                 )
                 loss.backward()
                 optimizer.step()
+                epoch_loss_sum += loss.item()
+                epoch_batches += 1
                 batch_iter.set_postfix(loss=f"{loss.item():.4f}")
+
+            if on_epoch_end is not None:
+                on_epoch_end(epoch, epoch_loss_sum / max(1, epoch_batches))
 
             if val_dataset is not None:
                 self.halo_model.eval()

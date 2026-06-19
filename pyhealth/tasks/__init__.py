@@ -47,6 +47,7 @@ from .mortality_prediction_stagenet_mimic4 import (
 )
 from .generate_ehr import (
     EHRGeneration,
+    EHRGenerationEICU,
     EHRGenerationMIMIC3,
     EHRGenerationMIMIC4,
     decode_dataset,

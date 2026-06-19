@@ -162,6 +162,120 @@ class EHRGenerationMIMIC4(EHRGeneration):
     code_attr: str = "icd_code"
 
 
+def _clean_icd9(raw: str) -> str:
+    """Normalize an eICU ``icd9code`` cell into a single code string.
+
+    eICU stores e.g. ``"428.0, I50.9"`` (ICD-9 then ICD-10). We keep the first
+    comma-separated token and strip whitespace. Returns ``""`` for empties.
+    """
+    if raw is None:
+        return ""
+    return str(raw).split(",")[0].strip()
+
+
+class EHRGenerationEICU(EHRGeneration):
+    """EHR generation task for eICU, partitionable by hospital (federated).
+
+    eICU is multi-hospital (``hospitalid`` on the ``patient`` table), which makes
+    it the natural vehicle for a *federated* synthetic-EHR setup: partition
+    patients by hospital, train a generator on each hospital locally, and FedAvg
+    the weights. This task mirrors :class:`EHRGeneration` but:
+
+    1. Groups diagnoses by ``patientunitstayid`` (one ICU unit stay = one
+       "visit"), since eICU has no ``admissions`` event type.
+    2. Reads ICD-9 codes from the ``icd9code`` attribute (which may hold a
+       comma-separated ``"ICD9, ICD10"`` pair -- we keep the first token).
+    3. Adds a passthrough ``hospital_id`` key to every sample. It is NOT in the
+       schema, so processors ignore it, but it survives into the processed
+       sample dict where a partitioner can read it to build federated clients.
+
+    One sample per qualifying patient::
+
+        {"patient_id": <uniquepid>,
+         "hospital_id": <hospitalid>,
+         "visits": [[code, ...], ...]}   # ordered by unit stay
+
+    Args:
+        min_visits: minimum unit stays (visits) to keep a patient. eICU patients
+            are frequently single-stay, so the default is 1. Raise it for
+            longitudinal studies.
+        code_attr: diagnosis attribute holding the code (default ``"icd9code"``;
+            use ``"diagnosisstring"`` for the free-text hierarchy instead).
+
+    Examples:
+        >>> from pyhealth.datasets import eICUDataset
+        >>> from pyhealth.tasks import EHRGenerationEICU
+        >>> dataset = eICUDataset(
+        ...     root="/path/to/eicu-crd/2.0",
+        ...     tables=["diagnosis"],
+        ... )
+        >>> samples = dataset.set_task(EHRGenerationEICU())
+    """
+
+    task_name: str = "ehr_generation_eicu"
+    event_type: str = "diagnosis"
+    code_attr: str = "icd9code"
+    min_visits: int = 1
+
+    def __init__(self, min_visits: int = 1, code_attr: str = "icd9code"):
+        super().__init__()
+        self.min_visits = min_visits
+        self.code_attr = code_attr
+
+    def __call__(self, patient: Patient) -> List[Dict]:
+        """Extract per-unit-stay code sequences plus the patient's hospital id."""
+        # --- hospital id (from the patient/demographics events) -------------
+        hospital_id = None
+        for ev in patient.get_events(event_type="patient"):
+            hid = getattr(ev, "hospitalid", None)
+            if hid:
+                hospital_id = str(hid)
+                break
+        if hospital_id is None:
+            return []  # cannot place this patient in a federation; drop it
+
+        # --- diagnoses grouped into unit-stay "visits" ----------------------
+        # stay -> list of (offset, code)
+        stays: Dict[str, List] = {}
+        for ev in patient.get_events(event_type=self.event_type):
+            code = _clean_icd9(getattr(ev, self.code_attr, None))
+            if not code:
+                continue
+            stay = str(getattr(ev, "patientunitstayid", "NA"))
+            try:
+                offset = int(getattr(ev, "diagnosisoffset", 0) or 0)
+            except (TypeError, ValueError):
+                offset = 0
+            stays.setdefault(stay, []).append((offset, code))
+
+        if not stays:
+            return []
+
+        # order stays by numeric id (proxy for chronology), codes by offset
+        def _stay_key(s: str) -> int:
+            try:
+                return int(s)
+            except ValueError:
+                return 0
+
+        visits: List[List[str]] = []
+        for stay in sorted(stays, key=_stay_key):
+            codes = [c for _, c in sorted(stays[stay], key=lambda t: t[0])]
+            if codes:
+                visits.append(codes)
+
+        if len(visits) < self.min_visits:
+            return []
+
+        return [
+            {
+                "patient_id": str(patient.patient_id),
+                "hospital_id": hospital_id,
+                "visits": visits,
+            }
+        ]
+
+
 # ----------------------------------------------------------------------------
 # Conversion helpers for pyhealth.metrics.generative.evaluate_synthetic_ehr
 # ----------------------------------------------------------------------------
