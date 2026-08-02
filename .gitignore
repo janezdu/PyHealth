@@ -147,3 +147,8 @@ weightfiles/
 
 # fedpyhealth: derived hospital-index cache (keep the cohort manifest, not this)
 examples/fedpyhealth/cohorts/.field_index.json
+# Frozen split manifests carry per-patient eICU uniquepids. The committable
+# aggregate is the sibling *.summary.json (counts + sha256, no ids), and the
+# full manifest regenerates deterministically from freeze_cohort_split.py.
+examples/fedpyhealth/cohorts/rare*.json
+!examples/fedpyhealth/cohorts/rare*.summary.json

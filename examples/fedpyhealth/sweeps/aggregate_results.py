@@ -21,7 +21,8 @@ import json
 import os
 import sys
 
-KNOB_COLS = ["regime", "weighting", "lr", "local_epochs", "n_rounds", "ft_epochs"]
+KNOB_COLS = ["regime", "weighting", "lr", "local_epochs", "n_rounds", "ft_epochs",
+             "num_synth", "cohort_file"]
 
 
 def load_rows(paths):
@@ -37,6 +38,13 @@ def load_rows(paths):
             row[name] = stats.get("mean")
             if name not in metric_cols:
                 metric_cols.append(name)
+        # Pooled (non-per-hospital) numbers, e.g. Test 2 ML efficacy, land in
+        # global_metrics. Prefixed so they never collide with a macro average.
+        for name, stats in (d.get("global_metrics") or {}).items():
+            col = f"g_{name}"
+            row[col] = stats.get("mean")
+            if col not in metric_cols:
+                metric_cols.append(col)
         rows.append(row)
     return rows, metric_cols
 

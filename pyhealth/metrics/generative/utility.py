@@ -18,7 +18,7 @@ synthetic (``syn_ehr``) dataframes must share the same schema.
 
 import copy
 import logging
-from typing import Callable, Dict, Tuple
+from typing import Callable, Dict, Iterable, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -181,6 +181,7 @@ def compute_prevalence_metrics(
     subject_col: str = "id",
     code_col: str = "visit_codes",
     n_bootstraps: int = 5,
+    code_subset: Optional[Iterable] = None,
 ) -> Dict[str, Tuple[float, float]]:
     """Compares per-code patient-level prevalence of real vs synthetic data.
 
@@ -193,17 +194,36 @@ def compute_prevalence_metrics(
     and ``syn_ehr`` are expected to be the same flat
     ``[id, time, visit_codes, labels]`` frames used by the other metrics.
 
+    ``train_ehr`` is simply the *real reference* frame. Passing the training set
+    measures how well the generator reproduced what it saw; passing a held-out
+    split measures out-of-sample fidelity instead.
+
+    To score a subset of codes (e.g. only the rare ones), pass ``code_subset``
+    rather than pre-filtering the dataframes. Filtering rows would also shrink
+    ``nunique()`` on ``subject_col``, silently changing the prevalence
+    denominator from "all patients" to "patients carrying a subset code" -- and
+    by a *different* factor for the real and synthetic frames, which biases
+    R-squared and RMSE. ``code_subset`` restricts the code axis while leaving
+    both denominators intact.
+
     Args:
-        train_ehr: Real training EHR dataframe, flat
+        train_ehr: Real reference EHR dataframe, flat
             ``[id, time, visit_codes, labels]`` format.
         syn_ehr: Synthetic EHR dataframe; same schema as ``train_ehr``.
         subject_col: Column name for patient/subject identifiers.
         code_col: Column name for the medical codes (one code per row).
         n_bootstraps: Number of bootstrap resamples over codes.
+        code_subset: Optional codes to restrict the comparison to. Codes absent
+            from a frame contribute a prevalence of 0 rather than being dropped,
+            so a code the generator never emits counts against it. Defaults to
+            every code appearing in either frame.
 
     Returns:
         Dictionary mapping ``"Prevalence_R2"``, ``"Prevalence_Pearson"`` and
             ``"Prevalence_RMSE"`` to their ``(mean, std)`` across bootstraps.
+
+    Raises:
+        ValueError: If ``code_subset`` is given but empty.
 
     Examples:
         >>> from pyhealth.metrics.generative.utility import (
@@ -214,13 +234,26 @@ def compute_prevalence_metrics(
         >>> # how to build them.
         >>> result = compute_prevalence_metrics(train_ehr, syn_ehr)
         >>> r2_mean, r2_std = result["Prevalence_R2"]
+        >>> # Score only the rare codes, against a held-out split:
+        >>> rare = compute_prevalence_metrics(
+        ...     val_ehr, syn_ehr, code_subset=["041.4", "V12.0"]
+        ... )
     """
     logger.info("Computing prevalence metrics")
 
-    all_codes = set()
-    all_codes.update(train_ehr[code_col].unique().tolist())
-    all_codes.update(syn_ehr[code_col].unique().tolist())
+    if code_subset is None:
+        all_codes = set()
+        all_codes.update(train_ehr[code_col].unique().tolist())
+        all_codes.update(syn_ehr[code_col].unique().tolist())
+    else:
+        all_codes = set(code_subset)
+        if not all_codes:
+            raise ValueError(
+                "code_subset is empty; pass None to score every observed code."
+            )
 
+    # Denominators come from the UNFILTERED frames on purpose -- see the note in
+    # the docstring about why pre-filtering rows biases the comparison.
     n_train = train_ehr[subject_col].nunique()
     n_syn = syn_ehr[subject_col].nunique()
     if n_train == 0 or n_syn == 0:
@@ -230,20 +263,20 @@ def compute_prevalence_metrics(
             "Prevalence_RMSE": (0.0, 0.0),
         }
 
-    # Count unique patients per code.
+    # Count unique patients per code, then align both onto the scored code axis.
+    index = sorted(all_codes)
     train_counts = train_ehr.groupby(code_col)[subject_col].nunique()
     syn_counts = syn_ehr.groupby(code_col)[subject_col].nunique()
-    for code in all_codes:
-        if code not in train_counts.index:
-            train_counts.loc[code] = 0
-        if code not in syn_counts.index:
-            syn_counts.loc[code] = 0
 
-    train_probs = train_counts / n_train
-    syn_probs = syn_counts / n_syn
+    train_probs = train_counts.reindex(index).fillna(0) / n_train
+    syn_probs = syn_counts.reindex(index).fillna(0) / n_syn
     df_compare = pd.DataFrame(
         {"real": train_probs, "syn": syn_probs}
     ).fillna(0)
+    logger.info(
+        "Prevalence over %d codes (real n=%d, syn n=%d)",
+        len(df_compare), n_train, n_syn,
+    )
 
     metrics_runs = []
     n_samples = len(df_compare)

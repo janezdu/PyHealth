@@ -223,6 +223,96 @@ class TestPrevalenceMetrics(GenerativeMetricsTestCase):
         self.assertLessEqual(summary["Prevalence_Pearson"][0], 1.0)
         self.assertGreaterEqual(summary["Prevalence_RMSE"][0], 0.0)
 
+    def test_code_subset_none_matches_legacy_behaviour(self):
+        """The default path must be unchanged for existing results."""
+        kwargs = dict(subject_col=SUBJECT_COL, code_col=CODE_COL, n_bootstraps=3)
+        np.random.seed(7)
+        baseline = compute_prevalence_metrics(
+            self.train_ehr, self.syn_ehr, **kwargs
+        )
+        np.random.seed(7)
+        explicit = compute_prevalence_metrics(
+            self.train_ehr, self.syn_ehr, code_subset=None, **kwargs
+        )
+        self.assertEqual(baseline, explicit)
+
+    def test_code_subset_restricts_the_code_axis(self):
+        codes = sorted(self.train_ehr[CODE_COL].unique())[:3]
+        summary = compute_prevalence_metrics(
+            self.train_ehr, self.syn_ehr, code_subset=codes,
+            subject_col=SUBJECT_COL, code_col=CODE_COL, n_bootstraps=3,
+        )
+        self.assertSummary(
+            summary,
+            ["Prevalence_R2", "Prevalence_Pearson", "Prevalence_RMSE"],
+        )
+
+    def test_code_subset_keeps_the_full_patient_denominator(self):
+        """The reason code_subset exists instead of pre-filtering rows.
+
+        Filtering rows down to a code subset also shrinks ``nunique()`` on the
+        subject column, rescaling real and synthetic prevalences by *different*
+        factors and biasing R2/RMSE. ``code_subset`` must not do that, so the
+        two paths are required to disagree whenever the subset excludes some
+        patients entirely.
+        """
+        codes = sorted(self.train_ehr[CODE_COL].unique())[:2]
+        kwargs = dict(subject_col=SUBJECT_COL, code_col=CODE_COL, n_bootstraps=1)
+
+        np.random.seed(11)
+        via_subset = compute_prevalence_metrics(
+            self.train_ehr, self.syn_ehr, code_subset=codes, **kwargs
+        )
+        np.random.seed(11)
+        via_filter = compute_prevalence_metrics(
+            self.train_ehr[self.train_ehr[CODE_COL].isin(codes)],
+            self.syn_ehr[self.syn_ehr[CODE_COL].isin(codes)],
+            **kwargs,
+        )
+        n_all = self.train_ehr[SUBJECT_COL].nunique()
+        n_sub = self.train_ehr[
+            self.train_ehr[CODE_COL].isin(codes)
+        ][SUBJECT_COL].nunique()
+        self.assertLess(n_sub, n_all, "fixture too dense to exercise the bug")
+        self.assertNotAlmostEqual(
+            via_subset["Prevalence_RMSE"][0], via_filter["Prevalence_RMSE"][0],
+            places=6,
+        )
+
+    def test_code_subset_scores_codes_absent_from_both_frames(self):
+        """An unseen code is a real zero on both sides, not a dropped row."""
+        real_codes = sorted(self.train_ehr[CODE_COL].unique())[:2]
+        summary = compute_prevalence_metrics(
+            self.train_ehr, self.syn_ehr,
+            code_subset=real_codes + ["__never_observed__"],
+            subject_col=SUBJECT_COL, code_col=CODE_COL, n_bootstraps=3,
+        )
+        self.assertSummary(summary, ["Prevalence_RMSE"])
+
+    def test_empty_code_subset_raises(self):
+        with self.assertRaises(ValueError):
+            compute_prevalence_metrics(
+                self.train_ehr, self.syn_ehr, code_subset=[],
+                subject_col=SUBJECT_COL, code_col=CODE_COL, n_bootstraps=3,
+            )
+
+    def test_generator_that_never_emits_a_code_is_penalised(self):
+        """A dropped rare code must hurt, which is the point of the metric."""
+        codes = sorted(self.train_ehr[CODE_COL].unique())[:4]
+        dropped = codes[0]
+        starved = self.syn_ehr[self.syn_ehr[CODE_COL] != dropped]
+        kwargs = dict(
+            subject_col=SUBJECT_COL, code_col=CODE_COL, n_bootstraps=1,
+            code_subset=codes,
+        )
+        np.random.seed(3)
+        full = compute_prevalence_metrics(self.train_ehr, self.syn_ehr, **kwargs)
+        np.random.seed(3)
+        missing = compute_prevalence_metrics(self.train_ehr, starved, **kwargs)
+        self.assertGreater(
+            missing["Prevalence_RMSE"][0], full["Prevalence_RMSE"][0]
+        )
+
 
 class TestConvertColsToMultihot(GenerativeMetricsTestCase):
     def test_convert_cols_to_multihot(self):
