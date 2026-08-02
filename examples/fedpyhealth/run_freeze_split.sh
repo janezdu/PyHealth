@@ -47,10 +47,14 @@ set -euo pipefail
 source .venv/bin/activate
 
 # Pre-flight: validate the stratifier before paying for the eICU load. Pure
-# numpy, runs in seconds, and turns "the 2h job died at the end" into "the job
-# died at the start".
-echo "=== pre-flight: stratifier unit tests ==="
-python -m pytest tests/core/test_stratified_split.py -q
+# numpy, runs in under a second, and turns "the 2h job died at the end" into
+# "the job died at the start".
+#
+# This deliberately does NOT use pytest -- the Delta venv has no pytest, and a
+# missing module here would kill the job under `set -e` before it does any work.
+# tests/core/test_stratified_split.py covers the same invariants for `make test`.
+echo "=== pre-flight: stratifier self-test ==="
+python examples/fedpyhealth/freeze_cohort_split.py --self-test
 
 echo "=== freezing cohort ==="
 python examples/fedpyhealth/freeze_cohort_split.py "$@"

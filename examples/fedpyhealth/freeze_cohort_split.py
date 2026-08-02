@@ -92,7 +92,89 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         "about --rare-prevalence-max below)")
     p.add_argument("--no-admission-diagnostics", action="store_true",
                    help="skip the patient-vs-admission diagnostic pass")
+    p.add_argument("--self-test", action="store_true",
+                   help="validate the stratifier on synthetic data and exit; "
+                        "no eICU, no pytest, runs in under a second")
     return p
+
+
+# --------------------------------------------------------------------------- #
+# Self-test: the same invariants as tests/core/test_stratified_split.py, but    #
+# dependency-free so it can run as an sbatch pre-flight step. The venv on Delta #
+# has no pytest, and a stratifier bug should fail the job in seconds rather     #
+# than after the multi-hour eICU load.                                          #
+# --------------------------------------------------------------------------- #
+def self_test() -> None:
+    """Assert the splitter's invariants on hand-built data.
+
+    Raises:
+        AssertionError: If any invariant fails.
+    """
+    def disjoint(sizes):
+        return {f"p{n}_{i:03d}": [f"c{n}", "common"]
+                for n in sizes for i in range(n)}
+
+    # 1. Quota table: round(0.2n), floored at 1 and capped at n-1, both sides.
+    expected = {2: (1, 1), 3: (2, 1), 4: (3, 1), 5: (4, 1),
+                7: (6, 1), 8: (6, 2), 9: (7, 2), 10: (8, 2)}
+    for n, want in expected.items():
+        pc = disjoint([n])
+        train, val = iterative_stratified_split(pc, [f"c{n}"], 0.2, seed=0)
+        got = (sum(1 for p in train if f"c{n}" in pc[p]),
+               sum(1 for p in val if f"c{n}" in pc[p]))
+        assert got == want, f"quota n={n}: got {got}, want {want}"
+
+    sizes = list(range(2, 11))
+    pc = disjoint(sizes)
+    rare = [f"c{n}" for n in sizes]
+    train, val = iterative_stratified_split(pc, rare, 0.2, seed=0)
+
+    # 2. Partition invariants and the >=1-per-fold guarantee.
+    assert not set(train) & set(val), "folds overlap"
+    assert set(train) | set(val) == set(pc), "some patients unassigned"
+    for code in rare:
+        assert any(code in pc[p] for p in train), f"{code} missing from train"
+        assert any(code in pc[p] for p in val), f"{code} missing from val"
+
+    # 3. Determinism and order-invariance -- what the frozen manifest rests on.
+    assert iterative_stratified_split(pc, rare, 0.2, seed=0) == (train, val)
+    items = list(pc.items())
+    np.random.default_rng(7).shuffle(items)
+    assert iterative_stratified_split(dict(items), rare, 0.2, seed=0) == (
+        train, val), "split changed when input order changed"
+    assert iterative_stratified_split(
+        pc, list(reversed(rare)), 0.2, seed=0) == (train, val)
+
+    # 4. verify_split accepts a good split and rejects a broken one.
+    verify_split(pc, rare, train, val, 0.2, tol=1.0)
+    try:
+        verify_split(pc, rare, sorted(pc), [], 0.2, tol=1.0)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("verify_split accepted an empty validation fold")
+
+    # 5. The --dev trap: 5% of 20 patients is below the 2-patient floor.
+    try:
+        compute_rare_codes({f"p{i}": ["a", "b"] for i in range(20)}, 0.05, 2)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("compute_rare_codes accepted an empty rare set")
+
+    # 6. Threshold semantics, including the inclusive 5% boundary.
+    pc2 = {f"p{i:03d}": ["common"] for i in range(100)}
+    for i in range(4):
+        pc2[f"p{i:03d}"].append("rare4")
+    for i in range(5):
+        pc2[f"p{i:03d}"].append("exactly5pct")
+    for i in range(6):
+        pc2[f"p{i:03d}"].append("over5pct")
+    pc2["p000"].append("singleton")
+    found = set(compute_rare_codes(pc2, 0.05, 2))
+    assert found == {"rare4", "exactly5pct"}, f"threshold semantics: {found}"
+
+    print("self-test: all stratifier invariants hold")
 
 
 # --------------------------------------------------------------------------- #
@@ -558,6 +640,9 @@ def summarize(manifest: dict) -> dict:
 
 def main(argv=None) -> None:
     args = _build_arg_parser().parse_args(argv)
+    if args.self_test:
+        self_test()
+        return
     manifest = build_manifest(args)
     meta = manifest["meta"]
 
