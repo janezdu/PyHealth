@@ -1,0 +1,29 @@
+# Bracket baselines for the fedavg_opt_v1 sweep, at the SAME operating point.
+#
+# The sweep (grid.yaml) searches fedavg / fedavg_ft at E1 / R30. To say "fedavg_ft
+# beats the bounds at this operating point" you need the two non-federated
+# baselines run at the same E/R/lr:
+#   * centralized -- pool all 8 hospitals into one model (upper bound, no privacy wall)
+#   * local       -- one independent model per hospital, no aggregation (standalone
+#                    lower bound, no cross-hospital collaboration)
+# lr is fixed at 1e-4 (the sweep's best fidelity lr). weighting is irrelevant here
+# (no FedAvg aggregation step), so it's left at the default.
+#
+# 2 runs x ~4-5h on one A100 => ~10 GPU-h. Launch + sweep them together with the
+# fedavg runs via the fed-experiment-log skill.
+#
+#   .venv/bin/python examples/fedpyhealth/sweeps/make_sweep.py examples/fedpyhealth/sweeps/grid_baselines.yaml
+#   bash _outputs/sweeps/fedavg_opt_v1_baselines/submit_all.sh
+
+sweep_name: fedavg_opt_v1_baselines
+
+base:
+  profile: full
+  cohort_file: examples/fedpyhealth/cohorts/standard_8.json
+  metrics: utility
+  n_rounds: 30
+  local_epochs: 1
+  lr: 0.0001
+
+grid:
+  regime: [centralized, local]

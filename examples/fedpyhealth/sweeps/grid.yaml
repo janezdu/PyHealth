@@ -1,0 +1,32 @@
+# Hyperparameter sweep grid for FedAvg / FedAvg+FT optimization.
+#
+# `make_sweep.py` takes the Cartesian product of everything under `grid:`, lays
+# each combination on top of `base:`, and writes one ready-to-run config YAML per
+# combination (consumed by `ehr_eicu.py --config <file>`). Each run's name is
+# auto-derived from its knobs, so artifacts + results.json never clobber.
+#
+# Edit `base:` for things held constant across the sweep, and `grid:` for the
+# axes you want to search. Total runs = product of the grid list lengths.
+# This default grid = 2 regimes x 2 weightings x 2 lrs = 8 runs.
+#
+# Cost note: on the `full` profile / standard_8 cohort, runtime scales ~linearly
+# with n_rounds * local_epochs. The R39/E2 baselines took ~10h on one A100, so at
+# n_rounds=30 / local_epochs=1 each run is ~4-5h. 8 runs => ~35-40 GPU-hours,
+# each a separate single-A100 job that runs in parallel. The focus is the two
+# axes that matter most here -- weighting (sample vs uniform) and regime -- with
+# a 2-point lr search; local_epochs is fixed at 1 to keep the budget down. Refit
+# the winning config at local_epochs=2 / n_rounds=39 to match the baselines.
+
+sweep_name: fedavg_opt_v1
+
+base:
+  profile: full
+  cohort_file: examples/fedpyhealth/cohorts/standard_8.json
+  metrics: utility          # this run's "utility" suite also emits prevalence + privacy
+  n_rounds: 30              # shorter than the R39 baselines, for a faster search
+  local_epochs: 1           # fixed (not swept) to keep the sweep ~40 GPU-h
+
+grid:
+  regime: [fedavg, fedavg_ft]
+  weighting: [sample, uniform]
+  lr: [0.0001, 0.0003]

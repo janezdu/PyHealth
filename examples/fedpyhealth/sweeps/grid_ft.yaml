@@ -1,0 +1,32 @@
+# fedavg_ft fine-tuning sweep, at a FIXED apples-to-apples budget.
+#
+# Total budget = n_rounds * local_epochs = 30 passes/hospital -- the SAME as the
+# local / centralized / fedavg runs at E1/R30. ehr_eicu.py now SPLITS that budget
+# for fedavg_ft: (30 - ft_epochs) passes of FedAvg, then ft_epochs of per-hospital
+# fine-tuning. So every run below does exactly 30 passes/hospital; only the
+# FedAvg-vs-personalize split changes. This traces the path:
+#   ft_epochs -> 0   == plain fedavg (all global, no personalization)
+#   ft_epochs small  == mostly-shared model, light personalization
+#   ft_epochs large  == few FedAvg rounds, heavy personalization (-> toward local)
+#
+# Compare against the budget-30 fedavg (grid.yaml) and the budget-30 local /
+# centralized (grid_baselines.yaml) for a clean apples-to-apples picture.
+# lr=1e-4 is the sweep's best. 6 runs x ~4-5h => ~25-30 GPU-h.
+#
+#   .venv/bin/python examples/fedpyhealth/sweeps/make_sweep.py examples/fedpyhealth/sweeps/grid_ft.yaml
+#   bash _outputs/sweeps/fedavg_ft_sweep/submit_all.sh
+
+sweep_name: fedavg_ft_sweep
+
+base:
+  profile: full
+  cohort_file: examples/fedpyhealth/cohorts/standard_8.json
+  metrics: utility
+  regime: fedavg_ft
+  weighting: sample
+  lr: 0.0001
+  local_epochs: 1
+  n_rounds: 30        # total budget = 30 passes; split between FedAvg and FT below
+
+grid:
+  ft_epochs: [1, 5, 10, 15, 20, 25]

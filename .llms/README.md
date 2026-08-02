@@ -39,17 +39,34 @@ Read `principles.md` first — it is the lens every skill inherits.
 
 ## Wiring it into a tool
 
-The content here is plain Markdown so any tool can read it. To make a specific tool load
-it automatically:
+The content here is plain Markdown so any tool can read it. The canonical copy stays in
+`.llms/`; each tool gets a thin adapter so the guidance is never forked.
 
-- **Claude Code** — add a repo-root `CLAUDE.md` that points at `.llms/rules/`, and mirror
-  (symlink or copy) `.llms/skills/<name>/SKILL.md` into `.claude/skills/<name>/` so they
-  show up as invocable skills. Each `SKILL.md` already carries the `name`/`description`
-  frontmatter Claude Code expects.
-- **Cursor / others** — reference `.llms/rules/*` from the tool's rules file.
+### Claude Code (adapter shipped)
 
-Keeping the canonical copy in `.llms/` and adding thin per-tool adapters avoids forking the
-guidance per tool.
+- **Rules** load automatically via the repo-root `CLAUDE.md`, which `@`-imports
+  `.llms/principles.md` and `.llms/rules/*`. Nothing to set up. (Edit the rules in `.llms/`,
+  not in `CLAUDE.md`.)
+- **Skills** must live under `.claude/skills/` to be discovered, and `.claude/` is
+  **gitignored** (local to each clone) — so they are not shipped pre-activated. Activate them
+  once per clone:
+
+  ```bash
+  bash .llms/install-claude-skills.sh
+  ```
+
+  This symlinks `.llms/skills/*` into your local `.claude/skills/`. Restart Claude Code to
+  pick them up. (Windows: enable symlinks or copy the folders instead — the script prints how.)
+
+### Cursor / other tools
+
+Reference `.llms/rules/*` and `.llms/principles.md` from the tool's own rules file.
+
+### Why skills aren't committed under `.claude/`
+
+`.claude/*` is gitignored by design, which keeps personal/local config (and any per-user skill
+activation) out of the public repo. The shippable, tool-agnostic source of truth is `.llms/`;
+`.claude/skills/` is just a per-clone activation of it.
 
 ## House rules for this folder
 

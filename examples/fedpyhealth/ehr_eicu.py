@@ -18,14 +18,24 @@ runs the whole pipeline end-to-end:
    own real data, to show how evenly one federated model serves heterogeneous
    hospitals.
 
+Set ``--regime {fedavg,fedavg_ft,centralized,local}`` to switch between FedAvg and
+three comparison regimes: ``centralized`` pools every hospital's data into one
+model (the "no privacy wall" upper bound), ``local`` trains one independent model
+per hospital with no aggregation (the "no collaboration" lower bound), and
+``fedavg_ft`` fine-tunes the FedAvg global model on each hospital (personalization,
+between the two). All regimes share the same partition, vocabulary, per-owner
+compute budget, and evaluation, so their metrics are directly comparable.
+
 The federated helpers (``partition_by_hospital``, ``average_state_dicts``,
-``run_fedavg``) are inlined below so this example is self-contained. Defaults are
-sized for a quick dev/smoke run on one GPU.
+``run_fedavg``) and the baseline helpers (``train_centralized``, ``train_local``,
+``finetune_local``) are inlined below so this example is self-contained. Defaults
+are sized for a quick dev/smoke run on one GPU.
 """
 
 import argparse
 import json
 import os
+import statistics
 from typing import Callable, Dict, List, Tuple
 
 import numpy as np
@@ -96,9 +106,33 @@ METRICS = _SMOKE["metrics"]
 def _build_arg_parser() -> argparse.ArgumentParser:
     """CLI: pick a profile, then optionally override individual knobs."""
     p = argparse.ArgumentParser(description=__doc__ or "")
-    p.add_argument("--profile", choices=sorted(PROFILES), default="smoke",
-                   help="run scale preset (default: smoke)")
-    p.add_argument("--eicu-root", default=EICU_ROOT, help="path to eICU CRD root")
+    p.add_argument("--profile", choices=sorted(PROFILES), default=None,
+                   help="run scale preset (default: smoke, or the --config YAML's "
+                        "'profile' if it sets one)")
+    p.add_argument("--config",
+                   help="YAML file of config overrides, applied ON TOP of "
+                        "--profile and BELOW explicit CLI flags. Lets a sweep set "
+                        "any knob -- including ones without a dedicated flag (lr, "
+                        "embed_dim, n_heads, n_layers, n_ctx, batch_size, "
+                        "weighting, eval_* ...). See examples/fedpyhealth/sweeps/.")
+    p.add_argument("--weighting", choices=["sample", "uniform"], default=None,
+                   help="FedAvg aggregation weighting: 'sample' (default) weights "
+                        "each hospital by its sample count; 'uniform' weights every "
+                        "hospital equally. Only affects fedavg / fedavg_ft.")
+    p.add_argument("--regime",
+                   choices=["fedavg", "fedavg_ft", "centralized", "local"],
+                   default=None,
+                   help="training regime: fedavg (default) trains one model with "
+                        "FedAvg across hospital clients; fedavg_ft additionally "
+                        "fine-tunes the global model on each hospital "
+                        "(personalization); centralized pools every hospital into "
+                        "one model; local trains one independent model per "
+                        "hospital (no aggregation). centralized and local are "
+                        "non-federated baselines that bracket fedavg.")
+    p.add_argument("--ft-epochs", type=int,
+                   help="fedavg_ft only: local fine-tuning epochs per hospital "
+                        "after FedAvg (default: same as --local-epochs)")
+    p.add_argument("--eicu-root", default=None, help="path to eICU CRD root")
     # per-knob overrides (default None -> keep the profile's value)
     p.add_argument("--max-hospitals", type=int)
     p.add_argument("--min-hospital-samples", type=int)
@@ -111,42 +145,141 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                      help="force dev mode (small dataset)")
     dev.add_argument("--no-dev", dest="dev", action="store_false",
                      help="force full dataset")
-    p.add_argument("--resume", action="store_true",
+    p.add_argument("--resume", action="store_true", default=None,
                    help="resume FedAvg from the on-disk checkpoint if present")
-    p.add_argument("--ckpt-every", type=int, default=1,
+    p.add_argument("--ckpt-every", type=int, default=None,
                    help="checkpoint frequency in rounds (1=every round); the "
-                        "final round is always checkpointed")
+                        "final round is always checkpointed (default: 1)")
     p.add_argument("--cohort-file",
                    help="JSON manifest from select_cohort.py: use exactly its "
                         "hospitals as clients instead of the top-K by size")
     p.add_argument("--tb-logdir",
                    help="TensorBoard log dir (default: <save_dir>/tb). "
                         "Logs per-hospital train-loss curves.")
-    p.add_argument("--no-tb", action="store_true",
+    p.add_argument("--no-tb", action="store_true", default=None,
                    help="disable TensorBoard logging entirely")
-    p.add_argument("--log-every-epochs", type=int, default=1,
+    p.add_argument("--log-every-epochs", type=int, default=None,
                    help="log per-hospital loss every N local epochs (last epoch "
-                        "of each round is always logged)")
+                        "of each round is always logged; default: 1)")
+    p.add_argument("--run-name",
+                   help="readable run id for artifacts + compare_runs labelling "
+                        "(default: auto from regime/E/R/cohort/metrics)")
     return p
 
 
+def make_run_name(cfg: dict) -> str:
+    """Readable, filesystem-safe run id derived from the run's key knobs.
+
+    e.g. ``fedavg_E2_R39_standard_8_utility`` or ``centralized_E2_R39_...``.
+    Encodes the regime, local_epochs (E), n_rounds (R), the cohort manifest stem
+    (or ``topk`` when none), and the metric group -- enough to tell co-located
+    runs apart and to drive ``compare_runs.py`` labelling. Two runs that differ
+    in any of these get distinct artifact dirs (save/checkpoint/TensorBoard), so
+    they never clobber -- including a fedavg run and its centralized/local
+    baselines on the same cohort.
+    """
+    if cfg.get("cohort_file"):
+        cohort = os.path.splitext(os.path.basename(cfg["cohort_file"]))[0]
+    else:
+        cohort = f"top{cfg['max_hospitals']}"
+    name = (f"{cfg['regime']}_E{cfg['local_epochs']}_R{cfg['n_rounds']}"
+            f"_{cohort}_{cfg['metrics']}")
+    # fedavg_ft varies by ft_epochs at a fixed budget -- encode it so an ft sweep's
+    # runs get distinct artifacts/results instead of clobbering one another.
+    if cfg.get("regime") == "fedavg_ft":
+        name += f"_ft{cfg.get('ft_epochs', cfg['local_epochs'])}"
+    # Tag uniform-weighted FedAvg runs so they get distinct artifacts/results and
+    # never clobber the sample-weighted ones (sample weighting keeps the old name).
+    if cfg.get("weighting", "sample") == "uniform":
+        name += "_uniform"
+    return name
+
+
+def _load_yaml(path: str) -> dict:
+    """Load a config-override YAML into a dict (empty file -> {})."""
+    import yaml  # lazy: only needed when --config is used
+    with open(path) as f:
+        ydict = yaml.safe_load(f) or {}
+    if not isinstance(ydict, dict):
+        raise ValueError(
+            f"Config YAML {path} must be a mapping of knob: value, got "
+            f"{type(ydict).__name__}.")
+    return ydict
+
+
+def _overlay(cfg: dict, ydict: dict) -> dict:
+    """Overlay a mapping onto ``cfg`` (overlay wins). ``eval_lstm`` deep-merges so
+    a sweep can tweak one LSTM knob without restating the whole block."""
+    out = dict(cfg)
+    for k, v in ydict.items():
+        if k == "eval_lstm" and isinstance(v, dict) \
+                and isinstance(out.get("eval_lstm"), dict):
+            out["eval_lstm"] = {**out["eval_lstm"], **v}
+        else:
+            out[k] = v
+    return out
+
+
 def build_config(argv: List[str] = None) -> dict:
-    """Resolve a config dict: profile defaults, then CLI per-knob overrides."""
+    """Resolve a config dict by precedence: profile defaults < --config YAML <
+    explicit CLI flags. Any knob absent from all three falls back to its built-in
+    default below. This layering is what lets a sweep ship one YAML per run while
+    a CLI flag can still override a single knob for a quick one-off."""
     args = _build_arg_parser().parse_args(argv)
-    cfg = dict(PROFILES[args.profile])
-    cfg["profile"] = args.profile
-    cfg["eicu_root"] = args.eicu_root
-    cfg["resume"] = args.resume
-    cfg["ckpt_every"] = args.ckpt_every
-    cfg["cohort_file"] = args.cohort_file
-    cfg["tb_logdir"] = args.tb_logdir
-    cfg["no_tb"] = args.no_tb
-    cfg["log_every_epochs"] = args.log_every_epochs
-    for knob in ("max_hospitals", "min_hospital_samples", "n_rounds",
-                 "local_epochs", "num_synth", "metrics", "dev"):
-        val = getattr(args, knob)
-        if val is not None:
-            cfg[knob] = val
+
+    # Layer 1: profile defaults. The effective profile is the CLI --profile if
+    # given, else the YAML's 'profile', else smoke -- resolved BEFORE building the
+    # base dict so a YAML 'profile: full' actually pulls the full-profile defaults
+    # (embed_dim, batch_size, eval_* ...), not just the keys the YAML restates.
+    ycfg = _load_yaml(args.config) if args.config else {}
+    profile = args.profile or ycfg.get("profile") or "smoke"
+    if profile not in PROFILES:
+        raise ValueError(
+            f"unknown profile {profile!r}; choose from {sorted(PROFILES)}")
+    cfg = dict(PROFILES[profile])
+    cfg["profile"] = profile
+
+    # Layer 2: YAML overrides profile defaults.
+    cfg = _overlay(cfg, ycfg)
+
+    # Layer 3: explicit CLI flags override YAML. Every override arg defaults to
+    # None, so "not None" reliably means "the user passed it on the command line".
+    cli = {
+        "regime": args.regime, "weighting": args.weighting,
+        "eicu_root": args.eicu_root, "resume": args.resume,
+        "ckpt_every": args.ckpt_every, "cohort_file": args.cohort_file,
+        "tb_logdir": args.tb_logdir, "no_tb": args.no_tb,
+        "log_every_epochs": args.log_every_epochs,
+        "max_hospitals": args.max_hospitals,
+        "min_hospital_samples": args.min_hospital_samples,
+        "n_rounds": args.n_rounds, "local_epochs": args.local_epochs,
+        "num_synth": args.num_synth, "metrics": args.metrics, "dev": args.dev,
+        "ft_epochs": args.ft_epochs, "run_name": args.run_name,
+    }
+    for k, v in cli.items():
+        if v is not None:
+            cfg[k] = v
+
+    # Fall-back defaults for knobs not set by profile / YAML / CLI.
+    cfg.setdefault("regime", "fedavg")
+    cfg.setdefault("weighting", "sample")
+    cfg.setdefault("eicu_root", EICU_ROOT)
+    cfg.setdefault("resume", False)
+    cfg.setdefault("ckpt_every", 1)
+    cfg.setdefault("cohort_file", None)
+    cfg.setdefault("tb_logdir", None)
+    cfg.setdefault("no_tb", False)
+    cfg.setdefault("log_every_epochs", 1)
+    # ft_epochs defaults to track local_epochs (only meaningful for fedavg_ft).
+    cfg.setdefault("ft_epochs", cfg["local_epochs"])
+
+    if cfg["weighting"] not in ("sample", "uniform"):
+        raise ValueError(
+            f"weighting must be 'sample' or 'uniform', got {cfg['weighting']!r}")
+
+    # run_name LAST so it reflects the fully resolved regime/E/R/metrics/cohort.
+    if not cfg.get("run_name"):
+        cfg["run_name"] = make_run_name(cfg)
     return cfg
 
 
@@ -303,6 +436,7 @@ def run_fedavg(
     ckpt_path: str = None,
     ckpt_every: int = 1,
     resume: bool = False,
+    weighting: str = "sample",
     writer=None,
     log_every_epochs: int = 1,
     log: Callable[[str], None] = print,
@@ -312,6 +446,12 @@ def run_fedavg(
     The model holds the *global* weights between rounds; ``model._epochs`` (set
     at construction) is the number of local epochs per round. Returns the model
     holding the final aggregated weights.
+
+    ``weighting`` controls how client updates are combined each round:
+    ``"sample"`` (classic FedAvg) weights each hospital by its train-set size, so
+    larger hospitals pull the global model more; ``"uniform"`` gives every
+    hospital equal weight regardless of size, which can help when a few large
+    hospitals would otherwise dominate a heterogeneous federation.
 
     Checkpointing: when ``ckpt_path`` is set, the aggregated global weights are
     written atomically every ``ckpt_every`` rounds (and always after the final
@@ -351,7 +491,8 @@ def run_fedavg(
     elif resume and ckpt_path:
         log(f"FedAvg: --resume set but no checkpoint at {ckpt_path}; starting fresh")
 
-    log(f"FedAvg: {len(client_ids)} clients, sizes={sizes}, rounds={n_rounds}")
+    log(f"FedAvg: {len(client_ids)} clients, sizes={sizes}, rounds={n_rounds}, "
+        f"weighting={weighting}")
     if start_round >= n_rounds:
         log(f"FedAvg: checkpoint already has {start_round} >= {n_rounds} rounds; "
             f"skipping training")
@@ -378,7 +519,7 @@ def run_fedavg(
             model.train_model(clients[cid], val_dataset=None, device=device,
                               on_epoch_end=_on_epoch_end)
             snapshots.append(_snapshot(model))
-            weights.append(float(sizes[cid]))
+            weights.append(1.0 if weighting == "uniform" else float(sizes[cid]))
             log(f"  round {r + 1}/{n_rounds}  client {cid}  (n={sizes[cid]}) done")
 
         if writer is not None and round_final_losses:
@@ -395,6 +536,124 @@ def run_fedavg(
             log(f"round {r + 1}/{n_rounds} aggregated")
 
     return model
+
+
+# ----------------------------------------------------------------------------
+# Non-federated baselines: centralized (pool everything) and local-only (one
+# independent model per hospital, no aggregation). They bracket FedAvg -- the
+# centralized model is the "no privacy wall" upper bound, the local-only models
+# the "no collaboration" lower bound. For a fair comparison every regime gets the
+# same per-owner compute budget: FedAvg runs n_rounds * local_epochs passes over
+# each client's data, so the baseline models are built with epochs set to that
+# product before being handed to these helpers.
+# ----------------------------------------------------------------------------
+def train_centralized(model, pooled_train, device: str = "cpu", writer=None,
+                      log: Callable[[str], None] = print) -> object:
+    """Train ONE model on the pooled (all-hospital) train data. Returns it.
+
+    With ``writer`` set, the mean train loss is logged under ``loss_train/pooled``
+    each epoch (matching the FedAvg per-hospital curves' cumulative x-axis).
+    """
+    log(f"Centralized: 1 model on pooled train (n={len(pooled_train)})")
+
+    def _on_epoch_end(epoch, mean_loss):
+        if writer is not None:
+            writer.add_scalar("loss_train/pooled", mean_loss, epoch)
+        log(f"  centralized  epoch {epoch + 1}  loss={mean_loss:.4f}")
+
+    model.train_model(pooled_train, val_dataset=None, device=device,
+                      on_epoch_end=_on_epoch_end)
+    return model
+
+
+def train_local(
+    build_model: Callable[[], object],
+    clients: Dict[str, object],
+    device: str = "cpu",
+    writer=None,
+    log: Callable[[str], None] = print,
+) -> Dict[str, object]:
+    """Train an INDEPENDENT model per hospital on its own data (no averaging).
+
+    ``build_model`` is a zero-arg factory returning a fresh, untrained model, so
+    each hospital gets its own weights. Returns ``{hospital_id: trained_model}``.
+    Per-hospital train loss is logged under ``loss_train/hospital_<id>`` so the
+    curves line up with the FedAvg run's in TensorBoard.
+    """
+    models: Dict[str, object] = {}
+    for hid, train_subset in clients.items():
+        log(f"Local-only: training hospital {hid} (n={len(train_subset)})")
+        m = build_model()
+
+        def _on_epoch_end(epoch, mean_loss, hid=hid):
+            if writer is not None:
+                writer.add_scalar(f"loss_train/hospital_{hid}", mean_loss, epoch)
+
+        m.train_model(train_subset, val_dataset=None, device=device,
+                      on_epoch_end=_on_epoch_end)
+        models[hid] = m
+    return models
+
+
+def finetune_local(
+    global_state: Dict[str, torch.Tensor],
+    build_model: Callable[[], object],
+    clients: Dict[str, object],
+    device: str = "cpu",
+    writer=None,
+    log: Callable[[str], None] = print,
+) -> Dict[str, object]:
+    """FedAvg + fine-tuning: personalize the shared global model per hospital.
+
+    Each hospital warm-starts from the final FedAvg weights (``global_state``)
+    and trains a few more local epochs on its own data. This sits between FedAvg
+    (one shared model for everyone) and local-only (no shared knowledge at all):
+    it keeps the federated model's cross-hospital signal but lets each hospital
+    specialize. ``build_model`` must return a fresh model whose epochs = the
+    desired fine-tuning epochs. Returns ``{hospital_id: fine_tuned_model}``.
+    """
+    models: Dict[str, object] = {}
+    for hid, train_subset in clients.items():
+        log(f"FedAvg+FT: fine-tuning hospital {hid} from global "
+            f"(n={len(train_subset)})")
+        m = build_model()
+        m.load_state_dict(global_state)  # warm start from the federated global
+
+        def _on_epoch_end(epoch, mean_loss, hid=hid):
+            if writer is not None:
+                writer.add_scalar(f"loss_ft/hospital_{hid}", mean_loss, epoch)
+
+        m.train_model(train_subset, val_dataset=None, device=device,
+                      on_epoch_end=_on_epoch_end)
+        models[hid] = m
+    return models
+
+
+def generate_local(
+    models: Dict[str, object],
+    sizes: Dict[str, int],
+    num_synth: int,
+    device: str = "cpu",
+    log: Callable[[str], None] = print,
+) -> Tuple[List[Dict], Dict[str, List[Dict]]]:
+    """Generate synthetic patients from each hospital's own local model.
+
+    Each hospital's share of ``num_synth`` is proportional to its train size, so
+    the pooled synthetic set mirrors the real hospital mix (matching how FedAvg
+    sample-count-weights its clients). Returns
+    ``(pooled_synthetic, {hospital_id: synthetic})`` -- the pooled set is scored
+    globally, each hospital's own set against its own data.
+    """
+    total = float(sum(sizes.values())) or 1.0
+    pooled: List[Dict] = []
+    per_hosp: Dict[str, List[Dict]] = {}
+    for hid, m in models.items():
+        share = max(1, int(round(num_synth * sizes[hid] / total)))
+        syn = m.generate(num_samples=share, device=device)
+        per_hosp[hid] = syn
+        pooled.extend(syn)
+        log(f"  [local] hospital {hid}: generated {len(syn)} synthetic")
+    return pooled, per_hosp
 
 
 # ----------------------------------------------------------------------------
@@ -512,11 +771,73 @@ def print_client_table(per_client: Dict[str, Dict[str, tuple]]):
             print(sep)
 
 
+def _metrics_to_json(results: Dict[str, tuple]) -> Dict[str, dict]:
+    """Turn a {name: (mean, std)} metric dict into JSON-friendly nested dicts."""
+    return {name: {"mean": float(mean), "std": float(std)}
+            for name, (mean, std) in results.items()}
+
+
+def _macro_average(per_client: Dict[str, Dict[str, tuple]]) -> Dict[str, dict]:
+    """Macro-average each metric across hospitals (unweighted mean of the
+    per-hospital means; ``between_hospital_std`` = spread across hospitals).
+    Mirrors how compare_runs.py collapses the per-hospital table to one number."""
+    names: List[str] = []
+    for res in per_client.values():
+        for name in res:
+            if name not in names:
+                names.append(name)
+    out: Dict[str, dict] = {}
+    for name in names:
+        vals = [res[name][0] for res in per_client.values() if name in res]
+        if not vals:
+            continue
+        out[name] = {
+            "mean": float(statistics.fmean(vals)),
+            "between_hospital_std": float(statistics.pstdev(vals)) if len(vals) > 1 else 0.0,
+            "n_hospitals": len(vals),
+        }
+    return out
+
+
+def save_results_json(path: str, cfg: dict, info: Dict[str, dict],
+                      num_params: int, global_results, per_client) -> str:
+    """Write one run's raw stats to ``path`` as JSON.
+
+    Captures the full config, the partition (per-hospital train/test sizes), the
+    model size, the global (pooled) metrics, every per-hospital metric, and a
+    macro-averaged summary -- enough to rebuild any comparison table offline and
+    to aggregate a whole sweep without re-parsing SLURM logs. Metric values are
+    stored as {"mean", "std"} pairs."""
+    # Promoted to the top level so a sweep leaderboard can read them cheaply.
+    knob_keys = ("profile", "regime", "weighting", "local_epochs", "n_rounds",
+                 "ft_epochs", "lr", "embed_dim", "n_heads", "n_layers", "n_ctx",
+                 "batch_size", "num_synth", "metrics", "max_hospitals",
+                 "min_hospital_samples", "test_frac", "cohort_file")
+    payload = {
+        "run_name": cfg["run_name"],
+        "regime": cfg["regime"],
+        "weighting": cfg.get("weighting", "sample"),
+        "key_knobs": {k: cfg.get(k) for k in knob_keys},
+        "config": cfg,
+        "num_params": int(num_params),
+        "partition": info,
+        "global_metrics": _metrics_to_json(global_results) if global_results else None,
+        "per_hospital_metrics": {h: _metrics_to_json(r)
+                                 for h, r in per_client.items() if r},
+        "macro_avg_metrics": _macro_average(per_client),
+    }
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2)
+    return path
+
+
 if __name__ == "__main__":
     cfg = build_config()
     torch.manual_seed(SEED)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"profile={cfg['profile']}  device={device}")
+    print(f"RUN_NAME: {cfg['run_name']}")
     print(f"config: {cfg}")
 
     # STEP 1: Load the eICU base dataset (dev=True caps to ~1000 patients;
@@ -558,25 +879,64 @@ if __name__ == "__main__":
     print(f"\nHospitals (FedAvg clients): {info}")
     print(f"pooled_train={len(pooled_train)}  pooled_test={len(pooled_test)}")
 
-    # STEP 4: Initialize HALO (small config for the dev subset) and train it with
-    # FedAvg across the hospital clients. epochs= is the local epochs per round.
-    save_dir = f"_outputs/halo_fed_{cfg['profile']}_save"
-    model = HALO(
-        dataset=sample_dataset,
-        embed_dim=cfg["embed_dim"],
-        n_heads=cfg["n_heads"],
-        n_layers=cfg["n_layers"],
-        n_ctx=cfg["n_ctx"],
-        batch_size=cfg["batch_size"],
-        epochs=cfg["local_epochs"],
-        lr=cfg["lr"],
-        save_dir=save_dir,
-    )
-    num_params = sum(p.numel() for p in model.parameters())
-    print(f"\nModel initialized with {num_params} parameters")
+    # STEP 4: Build + train the generator under the chosen regime. Every regime
+    # gets the SAME apples-to-apples compute budget -- `total_epochs` =
+    # n_rounds * local_epochs passes over each owner's data:
+    #   * fedavg      -- ONE model, FedAvg across hospital clients (local_epochs
+    #                    per round x n_rounds rounds), weighted averaging.
+    #   * fedavg_ft   -- SPLITS the budget: (total_epochs - ft_epochs) passes of
+    #                    FedAvg, then ft_epochs of per-hospital fine-tuning. So its
+    #                    total passes EQUAL fedavg/local/centralized (not total +
+    #                    ft). Global eval uses the shared model; per-client eval
+    #                    uses each hospital's own fine-tuned model. Sits between
+    #                    fedavg (ft_epochs=0) and local (ft_epochs=total_epochs).
+    #   * centralized -- ONE model on the pooled (all-hospital) data for
+    #                    total_epochs epochs. Upper bound: no privacy wall.
+    #   * local       -- one INDEPENDENT model per hospital on its own data for
+    #                    total_epochs epochs, never aggregated. Lower bound: no
+    #                    cross-hospital collaboration.
+    # save_dir is per-run-name (regime + ft_epochs are encoded in run_name) so
+    # regimes keep separate checkpoints + TB logs and never clobber each other.
+    regime = cfg["regime"]
+    total_epochs = cfg["n_rounds"] * cfg["local_epochs"]
+    save_dir = f"_outputs/{cfg['run_name']}_save"
 
-    # Optional TensorBoard writer for per-hospital train-loss curves (cheap;
-    # scalars only). Lazy import so tensorboard stays an optional dependency.
+    # Apples-to-apples budget split for fedavg_ft: spend ft_epochs of the budget on
+    # per-hospital fine-tuning and the REST on FedAvg, so total passes/hospital ==
+    # total_epochs (same as every other regime). Plain fedavg spends all on FedAvg.
+    fed_rounds = cfg["n_rounds"]
+    if regime == "fedavg_ft":
+        fed_budget = total_epochs - cfg["ft_epochs"]
+        if fed_budget < cfg["local_epochs"]:
+            raise ValueError(
+                f"ft_epochs ({cfg['ft_epochs']}) leaves no room for FedAvg: need "
+                f"ft_epochs <= total_epochs - local_epochs "
+                f"(= {total_epochs - cfg['local_epochs']}). Raise n_rounds or "
+                f"lower ft_epochs.")
+        fed_rounds = fed_budget // cfg["local_epochs"]
+        spent = fed_rounds * cfg["local_epochs"] + cfg["ft_epochs"]
+        if spent != total_epochs:
+            print(f"[budget] fedavg_ft passes/hospital = {spent} "
+                  f"(target {total_epochs}; off by {total_epochs - spent} from "
+                  f"integer rounds -- pick ft_epochs so total_epochs - ft_epochs "
+                  f"is divisible by local_epochs for an exact match).")
+
+    def build_model(epochs: int):
+        """Fresh HALO sharing the global vocab (so weights are compatible)."""
+        return HALO(
+            dataset=sample_dataset,
+            embed_dim=cfg["embed_dim"],
+            n_heads=cfg["n_heads"],
+            n_layers=cfg["n_layers"],
+            n_ctx=cfg["n_ctx"],
+            batch_size=cfg["batch_size"],
+            epochs=epochs,
+            lr=cfg["lr"],
+            save_dir=save_dir,
+        )
+
+    # Optional TensorBoard writer for train-loss curves (cheap; scalars only).
+    # Lazy import so tensorboard stays an optional dependency.
     writer = None
     if not cfg["no_tb"]:
         try:
@@ -588,20 +948,66 @@ if __name__ == "__main__":
             print("tensorboard not installed; skipping TB logging "
                   "(pip install tensorboard, or pass --no-tb)")
 
-    # Checkpoint the aggregated weights every --ckpt-every rounds; --resume
-    # continues from the last completed round (a timed-out job loses few rounds).
-    ckpt_path = os.path.join(save_dir, "fedavg_state.pt")
+    sizes = {hid: len(clients[hid]) for hid in clients}
+    # client_synth[hid] = the synthetic set scored against hospital `hid` in the
+    # per-client eval (STEP 7). For fedavg/centralized that's the single global
+    # model's output (shared by all); for local it's that hospital's OWN model.
+    client_synth: Dict[str, List[Dict]] = {}
     try:
-        run_fedavg(model, clients, n_rounds=cfg["n_rounds"], device=device,
-                   ckpt_path=ckpt_path, ckpt_every=cfg["ckpt_every"],
-                   resume=cfg["resume"], writer=writer,
-                   log_every_epochs=cfg["log_every_epochs"])
+        if regime == "local":
+            print(f"\nRegime: local-only -- {len(clients)} independent models, "
+                  f"{total_epochs} epochs each")
+            models = train_local(lambda: build_model(total_epochs), clients,
+                                 device=device, writer=writer)
+            num_params = sum(p.numel()
+                             for p in next(iter(models.values())).parameters())
+            print(f"Each model: {num_params} parameters")
+            # STEP 5: each local model generates its own (size-weighted) share.
+            synthetic, client_synth = generate_local(
+                models, sizes, cfg["num_synth"], device=device)
+        else:
+            # centralized trains the single model for the full budget; fedavg and
+            # fedavg_ft use local_epochs per round (the FedAvg local step).
+            epochs = total_epochs if regime == "centralized" else cfg["local_epochs"]
+            model = build_model(epochs)
+            num_params = sum(p.numel() for p in model.parameters())
+            print(f"\nModel initialized with {num_params} parameters")
+            if regime == "centralized":
+                print(f"Regime: centralized -- 1 model on pooled data, "
+                      f"{total_epochs} epochs")
+                train_centralized(model, pooled_train, device=device, writer=writer)
+            else:  # fedavg or fedavg_ft -- both start with a FedAvg run
+                print(f"Regime: {regime} -- {len(clients)} clients, "
+                      f"{cfg['local_epochs']} local epochs x {fed_rounds} rounds"
+                      + (f", then {cfg['ft_epochs']} fine-tuning epochs/hospital "
+                         f"(total {total_epochs} passes/hospital)"
+                         if regime == "fedavg_ft" else ""))
+                # Checkpoint aggregated weights every --ckpt-every rounds; --resume
+                # continues from the last completed round (fedavg only).
+                ckpt_path = os.path.join(save_dir, "fedavg_state.pt")
+                run_fedavg(model, clients, n_rounds=fed_rounds, device=device,
+                           ckpt_path=ckpt_path, ckpt_every=cfg["ckpt_every"],
+                           resume=cfg["resume"], weighting=cfg["weighting"],
+                           writer=writer,
+                           log_every_epochs=cfg["log_every_epochs"])
+            # STEP 5: generate synthetic patients from the single global/server
+            # model. For fedavg_ft this stays the SHARED global model's output, so
+            # the global eval (STEP 6) is directly comparable to plain fedavg.
+            synthetic = model.generate(num_samples=cfg["num_synth"], device=device)
+            client_synth = {hid: synthetic for hid in clients}
+            if regime == "fedavg_ft":
+                # Personalize: fine-tune the global model on each hospital, then
+                # score each hospital against its OWN fine-tuned model in STEP 7.
+                global_state = _snapshot(model)
+                ft_models = finetune_local(
+                    global_state, lambda: build_model(cfg["ft_epochs"]),
+                    clients, device=device, writer=writer)
+                _, client_synth = generate_local(
+                    ft_models, sizes, cfg["num_synth"], device=device)
     finally:
         if writer is not None:
             writer.close()
 
-    # STEP 5: Generate synthetic patients from the aggregated model.
-    synthetic = model.generate(num_samples=cfg["num_synth"], device=device)
     print(f"\nGenerated {len(synthetic)} synthetic patients (first 3):")
     for patient in synthetic[:3]:
         print(f"  {patient['patient_id']}: {len(patient['visits'])} visits")
@@ -631,20 +1037,28 @@ if __name__ == "__main__":
         print("\nGlobal generative metrics (mean +/- std):")
         print_metrics(global_results)
 
-    # STEP 7: PER-CLIENT evaluation -- score the SAME global model's synthetic
-    # data against each hospital's own real train/test slices. This exposes how
-    # evenly the one federated model serves heterogeneous (non-IID) hospitals:
-    # a hospital whose distribution is under-represented in the average will show
-    # worse fidelity / different privacy numbers here than the pooled view.
-    print("\n=== Per-client metrics (same global model, each hospital's data) ===")
+    # STEP 7: PER-CLIENT evaluation -- score each hospital's synthetic data against
+    # its own real train/test slices. For fedavg/centralized that synthetic is the
+    # single global model's output (so this exposes how evenly one model serves
+    # heterogeneous, non-IID hospitals); for local it is that hospital's OWN
+    # model's output (so this is each local baseline scored on its home turf).
+    print("\n=== Per-client metrics (each hospital's synthetic vs its own data) ===")
     per_client: Dict[str, Dict[str, tuple]] = {}
     for hid in clients:
         res = evaluate_run(
-            clients[hid], client_tests[hid], synthetic, index_to_code,
+            clients[hid], client_tests[hid], client_synth[hid], index_to_code,
             metrics=cfg["metrics"], label=f"hosp {hid}", eval_cfg=eval_cfg,
         )
         if res:
             per_client[hid] = res
     print("\nPer-hospital generative metrics (mean +/- std):")
     print_client_table(per_client)
+
+    # STEP 8: persist the raw stats (config + partition + per-hospital metrics +
+    # macro summary) so a sweep can be aggregated without re-parsing SLURM logs.
+    results_path = save_results_json(
+        os.path.join("_outputs", "results", f"{cfg['run_name']}.json"),
+        cfg, info, num_params, global_results, per_client,
+    )
+    print(f"\nSaved results -> {results_path}")
  

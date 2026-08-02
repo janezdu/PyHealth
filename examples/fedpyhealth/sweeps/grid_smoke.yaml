@@ -1,0 +1,18 @@
+# Tiny smoke grid: validate the sweep plumbing (YAML loader, uniform weighting,
+# results.json) end-to-end on GPU in minutes BEFORE launching the full grid.
+#
+# 2 runs (sample vs uniform) on the smoke profile (dev data, tiny model). After
+# they finish, check _outputs/results/*.json exists and has per_hospital_metrics,
+# then run aggregate_results.py to confirm it tabulates.
+#
+#   .venv/bin/python examples/fedpyhealth/sweeps/make_sweep.py examples/fedpyhealth/sweeps/grid_smoke.yaml
+#   bash _outputs/sweeps/fedavg_smoke/submit_all.sh    # 2 separate parallel jobs
+
+sweep_name: fedavg_smoke
+
+base:
+  profile: smoke
+  regime: fedavg
+
+grid:
+  weighting: [sample, uniform]

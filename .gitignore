@@ -4,6 +4,9 @@ Dockerfile.local
 *DS_Store*
 *output*
 resource*
+.claude/*
+_scratch/*
+
 
 debug_entry*
 playground.ipynb
@@ -141,3 +144,6 @@ data/physionet.org/
 
 # Model weight files (large binaries, distributed separately)
 weightfiles/
+
+# fedpyhealth: derived hospital-index cache (keep the cohort manifest, not this)
+examples/fedpyhealth/cohorts/.field_index.json
