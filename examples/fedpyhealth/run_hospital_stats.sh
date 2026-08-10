@@ -14,7 +14,9 @@
 #SBATCH --output=_outputs/slurm/%x-%j.out
 
 # Per-hospital eICU EDA: hospital count, records-per-hospital distribution, the
-# 8 smallest hospitals, their ICD-9 code histograms, and their rare codes.
+# 8 smallest hospitals, their ICD-9 code histograms, and their uncommon codes
+# (present in <= half the analysed hospitals) and rare codes (default: present
+# in only 1 of them).
 # Drives examples/fedpyhealth/hospital_stats.py.
 #
 # Submit from the PyHealth repo root:
@@ -35,7 +37,8 @@
 #
 # Runtime is dominated by the one-time streaming pass over every sample; budget
 # ~1h cold. Afterwards the JSON cache makes re-reports instant on the login node:
-#   python examples/fedpyhealth/hospital_stats.py --from-cache --rare-max-hospitals 2
+#   python examples/fedpyhealth/hospital_stats.py --from-cache \
+#       --uncommon-max-hospitals 2 --rare-max-hospitals 1
 #
 # Outputs land under _outputs/eda/ (gitignored). They are hospital-level
 # aggregates only -- no patient rows -- so they are safe to paste into notes.

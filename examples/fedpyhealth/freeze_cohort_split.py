@@ -16,6 +16,23 @@ hospital-specific: a code can be rare at hospital A and common at hospital B.
 This is deliberately different from the cross-hospital "present in <= k
 hospitals" notion in ``hospital_stats.py``.
 
+That local definition mixes two different phenomena. A code carried by 0.3% of
+every hospital is genuinely long-tail; a code carried by 2% of hospital A and
+14% of hospital B is a *distribution shift* between sites. Both belong in a
+federated study, but they support different claims, so the manifest also freezes
+a strict subset -- ``global_rare_codes``, the pooled rare codes whose
+**cohort-wide** prevalence is at most ``--global-rare-prevalence-max`` (default
+1%). Report against both pools; do not average them together.
+
+One patient, one hospital
+-------------------------
+``EHRGenerationEICU`` labels a patient with the first ``hospitalid`` it sees and
+keeps *all* of their unit stays, so a patient treated at two hospitals carries
+one site's visits into the other site's client. That breaks the disjointness a
+federated baseline assumes. ``--cross-hospital drop`` (the default) removes
+those patients from the cohort entirely; ``keep`` restores the old behaviour and
+records how much contamination was accepted.
+
 Why the split is stratified
 ---------------------------
 A plain random 80/20 leaves many rare codes entirely on one side. Any code with
@@ -80,6 +97,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                    help="a code must be carried by >= this many patients to "
                         "count as rare (2 is the floor that makes the "
                         ">=1-per-fold guarantee satisfiable)")
+    p.add_argument("--global-rare-prevalence-max", type=float, default=0.01,
+                   help="strict pool: a pooled rare code also counts as "
+                        "globally rare if carried by <= this fraction of the "
+                        "whole cohort. Separates true long-tail codes from "
+                        "codes that are merely rare at one site")
+    p.add_argument("--cross-hospital", choices=("drop", "keep"), default="drop",
+                   help="what to do with patients who have stays at more than "
+                        "one hospital. The task assigns them to a single "
+                        "client but keeps every stay, so 'keep' leaks one "
+                        "site's visits into another site's client")
     p.add_argument("--val-frac-tol", type=float, default=0.10,
                    help="how far the realized validation fraction may drift "
                         "from --val-frac before failing. The >=1-per-fold "
@@ -180,8 +207,41 @@ def self_test() -> None:
 # --------------------------------------------------------------------------- #
 # Stage 1: one walk over the dataset                                           #
 # --------------------------------------------------------------------------- #
+def cross_hospital_patients(eicu_root: str) -> Set[str]:
+    """Find patients with unit stays at more than one hospital.
+
+    Read straight from ``patient.csv`` because the generation task collapses a
+    patient's stays into one sample and exposes only the first ``hospitalid``,
+    which is precisely the information loss this guards against. Every hospital
+    counts, not just cohort ones: a cohort patient who was also treated at a
+    non-cohort site still drags that site's visits into their client.
+
+    Args:
+        eicu_root: Path to the eICU CRD 2.0 root (the folder with the CSVs).
+
+    Returns:
+        The set of ``uniquepid`` values seen under two or more ``hospitalid``s.
+        Empty if ``patient.csv`` cannot be read -- callers treat that as "no
+        filter available" rather than failing the freeze.
+    """
+    import csv
+
+    path = os.path.join(eicu_root, "patient.csv")
+    try:
+        seen: Dict[str, Set[str]] = {}
+        with open(path, newline="") as fh:
+            for row in csv.DictReader(fh):
+                seen.setdefault(row["uniquepid"], set()).add(row["hospitalid"])
+        return {pid for pid, hospitals in seen.items() if len(hospitals) > 1}
+    except (OSError, KeyError) as exc:
+        print(f"WARNING: cannot read {path} ({exc}); cross-hospital patients "
+              "will NOT be filtered", flush=True)
+        return set()
+
+
 def collect_cohort_patients(
-    eicu_root: str, cohort: Sequence[str], dev: bool = False
+    eicu_root: str, cohort: Sequence[str], dev: bool = False,
+    exclude: Set[str] = frozenset(),
 ) -> Tuple[Dict[str, Dict[str, List[str]]], dict]:
     """Walk every task sample once, keeping code sets for the cohort hospitals.
 
@@ -189,6 +249,8 @@ def collect_cohort_patients(
         eicu_root: Path to the eICU CRD 2.0 root (the folder with the CSVs).
         cohort: Hospital ids to keep.
         dev: Load a small development subset instead of the full dataset.
+        exclude: Patient ids to drop before anything is counted, so they affect
+            neither rare-code prevalence nor the split.
 
     Returns:
         ``(patients, meta)`` where ``patients`` maps
@@ -219,6 +281,7 @@ def collect_cohort_patients(
     patients: Dict[str, Dict[str, List[str]]] = {h: {} for h in wanted}
     visits_per_patient: Dict[str, int] = {}
     n_hospitals_seen: Set[str] = set()
+    n_excluded = 0
 
     for i in range(n):
         sample = samples[i]
@@ -227,6 +290,9 @@ def collect_cohort_patients(
         if hid not in wanted:
             continue
         pid = str(sample["patient_id"])
+        if pid in exclude:
+            n_excluded += 1
+            continue
         codes: Set[str] = set()
         visits = sample["visits"].tolist()
         for visit in visits:
@@ -266,6 +332,7 @@ def collect_cohort_patients(
         "code_vocab_size": vocab_size,
         "n_hospitals_total": len(n_hospitals_seen),
         "unit_stays_per_patient": _describe(stays),
+        "n_cross_hospital_patients_dropped": n_excluded,
     }
     return patients, meta
 
@@ -546,7 +613,19 @@ def _git_sha() -> str:
 def build_manifest(args) -> dict:
     """Run every stage and assemble the manifest dict."""
     cohort = [h.strip() for h in args.cohort.split(",") if h.strip()]
-    patients, meta = collect_cohort_patients(args.eicu_root, cohort, args.dev)
+
+    exclude: Set[str] = set()
+    if args.cross_hospital == "drop":
+        print("Scanning patient.csv for cross-hospital patients...", flush=True)
+        exclude = cross_hospital_patients(args.eicu_root)
+        print(f"  {len(exclude)} patients (all hospitals) have stays at >1 "
+              "site; cohort members among them will be dropped", flush=True)
+
+    patients, meta = collect_cohort_patients(
+        args.eicu_root, cohort, args.dev, exclude=exclude
+    )
+    print(f"  dropped {meta['n_cross_hospital_patients_dropped']} cohort "
+          "patients as cross-hospital", flush=True)
 
     hospitals = []
     pooled_rare: Set[str] = set()
@@ -594,6 +673,42 @@ def build_manifest(args) -> dict:
     n_train = sum(h["n_train"] for h in hospitals)
     n_val = sum(h["n_val"] for h in hospitals)
 
+    # Cohort-wide carrier counts for every pooled rare code, split by fold. The
+    # val counts decide which codes are scorable downstream: average_precision
+    # is undefined at 0 positives and statistically empty at 1, so a pool that
+    # looks like 500 codes can be 250 codes of actual evidence. Freezing the
+    # counts here means the efficacy script can band by support without
+    # re-deriving them, and the histogram lands in the committable summary.
+    val_support: Dict[str, int] = {c: 0 for c in pooled}
+    train_support: Dict[str, int] = {c: 0 for c in pooled}
+    for h in hospitals:
+        pc = patients[h["hospital_id"]]
+        for pid in h["val_patient_ids"]:
+            for code in pc[pid]:
+                if code in val_support:
+                    val_support[code] += 1
+        for pid in h["train_patient_ids"]:
+            for code in pc[pid]:
+                if code in train_support:
+                    train_support[code] += 1
+
+    # The strict pool: rare at some hospital AND rare across the whole cohort.
+    # Without it, a code at 2% of hospital A and 14% of hospital B is scored as
+    # "long-tail" when it is really a between-site distribution shift.
+    global_max = args.global_rare_prevalence_max
+    global_rare = sorted(
+        c for c in pooled
+        if (train_support[c] + val_support[c]) / max(1, total) <= global_max
+    )
+    print(f"\npooled rare codes: {len(pooled)}   of which globally rare "
+          f"(cohort prevalence <= {global_max}): {len(global_rare)}", flush=True)
+
+    hist = {}
+    for thresh in (1, 2, 3, 5, 10, 20, 50, 100):
+        hist[f"ge_{thresh}"] = sum(1 for c in pooled if val_support[c] >= thresh)
+    print("scorable pooled rare codes by validation support: "
+          + "  ".join(f"{k}={v}" for k, v in hist.items()), flush=True)
+
     diagnostics = ({} if args.no_admission_diagnostics
                    else admission_diagnostics(args.eicu_root, cohort))
 
@@ -607,6 +722,8 @@ def build_manifest(args) -> dict:
         "val_frac": args.val_frac,
         "rare_prevalence_max": args.rare_prevalence_max,
         "rare_min_patients": args.rare_min_patients,
+        "global_rare_prevalence_max": args.global_rare_prevalence_max,
+        "cross_hospital": args.cross_hospital,
         "guarantee_val_per_rare_code": True,
         "pyhealth_git_sha": _git_sha(),
         "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -617,6 +734,12 @@ def build_manifest(args) -> dict:
         "pooled_rare_codes": pooled,
         "pooled_rare_codes_sha256": _sha256_list(pooled),
         "n_pooled_rare_codes": len(pooled),
+        "global_rare_codes": global_rare,
+        "global_rare_codes_sha256": _sha256_list(global_rare),
+        "n_global_rare_codes": len(global_rare),
+        "pooled_rare_val_support": val_support,
+        "pooled_rare_train_support": train_support,
+        "val_support_histogram": hist,
         "unit_diagnostics": diagnostics,
     })
     return {"schema_version": SCHEMA_VERSION, "meta": meta,
@@ -629,8 +752,21 @@ def summarize(manifest: dict) -> dict:
             "n_unique_codes", "n_rare_codes", "rare_support_min",
             "rare_support_median", "min_rare_prevalence",
             "train_patient_ids_sha256", "val_patient_ids_sha256")
-    meta = {k: v for k, v in manifest["meta"].items()
-            if k != "pooled_rare_codes"}
+    # Drop the per-code lists and dicts: they are aggregates, not patient data,
+    # but they run to thousands of lines and the manifest already holds them.
+    # The counts, hashes and support histogram stay -- those are what a reader
+    # of the committed file needs to judge the cohort.
+    bulky = ("pooled_rare_codes", "global_rare_codes",
+             "pooled_rare_val_support", "pooled_rare_train_support")
+    meta = {k: v for k, v in manifest["meta"].items() if k not in bulky}
+    # This file is meant to be committed, and an absolute --eicu-root is one
+    # person's home or scratch path. The trailing components identify the
+    # dataset build, which is the part that carries provenance value; the rest
+    # does not belong in the repo.
+    root = meta.get("eicu_root")
+    if root:
+        meta["eicu_root"] = os.path.join("<redacted>",
+                                         *os.path.normpath(root).split(os.sep)[-2:])
     return {
         "schema_version": manifest["schema_version"],
         "meta": meta,
@@ -665,7 +801,16 @@ def main(argv=None) -> None:
     print(f"\ncohort: {meta['cohort_total']} patients -> "
           f"{meta['cohort_train']} train / {meta['cohort_val']} val "
           f"(val_frac={meta['realized_val_frac']})")
-    print(f"pooled rare codes: {meta['n_pooled_rare_codes']}")
+    print(f"pooled rare codes: {meta['n_pooled_rare_codes']}  "
+          f"(globally rare: {meta['n_global_rare_codes']})")
+    hist = meta["val_support_histogram"]
+    print("scorable by validation support: "
+          + "  ".join(f"{k.replace('ge_', '>=')}: {v}" for k, v in hist.items()))
+    if meta["cross_hospital"] == "drop":
+        print(f"cross-hospital patients dropped: "
+              f"{meta['n_cross_hospital_patients_dropped']}")
+    else:
+        print("WARNING: --cross-hospital keep -- clients are NOT disjoint")
 
     smallest = min(h["min_rare_prevalence"] for h in manifest["hospitals"])
     floor = int(np.ceil(10 / smallest)) if smallest > 0 else 0

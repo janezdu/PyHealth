@@ -20,7 +20,17 @@
 #
 # Submit from the PyHealth repo root:
 #   mkdir -p _outputs/slurm   # --output dir must exist before submit
-#   sbatch examples/fedpyhealth/run_freeze_split.sh
+#   sbatch examples/fedpyhealth/run_freeze_split.sh \
+#       --cohort 73,264,338,420,243,458,443,188 \
+#       --cohort-name rare8_v2 \
+#       --out examples/fedpyhealth/cohorts/rare8_v2.json
+#
+# The hospital ids come from cohorts/large8.json. Defaults worth knowing:
+#   --cross-hospital drop            patients with stays at >1 site are removed
+#                                    (the task would otherwise carry one site's
+#                                    visits into another site's client)
+#   --global-rare-prevalence-max .01 freezes the strict long-tail subset
+#                                    alongside the per-hospital rare pool
 #
 # Extra flags pass straight through, e.g. a smoke manifest:
 #   sbatch examples/fedpyhealth/run_freeze_split.sh --dev \
@@ -39,8 +49,8 @@
 # and the single streaming pass over every sample).
 #
 # Outputs:
-#   cohorts/rare8_v1.json          full manifest WITH patient ids -- gitignored
-#   cohorts/rare8_v1.summary.json  aggregates + hashes only -- safe to commit
+#   cohorts/rare8_v2.json          full manifest WITH patient ids -- gitignored
+#   cohorts/rare8_v2.summary.json  aggregates + hashes only -- safe to commit
 
 set -euo pipefail
 
