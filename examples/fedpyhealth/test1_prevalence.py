@@ -11,12 +11,12 @@ Two variants are reported per hospital:
 
 * ``PrevVal_All_*``  -- the full code vocabulary.
 * ``PrevVal_Rare_*`` -- only that hospital's own rare codes (rare *there*, per
-  the freeze step's < 5% rule), which is where a federated generator is meant
-  to earn its keep.
+  the cache's <= 5% rule), which is where a federated generator is meant to
+  earn its keep.
 
-The real reference is always the **held-out validation split**, never the
-training split, so this measures out-of-sample fidelity rather than how well
-the generator memorised what it saw.
+The real reference is always a **held-out fold**, never the training split, so
+this measures out-of-sample fidelity rather than memorisation. It defaults to
+validation; test stays untouched until the final numbers.
 
 Runs two ways, on one implementation:
 
@@ -28,7 +28,6 @@ Runs two ways, on one implementation:
   GPU training run::
 
       python examples/fedpyhealth/main.py test1 \
-          --cohort-file examples/fedpyhealth/cohorts/strat8.json \
           --run fedavg=_outputs/<run_name>_save
 
 Results land in ``_outputs/results/tests/test1_prevalence.json``.
@@ -41,14 +40,13 @@ from typing import Dict, Iterable, List
 
 import pandas as pd
 
-from utils.cohort_io import (
-    EICU_ROOT,
+from utils.cohort import (
+    DEFAULT_CACHE_DIR,
     load_manifest,
-    load_real_trajectories,
     load_synthetic,
     parse_run_specs,
-    rare_codes_by_hospital,
-    split_ids,
+    rare_codes,
+    read_trajectories,
 )
 from pyhealth.metrics.generative.utility import compute_prevalence_metrics
 
@@ -61,15 +59,15 @@ EVAL_SCHEMA = {"visit_codes": str, "labels": int, "time": int, "id": str}
 
 def _build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__ or "")
-    p.add_argument("--cohort-file", required=True,
-                   help="frozen manifest WITH patient ids (not *.summary.json)")
+    p.add_argument("--cohort-cache", default=DEFAULT_CACHE_DIR,
+                   help="cohort cache directory built by utils/cohort.py")
     p.add_argument("--run", action="append", default=[], metavar="NAME=SAVE_DIR",
                    help="a finished run to score; repeatable")
-    p.add_argument("--eicu-root", default=EICU_ROOT)
+    p.add_argument("--fold", default="val", choices=["val", "test"],
+                   help="real fold to score against (default: val -- keep test "
+                        "held out until the final numbers)")
     p.add_argument("--n-bootstraps", type=int, default=5,
                    help="bootstrap resamples over codes")
-    p.add_argument("--dev", action="store_true",
-                   help="load a small eICU subset (smoke only)")
     p.add_argument("--out", default=DEFAULT_OUT)
     return p
 
@@ -102,8 +100,8 @@ def trajectories_to_records(trajectories: Dict[str, List[List[str]]]):
     """Convert ``{patient_id: [[code, ...], ...]}`` into long-format rows.
 
     This is the standalone path's equivalent of
-    :func:`real_subset_to_records`: ``utils.cohort_io.load_real_trajectories`` has
-    already decoded the index tensors into code strings.
+    :func:`real_subset_to_records`: ``utils.cohort.read_trajectories`` reads the
+    cache's code strings directly, so there are no index tensors to decode.
     """
     for pid, visits in trajectories.items():
         for t, visit in enumerate(visits):
@@ -187,26 +185,29 @@ def evaluate_rare_prevalence(
 
 
 def score_run(
-    manifest: dict,
     per_hospital_synth: Dict[str, List[dict]],
-    real: Dict[str, List[List[str]]],
+    real: Dict[str, Dict[str, List[List[str]]]],
+    rare_by_hospital: Dict[str, List[str]],
     n_bootstraps: int = 5,
 ) -> Dict[str, dict]:
     """Standalone entry point: score every hospital of one finished run.
 
+    Args:
+        per_hospital_synth: ``{hospital_id: [synthetic patient, ...]}``.
+        real: ``{hospital_id: {patient_id: [[code, ...], ...]}}`` for the
+            scoring fold, straight from the cohort cache.
+        rare_by_hospital: Each hospital's rare codes.
+        n_bootstraps: Bootstrap resamples over codes.
+
     Returns:
         ``{hospital_id: {metric: [mean, std]}}``.
     """
-    val_by_hospital = split_ids(manifest, "val")
-    rare_by_hospital = rare_codes_by_hospital(manifest)
-
     out: Dict[str, dict] = {}
-    for hid, val_ids in val_by_hospital.items():
+    for hid, val_traj in real.items():
         synth = per_hospital_synth.get(hid)
         if not synth:
             print(f"  [{hid}] no synthetic patients in this run; skipped")
             continue
-        val_traj = {p: real[p] for p in val_ids if p in real}
         val_df = pd.DataFrame(trajectories_to_records(val_traj)).astype(EVAL_SCHEMA)
         syn_df = pd.DataFrame(synthetic_to_records(synth)).astype(EVAL_SCHEMA)
         scores = prevalence_from_frames(
@@ -226,18 +227,18 @@ def main(argv=None) -> None:
     if not runs:
         raise SystemExit("nothing to score: pass at least one --run NAME=SAVE_DIR")
 
-    manifest = load_manifest(args.cohort_file)
-    val_ids = sorted({p for ids in split_ids(manifest, "val").values()
-                      for p in ids})
-    real = load_real_trajectories(args.eicu_root, set(val_ids), dev=args.dev)
-    print(f"cohort: {len(manifest['hospitals'])} hospitals, "
-          f"{len(val_ids)} validation patients")
+    manifest = load_manifest(args.cohort_cache)
+    real = read_trajectories(args.cohort_cache, args.fold)
+    rare_by_hospital = rare_codes(args.cohort_cache)
+    n_real = sum(len(v) for v in real.values())
+    print(f"cohort '{manifest.get('cohort_name')}': {len(real)} hospitals, "
+          f"{n_real} {args.fold} patients")
 
     results = {}
     for name, save_dir in runs.items():
         print(f"\n=== {name}  ({save_dir})", flush=True)
         results[name] = score_run(
-            manifest, load_synthetic(save_dir), real, args.n_bootstraps,
+            load_synthetic(save_dir), real, rare_by_hospital, args.n_bootstraps,
         )
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
@@ -245,8 +246,9 @@ def main(argv=None) -> None:
         json.dump({
             "kind": "test",
             "test": "test1_prevalence",
-            "cohort_file": args.cohort_file,
-            "cohort_name": manifest["meta"].get("cohort_name"),
+            "cohort_cache": args.cohort_cache,
+            "cohort_name": manifest.get("cohort_name"),
+            "fold": args.fold,
             "n_bootstraps": args.n_bootstraps,
             "runs": results,
         }, fh, indent=2)

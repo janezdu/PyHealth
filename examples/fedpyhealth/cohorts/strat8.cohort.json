@@ -1,35 +1,60 @@
 {
-  "schema_version": 1,
-  "kind": "selection",
+  "kind": "cohort_selection",
   "cohort_name": "strat8",
-  "meta": {
-    "selection": "size_bands",
-    "description": "Eight eICU hospitals, two drawn from each of four absolute size bands, so the federation contains real 'expert' sites and real small ones by construction. Replaces the quantile-binned standard_8 (whose bin edges float with the distribution, so it can promise neither) and the explicit-id rare8_v1 (all >= 642 patients).",
-    "size_bands": "0-199,200-499,500-1999,2000-",
-    "per_band": 2,
-    "min_hospital_samples": 100,
-    "seed": 2,
-    "produced_by": "examples/fedpyhealth/cohort_size_preview.py",
-    "command": "python examples/fedpyhealth/cohort_size_preview.py --size-bands 0-199,200-499,500-1999,2000- --per-band 2 --min-hospital-samples 100 --seed 2",
-    "eicu_root": "/work/hdd/bgyw/janezdu/data/eicu/eicu-crd/2.0",
-    "population": "208 hospitals / 143577 patients in eICU CRD 2.0 patient.csv; 170 clear the 100-patient floor",
-    "sizing_method": "distinct uniquepid per hospitalid in patient.csv, scaled by a calibration ratio. The generation task keeps only patients with >= 1 unit stay carrying a usable diagnosis code, so a raw csv count overshoots what the freeze job sees; the ratio corrects for that.",
-    "calibration_ratio": 0.877,
-    "calibration_source": "median of task_n / csv_n over the 8 hospitals in rare8_v1.summary.json",
-    "n_patients_is_estimate": true,
-    "created_utc": "2026-08-10",
-    "pyhealth_git_sha": "d997157",
-    "next_step": "sbatch examples/fedpyhealth/run_freeze_split.sh --cohort 420,199,345,79,259,253,438,201 --cohort-name strat8 --out examples/fedpyhealth/cohorts/strat8.json",
-    "note": "This file records WHICH hospitals and why. The 80/20 rare-code-stratified split they train on is frozen separately by freeze_cohort_split.py into strat8.json (gitignored, carries patient ids) plus strat8.summary.json (committed aggregates + sha256). The true post-task patient counts land in that summary; if one falls outside its band there, re-draw with another --seed."
-  },
+  "description": "Eight eICU hospitals, two drawn from each of four absolute size bands, so the federation contains real 'expert' sites and real small ones by construction. This file is the git record of WHICH hospitals; the data itself lives in the cohort cache built by utils/cohort.py.",
+  "bands": "0-199,200-499,500-1999,2000-",
+  "per_band": 2,
+  "seed": 2,
+  "eicu": "eICU CRD 2.0",
+  "rebuild": "python examples/fedpyhealth/utils/cohort.py --hospitals 420,199,345,79,259,253,438,201 --out <cache dir>",
   "hospitals": [
-    {"hospital_id": "420", "size_band": 3, "band_range": "2000-", "n_patients_est": 2811},
-    {"hospital_id": "199", "size_band": 3, "band_range": "2000-", "n_patients_est": 2392},
-    {"hospital_id": "345", "size_band": 2, "band_range": "500-1999", "n_patients_est": 1145},
-    {"hospital_id": "79", "size_band": 2, "band_range": "500-1999", "n_patients_est": 956},
-    {"hospital_id": "259", "size_band": 1, "band_range": "200-499", "n_patients_est": 457, "near_band_edge": true},
-    {"hospital_id": "253", "size_band": 1, "band_range": "200-499", "n_patients_est": 348},
-    {"hospital_id": "438", "size_band": 0, "band_range": "0-199", "n_patients_est": 141},
-    {"hospital_id": "201", "size_band": 0, "band_range": "0-199", "n_patients_est": 117}
+    {
+      "hospital_id": "420",
+      "n_patients": 3005,
+      "size_band": 3,
+      "n_rare_codes": 562
+    },
+    {
+      "hospital_id": "199",
+      "n_patients": 2218,
+      "size_band": 3,
+      "n_rare_codes": 299
+    },
+    {
+      "hospital_id": "345",
+      "n_patients": 1122,
+      "size_band": 2,
+      "n_rare_codes": 165
+    },
+    {
+      "hospital_id": "79",
+      "n_patients": 972,
+      "size_band": 2,
+      "n_rare_codes": 296
+    },
+    {
+      "hospital_id": "259",
+      "n_patients": 445,
+      "size_band": 1,
+      "n_rare_codes": 109
+    },
+    {
+      "hospital_id": "253",
+      "n_patients": 291,
+      "size_band": 1,
+      "n_rare_codes": 100
+    },
+    {
+      "hospital_id": "438",
+      "n_patients": 112,
+      "size_band": 0,
+      "n_rare_codes": 23
+    },
+    {
+      "hospital_id": "201",
+      "n_patients": 117,
+      "size_band": 0,
+      "n_rare_codes": 29
+    }
   ]
 }

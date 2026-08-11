@@ -2,18 +2,18 @@
 
 This is the only launcher. It submits SLURM jobs for the two things the paper
 table needs -- training a regime (``train.py``) and scoring rare-code ML
-efficacy across regimes (``test2_rare_efficacy.py``) -- and nothing else. Cohort
-selection and freezing deliberately do NOT hang off this file: they run once,
-produce a manifest that then never changes, and mixing a one-off data-prep step
-into the launcher is how a "just rerun it" ends up silently re-splitting the
-data underneath a half-finished comparison.
+efficacy across regimes (``test2_rare_efficacy.py``) -- and nothing else.
+Building the cohort cache (``utils/cohort.py``) deliberately does NOT hang off
+this file: it runs once, and mixing a one-off data-prep step into the launcher
+is how a "just rerun it" ends up silently re-splitting the data underneath a
+half-finished comparison.
 
     # one training regime (submits, prints the job id)
     python examples/fedpyhealth/main.py train --regime fedavg --profile full
 
     # the whole table: four regimes, then Test 2 chained after they all finish
     python examples/fedpyhealth/main.py all --profile full \
-        --cohort-file examples/fedpyhealth/cohorts/strat8.json
+        --cohort-cache /work/nvme/.../strat8
 
     # see the generated sbatch script without submitting anything
     python examples/fedpyhealth/main.py train --regime local --dry-run
@@ -30,12 +30,15 @@ Every job writes to ``_outputs/`` (gitignored): SLURM logs under
 """
 
 import argparse
+import glob
 import os
+import re
 import subprocess
 import sys
+import time
 from typing import List, Sequence, Tuple
 
-from utils.cohort_io import DEFAULT_COHORT_FILE, load_manifest
+from utils.cohort import DEFAULT_CACHE_DIR, FOLDS, load_manifest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SLURM_DIR = "_outputs/slurm"
@@ -102,11 +105,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         help="override the SBATCH wall clock")
     common.add_argument("--mem", default=argparse.SUPPRESS,
                         help="override the SBATCH memory")
-    common.add_argument("--cohort-file", default=argparse.SUPPRESS,
-                        help="frozen manifest every job in this invocation uses")
+    common.add_argument("--cohort-cache", default=argparse.SUPPRESS,
+                        help="cohort cache every job in this invocation reads")
     common.add_argument("--skip-cohort-check", action="store_true",
                         default=argparse.SUPPRESS,
-                        help="submit without pre-flighting the cohort file")
+                        help="submit without pre-flighting the cohort cache")
 
     p = argparse.ArgumentParser(
         description=__doc__ or "",
@@ -135,41 +138,262 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         t.add_argument("--after", default=None,
                        help="colon-separated job ids to wait for "
                             "(--dependency=afterok:...)")
+
+    sub.add_parser("status", parents=[common],
+                   help="how far along are my jobs (queue state + progress)")
     return p
 
 
-def preflight_cohort(path: str) -> None:
-    """Fail in a second, here, rather than an hour into a GPU job.
+# --------------------------------------------------------------------------- #
+# Status                                                                       #
+# --------------------------------------------------------------------------- #
+# Progress markers the training script prints. Rounds/epochs are the only
+# honest progress signal: a job can sit at "RUNNING" for an hour while it does
+# nothing but load eICU.
+PROGRESS_RE = (
+    re.compile(r"round (\d+)/(\d+)", re.I),
+    re.compile(r"Epoch (\d+)/(\d+)"),
+    re.compile(r"\.\.\.(\d+)/(\d+)"),          # cohort.py's eICU walk
+    re.compile(r"Epoch (\d+):"),
+)
 
-    The two failures this catches are the ones that cost the most: pointing at a
-    ``*.cohort.json`` selection file (which names hospitals but assigns no
-    patients), and pointing at a manifest frozen on the eICU dev subset, which
-    ``train.py`` rejects only after it has loaded the whole dataset.
+# What the job is actually DOING, in order. A job can sit at RUNNING for an
+# hour inside one of these, and which one it is changes what "slow" means:
+# training slowly is normal, still generating after an hour is not.
+PHASES = (
+    ("saved",       re.compile(r"Saved synthetic data ->|OK: all \d+ cached|"
+                               r"^Wrote ", re.M)),
+    ("evaluating",  re.compile(r"=== (Global|Per-client) metrics|"
+                               r"classifiers to train:")),
+    ("generating",  re.compile(r"Generated \d+ synthetic|generated \d+ synthetic")),
+    ("verifying",   re.compile(r"Verifying: rebuilding")),
+    ("training",    re.compile(r"Regime: |Centralized: |Local-only: |FedAvg: ")),
+    ("writing",     re.compile(r"^Cohort \(|^  \[\d+\] \d+ patients", re.M)),
+    ("walking eICU", re.compile(r"Walking samples")),
+    ("loading",     re.compile(r"Loading eICU|Cohort '")),
+)
+
+# How a finished log ended. Ordered: a traceback anywhere beats a success line
+# printed before it.
+# TIMEOUT is checked BEFORE FAILED: SLURM logs a wall-clock kill as
+# "slurmstepd: error", which would otherwise read as a bug in the code. The two
+# call for opposite responses -- resubmit with --resume vs. fix something.
+OUTCOME_RE = (
+    ("TIMEOUT", re.compile(r"DUE TO TIME LIMIT|CANCELLED AT")),
+    ("FAILED",  re.compile(r"Traceback \(most recent call last\)|"
+                           r"slurmstepd: error|"
+                           r"^(?:\w+Error|Error)", re.M)),
+    ("done",    re.compile(r"Saved synthetic data ->|OK: all \d+ cached|"
+                           r"^Wrote .*\.json", re.M)),
+)
+
+
+def _print_table(header: Sequence[str], rows: Sequence[Sequence]) -> None:
+    """Left-aligned fixed-width table (no dependency on results.py)."""
+    widths = [max(len(str(h)), *(len(str(r[i])) for r in rows)) if rows
+              else len(str(h)) for i, h in enumerate(header)]
+    print("  ".join(str(h).ljust(w) for h, w in zip(header, widths)))
+    print("-" * (sum(widths) + 2 * len(header)))
+    for r in rows:
+        print("  ".join(str(c).ljust(w) for c, w in zip(r, widths)))
+
+
+def _elapsed_seconds(text: str) -> float:
+    """Parse SLURM elapsed ('1-02:03:04', '11:23:06', '4:07') into seconds."""
+    days, _, rest = text.partition("-")
+    if not rest:
+        days, rest = "0", days
+    parts = [float(x) for x in rest.split(":")]
+    while len(parts) < 3:
+        parts.insert(0, 0.0)
+    h, m, s = parts
+    return float(days) * 86400 + h * 3600 + m * 60 + s
+
+
+def _progress(log_path: str):
+    """Last (done, total) progress marker in a job log, or (done, None)."""
+    tail = _tail(log_path, 200_000)
+    if not tail:
+        return None
+    for rx in PROGRESS_RE:
+        hits = rx.findall(tail)
+        if hits:
+            last = hits[-1]
+            # findall yields a tuple per match only when the pattern has >1
+            # group; with one group it yields a plain string, and last[0] would
+            # take its first CHARACTER ("51" -> 5).
+            if isinstance(last, tuple):
+                return int(last[0]), int(last[1])
+            return int(last), _total_epochs(tail)
+    return None
+
+
+def _total_epochs(tail: str):
+    """Epoch budget from the regime banner, so a bare 'Epoch N:' gets an ETA."""
+    m = re.search(r"(\d+) epochs", tail)
+    return int(m.group(1)) if m else None
+
+
+def _tail(log_path: str, nbytes: int = 400_000) -> str:
+    """Last ``nbytes`` of a log. These reach hundreds of MB with progress bars."""
+    if not os.path.exists(log_path):
+        return ""
+    with open(log_path, "rb") as fh:
+        fh.seek(0, os.SEEK_END)
+        fh.seek(max(0, fh.tell() - nbytes))
+        return fh.read().decode("utf-8", "replace")
+
+
+def _phase(tail: str) -> str:
+    """Which stage the job has most recently reached."""
+    for name, rx in PHASES:
+        if rx.search(tail):
+            return name
+    return ""
+
+
+def _outcome(tail: str) -> str:
+    """How a log that is no longer running ended."""
+    for name, rx in OUTCOME_RE:
+        if rx.search(tail):
+            return name
+    return "ended early"
+
+
+def _hospital_progress(tail: str):
+    """For the local regime: which hospital of how many is training now."""
+    seen = re.findall(r"training hospital (\S+)", tail)
+    total = re.search(r"local-only -- (\d+) independent models", tail)
+    if not seen or not total:
+        return None
+    return len(dict.fromkeys(seen)), int(total.group(1))
+
+
+def _print_finished(live: Sequence[str], limit: int = 8) -> None:
+    """Show recently-ended jobs and how they ended.
+
+    squeue forgets a job the moment it leaves the queue, which is exactly when
+    you most want to know what happened to it -- a run that died at hour 12 and
+    one that finished cleanly look identical from the queue (both absent).
+    """
+    logs = []
+    for path in glob.glob(os.path.join(SLURM_DIR, "*.out")):
+        stem = os.path.basename(path)[:-4]
+        name, _, jid = stem.rpartition("-")
+        if jid in live:
+            continue                      # already in the running table above
+        logs.append((os.path.getmtime(path), jid, name or stem, path))
+    if not logs:
+        return
+
+    logs.sort(reverse=True)
+    rows = []
+    for mtime, jid, name, path in logs[:limit]:
+        tail = _tail(path)
+        age = (time.time() - mtime) / 3600
+        rows.append([jid, name[:26], _outcome(tail), _phase(tail) or "-",
+                     f"{age:.1f}h ago" if age < 48 else f"{age / 24:.0f}d ago"])
+    print(f"\nrecently ended ({len(logs)} log(s) in {SLURM_DIR}):")
+    _print_table(["job", "name", "outcome", "reached", "when"], rows)
+    failed = [r for r in rows if r[2] in ("FAILED", "TIMEOUT")]
+    for r in failed:
+        print(f"  tail -50 {SLURM_DIR}/{r[1]}-{r[0]}.out    # {r[2]}")
+
+
+def cmd_status() -> None:
+    """Print queue state plus per-job progress and a finish estimate."""
+    try:
+        out = subprocess.run(
+            ["squeue", "-u", os.environ.get("USER", ""), "-h",
+             "-o", "%i|%j|%T|%M|%R"],
+            capture_output=True, text=True, timeout=30, check=True).stdout
+    except Exception as exc:  # noqa: BLE001
+        sys.exit(f"could not run squeue: {exc}")
+
+    jobs = [ln.split("|") for ln in out.splitlines() if ln.strip()]
+    live = {jid for jid, *_ in jobs}
+    if not jobs:
+        print("nothing in the queue.")
+    else:
+        rows = []
+        for jid, name, state, elapsed, reason in jobs:
+            phase, prog, eta = "", "", ""
+            if state == "RUNNING":
+                log_path = os.path.join(SLURM_DIR, f"{name}-{jid}.out")
+                big_tail = _tail(log_path, 2_000_000)
+                phase = _phase(big_tail)
+                hit = _progress(log_path)
+                if hit and hit[1]:
+                    done, total = hit
+                    prog = f"{done}/{total}"
+                    secs = _elapsed_seconds(elapsed)
+                    if done:
+                        remaining = secs * (total - done) / done
+                        eta = f"~{remaining / 3600:.1f}h left"
+                elif hit:
+                    prog = f"epoch {hit[0]}"
+                # The local regime restarts its epoch count per hospital, so the
+                # epoch number alone says nothing about how far along it is.
+                if "local" in name:
+                    hp = _hospital_progress(big_tail)
+                    if hp:
+                        prog = f"hosp {hp[0]}/{hp[1]}, {prog}"
+                        eta = "(uneven: big hospitals first)"
+                if not phase and not prog:
+                    prog = "(no output yet)"
+            rows.append([jid, name[:26], state, elapsed, phase, prog,
+                         eta or (reason if state != "RUNNING" else "")])
+        _print_table(["job", "name", "state", "elapsed", "phase", "progress",
+                      "note"], rows)
+
+    _print_finished(live)
+
+    # Finished work is invisible to squeue, so show what has landed on disk.
+    runs = sorted(glob.glob("_outputs/results/runs/*.json"))
+    tests = sorted(glob.glob("_outputs/results/tests/*.json"))
+    print(f"\nresults on disk: {len(runs)} run(s)"
+          f"{', ' + ', '.join(os.path.basename(t) for t in tests) if tests else ''}")
+    for r in runs:
+        print(f"  {os.path.basename(r)}")
+    if runs and not tests:
+        print("  (no test scores yet -- they run after all four regimes finish)")
+
+
+def preflight_cohort(path: str) -> None:
+    """Fail in a second, here, rather than minutes into a queued GPU job.
+
+    Catches the expensive mistakes: no cache at that path, a cache missing one
+    of its 24 Parquet files, or one built on the eICU dev subset.
     """
     manifest = load_manifest(path)          # raises with a pointed message
-    meta = manifest.get("meta", {})
     hospitals = manifest["hospitals"]
-    n_train = sum(h["n_train"] for h in hospitals)
-    n_val = sum(h["n_val"] for h in hospitals)
 
-    if meta.get("dev"):
+    if manifest.get("dev"):
         sys.exit(
-            f"{path} was frozen on the eICU DEV subset (meta.dev=true), but "
-            "every profile runs on the full dataset. train.py would refuse the "
-            "mismatch after loading eICU. Re-freeze without --dev."
+            f"{path} was built on the eICU DEV subset (dev=true), so its "
+            "hospital sizes and rare codes are not representative. Rebuild it "
+            "without --dev before running an experiment."
         )
+    missing = [f"{hid}.{fold}.parquet" for hid in hospitals for fold in FOLDS
+               if not os.path.exists(os.path.join(path, f"{hid}.{fold}.parquet"))]
+    if missing:
+        sys.exit(f"{path} is incomplete -- missing {len(missing)} fold files, "
+                 f"e.g. {missing[:3]}. Rebuild it with utils/cohort.py.")
 
-    print(f"cohort {meta.get('cohort_name', '?')} ({path})")
-    print(f"  {len(hospitals)} hospitals, {n_train} train / {n_val} val "
-          f"({n_val / max(1, n_train + n_val):.3f})")
-    print(f"  ids: {', '.join(h['hospital_id'] for h in hospitals)}")
+    per = manifest["per_hospital"]
+    totals = {f: sum(per[h][f"n_{f}"] for h in hospitals) for f in FOLDS}
+    n_all = sum(totals.values())
+    print(f"cohort {manifest.get('cohort_name', '?')} ({path})")
+    print(f"  {len(hospitals)} hospitals, {n_all} patients: " + " / ".join(
+        f"{totals[f]} {f} ({totals[f] / max(1, n_all):.3f})" for f in FOLDS))
+    print(f"  ids: {', '.join(hospitals)}")
 
 
-def with_cohort(passthrough: Sequence[str], cohort_file: str) -> List[str]:
-    """Add ``--cohort-file`` unless the caller already passed one."""
-    if any(a.startswith("--cohort-file") for a in passthrough):
+def with_cohort(passthrough: Sequence[str], cohort_cache: str) -> List[str]:
+    """Add ``--cohort-cache`` unless the caller already passed one."""
+    if any(a.startswith("--cohort-cache") for a in passthrough):
         return list(passthrough)
-    return list(passthrough) + ["--cohort-file", cohort_file]
+    return list(passthrough) + ["--cohort-cache", cohort_cache]
 
 
 # Knobs that change what a run *is*. train.py normally encodes these into the
@@ -195,7 +419,7 @@ def run_name_for(regime: str, profile: str, cohort_file: str,
     the resolved config, which the launcher cannot see, so the launcher supplies
     the name instead and both sides agree by construction.
     """
-    cohort = os.path.splitext(os.path.basename(cohort_file))[0]
+    cohort = os.path.basename(str(cohort_file).rstrip("/"))
     name = f"{regime}_{profile}_{cohort}"
     for i, arg in enumerate(passthrough):
         if arg in NAME_AFFECTING and i + 1 < len(passthrough):
@@ -312,7 +536,7 @@ def main(argv: List[str] = None) -> None:
     args.dry_run = getattr(args, "dry_run", False)
     args.time = getattr(args, "time", None)
     args.mem = getattr(args, "mem", None)
-    cohort_file = getattr(args, "cohort_file", DEFAULT_COHORT_FILE)
+    cohort_file = getattr(args, "cohort_cache", DEFAULT_CACHE_DIR)
 
     if os.path.abspath(os.getcwd()) != REPO_ROOT:
         sys.exit(f"run this from the repo root ({REPO_ROOT}) -- every path in "
@@ -325,6 +549,10 @@ def main(argv: List[str] = None) -> None:
     if stray:
         sys.exit(f"internal: {stray} leaked into the job command -- refusing to "
                  "submit. This is a launcher bug, not a usage error.")
+
+    if args.job == "status":
+        cmd_status()
+        return
 
     if not getattr(args, "skip_cohort_check", False):
         preflight_cohort(cohort_file)

@@ -104,13 +104,11 @@ from pyhealth.datasets import create_sample_dataset, get_dataloader
 from pyhealth.models import RNN
 from pyhealth.processors import MultiLabelProcessor, NestedSequenceProcessor
 from pyhealth.trainer import Trainer
-from utils.cohort_io import DEFAULT_COHORT_FILE
-
-from utils.cohort_io import (
-    EICU_ROOT,
+from utils.cohort import (
+    DEFAULT_CACHE_DIR,
     load_manifest,
-    load_real_trajectories,
     load_synthetic,
+    read_trajectories,
 )
 SEED = 0
 
@@ -128,18 +126,18 @@ SUPPORT_BANDS: Tuple[Tuple[str, int, float], ...] = (
 def _build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__ or "",
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--cohort-file",
-                   default=DEFAULT_COHORT_FILE,
-                   help="frozen manifest with per-hospital train/val patient ids")
+    p.add_argument("--cohort-cache", default=DEFAULT_CACHE_DIR,
+                   help="cohort cache directory built by utils/cohort.py")
     p.add_argument("--run", action="append", default=[], metavar="NAME=SAVE_DIR",
                    help="a regime to score; SAVE_DIR is the run's _outputs/"
                         "<run_name>_save/ folder holding synthetic.json. "
                         "Repeatable.")
-    p.add_argument("--eicu-root", default=EICU_ROOT)
-    p.add_argument("--dev", action="store_true")
+    p.add_argument("--fold", default="val", choices=["val", "test"],
+                   help="real fold the classifiers are scored on (default: val "
+                        "-- keep test held out until the final numbers)")
     p.add_argument("--min-positives", type=int, default=5,
                    help="a rare code needs this many positives in the pooled "
-                        "validation set to be scored (average_precision is "
+                        "scoring fold to be scored (average_precision is "
                         "undefined at 0 and meaningless at 1)")
     p.add_argument("--mask-folds", type=int, default=4,
                    help="partition scored codes into this many folds and strip "
@@ -515,45 +513,38 @@ def main(argv=None) -> None:
     args = _build_arg_parser().parse_args(argv)
     ks = [int(k) for k in args.recall_at.split(",") if k.strip()]
 
-    manifest = load_manifest(args.cohort_file)
-    meta = manifest["meta"]
-    hospitals = [h["hospital_id"] for h in manifest["hospitals"]]
-    strict = set(meta.get("global_rare_codes", []))
-    support: Dict[str, int] = meta.get("pooled_rare_val_support", {})
-    if not support:
-        raise ValueError(
-            "manifest has no 'pooled_rare_val_support'; re-run "
-            "prepare_dataset.py freeze so support bands can be frozen with the "
-            "split rather than re-derived here."
-        )
+    manifest = load_manifest(args.cohort_cache)
+    hospitals = list(manifest["hospitals"])
+    strict = set(manifest.get("global_rare_codes", []))
+    support: Dict[str, int] = manifest["pooled_rare_support"][args.fold]
 
     scored = sorted(c for c, n in support.items() if n >= args.min_positives)
     if not scored:
         raise ValueError(
-            "no rare code has enough validation positives to score; lower "
-            "--min-positives or widen --rare-prevalence-max in the freeze step"
+            f"no rare code has enough {args.fold} positives to score; lower "
+            "--min-positives or widen --rare-prevalence-max when building the "
+            "cache"
         )
     dropped = len(support) - len(scored)
     print(f"pooled rare codes: {len(support)}   scored (>= "
-          f"{args.min_positives} val positives): {len(scored)}   "
+          f"{args.min_positives} {args.fold} positives): {len(scored)}   "
           f"dropped: {dropped}")
     print(f"  of the scored, globally rare (cohort prevalence <= "
-          f"{meta.get('global_rare_prevalence_max')}): "
+          f"{manifest.get('global_rare_prevalence_max')}): "
           f"{len([c for c in scored if c in strict])}")
 
-    train_by_hospital = {h["hospital_id"]: list(h["train_patient_ids"])
-                         for h in manifest["hospitals"]}
-    val_ids = sorted({p for h in manifest["hospitals"]
-                      for p in h["val_patient_ids"]})
-    all_train = sorted({p for ids in train_by_hospital.values() for p in ids})
+    # Straight off the cache: {hospital: {patient: [[code, ...], ...]}}.
+    train_traj = read_trajectories(args.cohort_cache, "train", hospitals)
+    eval_traj = read_trajectories(args.cohort_cache, args.fold, hospitals)
+    real = {p: v for per in (train_traj, eval_traj)
+            for pats in per.values() for p, v in pats.items()}
+    train_by_hospital = {hid: sorted(pats) for hid, pats in train_traj.items()}
+    val_ids = sorted(p for pats in eval_traj.values() for p in pats)
+    all_train = sorted(p for ids in train_by_hospital.values() for p in ids)
 
     budget = args.train_budget or min(len(v) for v in train_by_hospital.values())
     print(f"per-classifier training budget: {budget} records "
           f"({'explicit' if args.train_budget else 'smallest real train split'})")
-
-    real = load_real_trajectories(
-        args.eicu_root, set(all_train) | set(val_ids), dev=args.dev
-    )
 
     # --- assemble every arm's raw trajectories (masking happens per fold) ---
     arms: Dict[str, Dict[str, List[List[str]]]] = {}
@@ -680,9 +671,9 @@ def main(argv=None) -> None:
 
     # --- assemble results ---------------------------------------------------
     results = {
-        "cohort_file": args.cohort_file,
-        "cohort_name": meta.get("cohort_name"),
-        "manifest_sha256": meta.get("manifest_sha256"),
+        "cohort_cache": args.cohort_cache,
+        "cohort_name": manifest.get("cohort_name"),
+        "fold": args.fold,
         "hospitals": hospitals,
         "min_positives": args.min_positives,
         "n_pooled_rare_codes": len(support),

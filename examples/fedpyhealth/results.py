@@ -25,7 +25,7 @@ RUNS_GLOB = "_outputs/results/runs/*.json"
 TESTS_DIR = "_outputs/results/tests"
 
 KNOB_COLS = ["regime", "weighting", "lr", "local_epochs", "n_rounds", "ft_epochs",
-             "num_synth", "cohort_file"]
+             "num_synth", "cohort_cache"]
 
 
 def load_rows(paths):
@@ -272,15 +272,17 @@ def main(argv=None):
               "/ test2 to fill the experiment tables)")
         return
 
-    # Hospital order comes from the frozen manifest, so the per-hospital table
-    # is sorted by real cohort size rather than by whatever the tests emitted.
+    # Hospital order comes from the cohort cache, so the per-hospital table is
+    # sorted by real cohort size rather than by whatever the tests emitted.
     hospital_order = []
-    cohort_file = (t1 or {}).get("cohort_file") or (t2 or {}).get("cohort_file")
-    if cohort_file and os.path.exists(cohort_file):
-        with open(cohort_file) as f:
+    cohort_cache = (t1 or {}).get("cohort_cache") or (t2 or {}).get("cohort_cache")
+    manifest_path = os.path.join(cohort_cache or "", "manifest.json")
+    if cohort_cache and os.path.exists(manifest_path):
+        with open(manifest_path) as f:
             manifest = json.load(f)
         hospital_order = sorted(
-            ((str(h["hospital_id"]), h["n_total"]) for h in manifest["hospitals"]),
+            ((str(hid), h["n_total"])
+             for hid, h in manifest["per_hospital"].items()),
             key=lambda kv: kv[1], reverse=True,
         )
 
@@ -289,7 +291,7 @@ def main(argv=None):
     if args.summary:
         summary = {
             "kind": "summary",
-            "cohort_file": cohort_file,
+            "cohort_cache": cohort_cache,
             "runs": [r["run_name"] for r in rows],
             "headline": {
                 "test1": test1_by_regime(t1),

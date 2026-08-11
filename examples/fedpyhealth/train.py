@@ -4,19 +4,15 @@ eICU is multi-hospital -- every patient carries a ``hospitalid`` -- which makes 
 the natural vehicle for a *federated* generative-EHR setup. This single script
 runs the whole pipeline end-to-end:
 
-1. Load eICU and apply the EHRGenerationEICU task (per-unit-stay ICD-9 sequences,
-   each sample tagged with its ``hospital_id``). One fitted SampleDataset gives a
-   shared code vocabulary across hospitals.
-2. Partition the samples by hospital into the top-K hospitals = FedAvg clients,
-   holding out a pooled real test set.
-3. Train ONE HALO generator with FedAvg across the hospital clients (train each
+1. Read the cohort cache built by ``utils/cohort.py`` -- 8 hospitals x 3 folds of
+   Parquet, plus the pinned code vocabulary. This never touches eICU, so every
+   regime provably trains and scores on identical data.
+2. Train ONE HALO generator with FedAvg across the hospital clients (train each
    client locally, then sample-count-weighted average the weights each round).
-4. Generate synthetic patients from the aggregated model.
-5. Evaluate the synthetic data globally against the real pooled train/test
-   cohorts with the generative metrics suite.
-6. Evaluate the same global model per hospital (client), against each hospital's
-   own real data, to show how evenly one federated model serves heterogeneous
-   hospitals.
+3. Generate synthetic patients from the aggregated model.
+4. Evaluate the synthetic data globally against the pooled real cohort with the
+   generative metrics suite, and per hospital against that hospital's own data,
+   to show how evenly one federated model serves heterogeneous sites.
 
 Set ``--regime {fedavg,fedavg_ft,centralized,local}`` to switch between FedAvg and
 three comparison regimes: ``centralized`` pools every hospital's data into one
@@ -26,7 +22,7 @@ per hospital with no aggregation (the "no collaboration" lower bound), and
 between the two). All regimes share the same partition, vocabulary, per-owner
 compute budget, and evaluation, so their metrics are directly comparable.
 
-The federated helpers (``partition_by_hospital``, ``average_state_dicts``,
+The federated helpers (``average_state_dicts``,
 ``run_fedavg``) and the baseline helpers (``train_centralized``, ``train_local``,
 ``finetune_local``) are inlined below so this example is self-contained. Defaults
 are sized for a quick tiny run on one GPU.
@@ -43,9 +39,14 @@ import numpy as np
 import pandas as pd
 import torch
 
-from pyhealth.datasets import eICUDataset
 from pyhealth.metrics.generative import evaluate_synthetic_ehr
-from utils.cohort_io import DEFAULT_COHORT_FILE
+from utils.cohort import (
+    DEFAULT_CACHE_DIR,
+    FOLDS,
+    load_clients,
+    load_fold,
+    load_manifest,
+)
 from test1_prevalence import (
     EVAL_SCHEMA,
     evaluate_rare_prevalence,
@@ -53,20 +54,15 @@ from test1_prevalence import (
     synthetic_to_records,
 )
 from pyhealth.models import HALO
-from pyhealth.tasks import EHRGenerationEICU
 
 # --- configuration ----------------------------------------------------------
-# Run-invariant settings (not scale knobs):
-EICU_ROOT = "/work/hdd/bgyw/janezdu/data/eicu/eicu-crd/2.0"
-MIN_VISITS = 1            # eICU patients are often single-stay; keep them
+# The cohort, the split and the vocabulary all come from the cache; nothing in
+# this file knows where eICU lives. SEED covers weight init only.
 SEED = 0
 
-# Profiles select the *scale* of a run, NOT the data. Both load the full eICU
-# and both use the frozen cohort, so a "tiny" run exercises the same code path
-# and the same 8 clients as the real thing -- it just does less of it (~5-10 min
-# of training after the dataset load). That matters: the old dev=True smoke run
-# could never use a frozen manifest at all, because _assert_manifest_matches
-# rejects a dev/full mismatch, so it exercised a path the real run never takes.
+# Profiles select the *scale* of a run, NOT the data. Both read the same cohort
+# cache, so a "tiny" run exercises the same code path and the same 8 clients as
+# the real thing -- it just does less of it (~5-10 min).
 #
 # What a tiny run does NOT give you is numbers. At num_synth=64 prevalence
 # resolves only to 1/64, so Test 1's R^2 is quantization noise. Tiny answers
@@ -78,10 +74,6 @@ SEED = 0
 # its `--<knob>` flag (see _build_arg_parser).
 PROFILES: Dict[str, dict] = {
     "tiny": dict(
-        dev=False,                 # full eICU -- required to match a frozen cohort
-        max_hospitals=50,          # ignored when a --cohort-file names the clients
-        min_hospital_samples=50,
-        test_frac=0.2,             # per-hospital held-out fraction (-> pooled test)
         n_rounds=1,                # FedAvg communication rounds
         local_epochs=1,            # local training epochs per client per round
         num_synth=64,              # too few to measure prevalence -- see note above
@@ -94,10 +86,6 @@ PROFILES: Dict[str, dict] = {
         eval_n_bootstraps=3, eval_n_runs=2,
     ),
     "full": dict(
-        dev=False,                 # full eICU
-        max_hospitals=50,          # eICU has ~200 hospitals; raise for real federation
-        min_hospital_samples=50,   # higher bar avoids tiny noisy clients on full data
-        test_frac=0.2,
         n_rounds=50,               # FedAvg needs many rounds to converge
         local_epochs=2,
         # Sized from the frozen cohort, not guessed: a synthetic set resolves
@@ -126,12 +114,9 @@ PROFILES: Dict[str, dict] = {
     ),
 }
 
-# Helper-function default args reference the tiny profile so the partition /
-# FedAvg helpers stay importable standalone with sane defaults.
+# Helper-function default args reference the tiny profile so the FedAvg helpers
+# stay importable standalone with sane defaults.
 _TINY = PROFILES["tiny"]
-MAX_HOSPITALS = _TINY["max_hospitals"]
-MIN_HOSPITAL_SAMPLES = _TINY["min_hospital_samples"]
-TEST_FRAC = _TINY["test_frac"]
 N_ROUNDS = _TINY["n_rounds"]
 METRICS = _TINY["metrics"]
 
@@ -165,27 +150,20 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--ft-epochs", type=int,
                    help="fedavg_ft only: local fine-tuning epochs per hospital "
                         "after FedAvg (default: same as --local-epochs)")
-    p.add_argument("--eicu-root", default=None, help="path to eICU CRD root")
+    p.add_argument("--cohort-cache", default=DEFAULT_CACHE_DIR,
+                   help="cohort cache directory built by utils/cohort.py. It "
+                        "defines the hospitals, the 70/10/20 split and the "
+                        "pinned vocabulary; nothing here reads eICU")
     # per-knob overrides (default None -> keep the profile's value)
-    p.add_argument("--max-hospitals", type=int)
-    p.add_argument("--min-hospital-samples", type=int)
     p.add_argument("--n-rounds", type=int)
     p.add_argument("--local-epochs", type=int)
     p.add_argument("--num-synth", type=int)
     p.add_argument("--metrics", choices=["privacy", "utility", "all"])
-    dev = p.add_mutually_exclusive_group()
-    dev.add_argument("--dev", dest="dev", action="store_true", default=None,
-                     help="force dev mode (small dataset)")
-    dev.add_argument("--no-dev", dest="dev", action="store_false",
-                     help="force full dataset")
     p.add_argument("--resume", action="store_true", default=None,
                    help="resume FedAvg from the on-disk checkpoint if present")
     p.add_argument("--ckpt-every", type=int, default=None,
                    help="checkpoint frequency in rounds (1=every round); the "
                         "final round is always checkpointed (default: 1)")
-    p.add_argument("--cohort-file", default=DEFAULT_COHORT_FILE,
-                   help="JSON manifest from select_cohort.py: use exactly its "
-                        "hospitals as clients instead of the top-K by size")
     p.add_argument("--tb-logdir",
                    help="TensorBoard log dir (default: <save_dir>/tb). "
                         "Logs per-hospital train-loss curves.")
@@ -204,17 +182,14 @@ def make_run_name(cfg: dict) -> str:
     """Readable, filesystem-safe run id derived from the run's key knobs.
 
     e.g. ``fedavg_E2_R39_strat8_utility`` or ``centralized_E2_R39_...``.
-    Encodes the regime, local_epochs (E), n_rounds (R), the cohort manifest stem
-    (or ``topk`` when none), and the metric group -- enough to tell co-located
+    Encodes the regime, local_epochs (E), n_rounds (R), the cohort manifest stem,
+    and the metric group -- enough to tell co-located
     runs apart and to drive ``results.py`` labelling. Two runs that differ
     in any of these get distinct artifact dirs (save/checkpoint/TensorBoard), so
     they never clobber -- including a fedavg run and its centralized/local
     baselines on the same cohort.
     """
-    if cfg.get("cohort_file"):
-        cohort = os.path.splitext(os.path.basename(cfg["cohort_file"]))[0]
-    else:
-        cohort = f"top{cfg['max_hospitals']}"
+    cohort = os.path.basename(str(cfg["cohort_cache"]).rstrip("/"))
     name = (f"{cfg['regime']}_E{cfg['local_epochs']}_R{cfg['n_rounds']}"
             f"_{cohort}_{cfg['metrics']}")
     # fedavg_ft varies by ft_epochs at a fixed budget -- encode it so an ft sweep's
@@ -279,14 +254,12 @@ def build_config(argv: List[str] = None) -> dict:
     # None, so "not None" reliably means "the user passed it on the command line".
     cli = {
         "regime": args.regime, "weighting": args.weighting,
-        "eicu_root": args.eicu_root, "resume": args.resume,
-        "ckpt_every": args.ckpt_every, "cohort_file": args.cohort_file,
+        "resume": args.resume, "cohort_cache": args.cohort_cache,
+        "ckpt_every": args.ckpt_every,
         "tb_logdir": args.tb_logdir, "no_tb": args.no_tb,
         "log_every_epochs": args.log_every_epochs,
-        "max_hospitals": args.max_hospitals,
-        "min_hospital_samples": args.min_hospital_samples,
         "n_rounds": args.n_rounds, "local_epochs": args.local_epochs,
-        "num_synth": args.num_synth, "metrics": args.metrics, "dev": args.dev,
+        "num_synth": args.num_synth, "metrics": args.metrics,
         "ft_epochs": args.ft_epochs, "run_name": args.run_name,
     }
     for k, v in cli.items():
@@ -296,10 +269,9 @@ def build_config(argv: List[str] = None) -> dict:
     # Fall-back defaults for knobs not set by profile / YAML / CLI.
     cfg.setdefault("regime", "fedavg")
     cfg.setdefault("weighting", "sample")
-    cfg.setdefault("eicu_root", EICU_ROOT)
     cfg.setdefault("resume", False)
+    cfg.setdefault("cohort_cache", DEFAULT_CACHE_DIR)
     cfg.setdefault("ckpt_every", 1)
-    cfg.setdefault("cohort_file", None)
     cfg.setdefault("tb_logdir", None)
     cfg.setdefault("no_tb", False)
     cfg.setdefault("log_every_epochs", 1)
@@ -309,6 +281,11 @@ def build_config(argv: List[str] = None) -> dict:
     if cfg["weighting"] not in ("sample", "uniform"):
         raise ValueError(
             f"weighting must be 'sample' or 'uniform', got {cfg['weighting']!r}")
+    if not cfg.get("cohort_cache"):
+        raise ValueError(
+            "--cohort-cache is required: every regime must train on the same "
+            "cohort and the same split, or the comparison between them means "
+            "nothing. Build one with `python utils/cohort.py`.")
 
     # run_name LAST so it reflects the fully resolved regime/E/R/metrics/cohort.
     if not cfg.get("run_name"):
@@ -316,216 +293,16 @@ def build_config(argv: List[str] = None) -> dict:
     return cfg
 
 
-# ----------------------------------------------------------------------------
-# Partition a fitted SampleDataset into per-hospital federated clients.
-#
-# The key trick: ``SampleDataset.subset(indices)`` returns a view that SHARES the
-# parent's fitted processors (hence the same code vocabulary / output dims). So
-# fitting ONE global dataset and carving it into per-hospital subsets makes every
-# client model automatically weight-compatible -- exactly what FedAvg requires.
-# ----------------------------------------------------------------------------
 def _manifest_sha256(manifest: dict) -> str:
-    """Stable identity of a frozen manifest, used in the resume fingerprint."""
+    """Stable identity of the cohort cache, used in the resume fingerprint.
+
+    Client sizes alone would not do: two different splits of the same cohort
+    have identical sizes, so resuming across them would silently train on one
+    partition and score on another.
+    """
     return hashlib.sha256(
         json.dumps(manifest, sort_keys=True).encode()
     ).hexdigest()
-
-
-def _assert_manifest_matches(manifest: dict, cfg: dict, dataset) -> None:
-    """Fail loudly when a frozen manifest was built against different data.
-
-    A stale manifest is the worst failure mode available here: the ids still
-    resolve, the job still exits 0, and every metric silently refers to a
-    different cohort than the one on record.
-
-    Raises:
-        ValueError: On any provenance mismatch.
-    """
-    meta = manifest.get("meta", {})
-    problems = []
-    if meta.get("eicu_root") != cfg["eicu_root"]:
-        problems.append(
-            f"eicu_root: manifest={meta.get('eicu_root')!r} "
-            f"run={cfg['eicu_root']!r}"
-        )
-    if bool(meta.get("dev")) != bool(cfg["dev"]):
-        problems.append(f"dev: manifest={meta.get('dev')} run={cfg['dev']}")
-    expected_n = meta.get("dataset_total_samples")
-    if expected_n is not None and int(expected_n) != len(dataset):
-        problems.append(
-            f"dataset_total_samples: manifest={expected_n} run={len(dataset)}"
-        )
-    if problems:
-        raise ValueError(
-            "Frozen manifest does not match this run:\n  - "
-            + "\n  - ".join(problems)
-            + "\nRe-run prepare_dataset.py freeze, or point --cohort-file at the "
-              "manifest that matches this dataset."
-        )
-
-
-def _resolve_frozen_split(
-    hid: str,
-    manifest_split: Dict[str, List[str]],
-    pid_to_index: Dict[str, int],
-    hospital_indices: List[int],
-) -> Tuple[List[int], List[int]]:
-    """Turn a manifest's train/val patient ids into dataset indices.
-
-    Every assertion here is a guard against silently scoring the wrong patients:
-    a missing id, a patient that drifted to another hospital, or an overlap
-    between the folds would each produce plausible-looking but wrong metrics.
-
-    Args:
-        hid: Hospital id, used only in error messages.
-        manifest_split: ``{"train": [pid, ...], "val": [pid, ...]}``.
-        pid_to_index: Patient id -> dataset index, over the whole dataset.
-        hospital_indices: Every index belonging to this hospital.
-
-    Returns:
-        ``(train_idx, val_idx)`` as dataset indices.
-
-    Raises:
-        ValueError: If ids are missing, overlap, or belong elsewhere.
-    """
-    train_ids = list(manifest_split["train"])
-    val_ids = list(manifest_split["val"])
-
-    overlap = set(train_ids) & set(val_ids)
-    if overlap:
-        raise ValueError(
-            f"hospital {hid}: {len(overlap)} patients in both folds, e.g. "
-            f"{sorted(overlap)[:5]}"
-        )
-
-    missing = [p for p in train_ids + val_ids if p not in pid_to_index]
-    if missing:
-        raise ValueError(
-            f"hospital {hid}: {len(missing)} manifest patient ids are absent "
-            f"from the dataset, e.g. {missing[:10]}. The manifest is stale for "
-            "this eICU build -- re-run prepare_dataset.py freeze."
-        )
-
-    train_idx = [pid_to_index[p] for p in train_ids]
-    val_idx = [pid_to_index[p] for p in val_ids]
-
-    stray = set(train_idx + val_idx) - set(hospital_indices)
-    if stray:
-        raise ValueError(
-            f"hospital {hid}: {len(stray)} manifest patients now belong to a "
-            "different hospital; the manifest does not match this dataset."
-        )
-    return train_idx, val_idx
-
-
-def partition_by_hospital(
-    dataset,
-    field: str = "hospital_id",
-    max_clients: int = MAX_HOSPITALS,
-    min_samples: int = MIN_HOSPITAL_SAMPLES,
-    test_frac: float = TEST_FRAC,
-    seed: int = SEED,
-    cohort: List[str] = None,
-    split_map: Dict[str, Dict[str, List[str]]] = None,
-) -> Tuple[Dict[str, object], Dict[str, object], object, object, Dict[str, dict]]:
-    """Build federated clients + a pooled held-out test set from one dataset.
-
-    If ``cohort`` is given (an ordered list of hospital ids, e.g. from a frozen
-    manifest produced by ``select_cohort.py``), exactly those hospitals are used
-    as clients **in that order** -- the size-based top-K selection is skipped.
-    When ``split_map`` is None, each hospital is split by a seeded random
-    shuffle and consuming the cohort in manifest order is required, because the
-    split seed is ``seed + position``. When ``split_map`` is given (a frozen
-    schema-version-2 manifest), no RNG is used at all: each hospital's split is
-    fully determined by its own patient-id lists, ``seed``/``test_frac`` are
-    ignored, and manifest order affects only logging. When ``cohort`` is None,
-    the largest ``max_clients`` eligible hospitals are chosen (the original
-    behaviour).
-
-    Args:
-        split_map: Optional ``{hospital_id: {"train": [pid, ...],
-            "val": [pid, ...]}}`` from a frozen manifest. Overrides the seeded
-            random split.
-
-    Returns:
-        clients: ``{hospital_id: train_subset}`` -- the FedAvg participants.
-        client_tests: ``{hospital_id: test_subset}`` -- each hospital's held-out
-            slice, for per-client evaluation of the global model.
-        pooled_train: subset over the union of all client train indices.
-        pooled_test: subset over the union of all client test indices (the
-            shared real test set every regime is evaluated against).
-        info: ``{hospital_id: {"n_total","n_train","n_test"}}`` for logging.
-    """
-    # map each distinct hospital id to its sample indices (one streaming pass).
-    # The same pass builds patient_id -> index, which a frozen split resolves
-    # against; ids survive a dataset rebuild where positional indices do not.
-    field_index: Dict[str, List[int]] = {}
-    pid_to_index: Dict[str, int] = {}
-    for i in range(len(dataset)):
-        sample = dataset[i]
-        key = str(sample.get(field, "NA"))
-        field_index.setdefault(key, []).append(i)
-        pid = str(sample.get("patient_id", i))
-        if pid in pid_to_index:
-            raise ValueError(
-                f"duplicate patient_id {pid!r} at samples {pid_to_index[pid]} "
-                f"and {i}; the frozen-split path assumes one sample per patient"
-            )
-        pid_to_index[pid] = i
-
-    if cohort is not None:
-        # Use exactly the frozen cohort, in its given order.
-        missing = [h for h in cohort if h not in field_index]
-        if missing:
-            raise ValueError(
-                f"Cohort hospitals not present in dataset '{field}': {missing}"
-            )
-        chosen = [(h, field_index[h]) for h in cohort]
-    else:
-        # keep the largest hospitals with at least `min_samples` patients
-        eligible = [(k, v) for k, v in field_index.items() if len(v) >= min_samples]
-        eligible.sort(key=lambda kv: len(kv[1]), reverse=True)
-        chosen = eligible[:max_clients]
-        if not chosen:
-            largest = sorted((len(v) for v in field_index.values()), reverse=True)[:5]
-            raise ValueError(
-                f"No '{field}' group has >= {min_samples} samples "
-                f"(largest groups: {largest})."
-            )
-
-    clients: Dict[str, object] = {}
-    client_tests: Dict[str, object] = {}
-    info: Dict[str, dict] = {}
-    all_train: List[int] = []
-    all_test: List[int] = []
-    if split_map is not None:
-        print("Frozen split in use: --seed and --test-frac are ignored; each "
-              "hospital's train/val membership comes from the manifest.")
-    for client_seed, (hid, idxs) in enumerate(chosen):
-        if split_map is not None:
-            train_idx, test_idx = _resolve_frozen_split(
-                hid, split_map[hid], pid_to_index, field_index[hid]
-            )
-            idx = train_idx + test_idx
-        else:
-            rng = np.random.default_rng(seed + client_seed)
-            idx = list(idxs)
-            rng.shuffle(idx)
-            n_test = max(1, int(round(len(idx) * test_frac)))
-            test_idx, train_idx = idx[:n_test], idx[n_test:]
-        clients[hid] = dataset.subset(train_idx)
-        client_tests[hid] = dataset.subset(test_idx)
-        all_train.extend(train_idx)
-        all_test.extend(test_idx)
-        info[hid] = {
-            "n_total": len(idx),
-            "n_train": len(train_idx),
-            "n_test": len(test_idx),
-        }
-
-    pooled_train = dataset.subset(all_train)
-    pooled_test = dataset.subset(all_test)
-    return clients, client_tests, pooled_train, pooled_test, info
 
 
 # ----------------------------------------------------------------------------
@@ -649,8 +426,8 @@ def run_fedavg(
             raise ValueError(
                 f"Checkpoint {ckpt_path} was written for a different partition "
                 f"(client sizes and/or frozen split differ); refusing to "
-                f"resume. Delete it or match the config (profile / "
-                f"max_hospitals / min_hospital_samples / cohort_file)."
+                f"resume. Delete it, or point --cohort-file at the manifest it "
+                f"was trained against."
             )
         global_state = ckpt["global_state"]
         start_round = int(ckpt["completed_rounds"])
@@ -956,8 +733,7 @@ def save_results_json(path: str, cfg: dict, info: Dict[str, dict],
     # Promoted to the top level so a sweep leaderboard can read them cheaply.
     knob_keys = ("profile", "regime", "weighting", "local_epochs", "n_rounds",
                  "ft_epochs", "lr", "embed_dim", "n_heads", "n_layers", "n_ctx",
-                 "batch_size", "num_synth", "metrics", "max_hospitals",
-                 "min_hospital_samples", "test_frac", "cohort_file")
+                 "batch_size", "num_synth", "metrics", "cohort_cache")
     payload = {
         # Kind is stamped so a file pointed at directly still identifies itself;
         # the runs/ vs tests/ split is what keeps the two shapes from mixing.
@@ -975,24 +751,21 @@ def save_results_json(path: str, cfg: dict, info: Dict[str, dict],
         "macro_avg_metrics": _macro_average(per_client),
     }
     if manifest is not None:
-        meta = manifest.get("meta", {})
         payload["split"] = {
-            "manifest_path": cfg.get("cohort_file"),
+            "cohort_cache": cfg.get("cohort_cache"),
             "sha256": split_sha,
-            "cohort_name": meta.get("cohort_name"),
-            "sample_unit": meta.get("sample_unit", "patient"),
-            "rare_prevalence_max": meta.get("rare_prevalence_max"),
-            "rare_min_patients": meta.get("rare_min_patients"),
-            "n_pooled_rare_codes": meta.get("n_pooled_rare_codes"),
+            "cohort_name": manifest.get("cohort_name"),
+            "fracs": manifest.get("fracs"),
+            "guaranteed_folds": manifest.get("guaranteed_folds"),
+            "rare_prevalence_max": manifest.get("rare_prevalence_max"),
+            "rare_min_patients": manifest.get("rare_min_patients"),
+            "n_pooled_rare_codes": manifest.get("n_pooled_rare_codes"),
         }
         payload["rare_code_stats"] = {
-            h["hospital_id"]: {
-                "n_rare_codes": h.get("n_rare_codes"),
-                "min_rare_prevalence": h.get("min_rare_prevalence"),
-                "n_train": h.get("n_train"),
-                "n_val": h.get("n_val"),
-            }
-            for h in manifest.get("hospitals", [])
+            hid: {k: h.get(k) for k in
+                  ("n_rare_codes", "min_rare_prevalence", "size_band",
+                   *(f"n_{f}" for f in FOLDS))}
+            for hid, h in manifest.get("per_hospital", {}).items()
         }
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w") as f:
@@ -1008,88 +781,67 @@ if __name__ == "__main__":
     print(f"RUN_NAME: {cfg['run_name']}")
     print(f"config: {cfg}")
 
-    # STEP 1: Load the eICU base dataset (dev=True caps to ~1000 patients;
-    # dev=False loads the full DB -- the "full" profile).
-    base_dataset = eICUDataset(root=cfg["eicu_root"], tables=["diagnosis"], dev=cfg["dev"])
+    # STEPS 1-3: read the cohort straight off the cache -- the hospitals, the
+    # 70/10/20 split and the pinned vocabulary all come from there, so nothing
+    # below touches eICU and every regime provably sees identical data. The
+    # cache's own build step verified that its Parquet files reproduce the eICU
+    # tensors byte-for-byte, which is what makes this shortcut safe.
+    #
+    # Train on train, score on VAL while the pipeline is still under
+    # development. The test fold is never read here: tuning against val
+    # therefore cannot leak into the final numbers.
+    EVAL_FOLD = "val"
+    cache = cfg["cohort_cache"]
+    manifest = load_manifest(cache)
+    split_sha = _manifest_sha256(manifest)
+    cohort = list(manifest["hospitals"])
+    print(f"Cohort '{manifest.get('cohort_name')}' from {cache}: {cohort}")
+    print(f"  split {manifest['fracs']}, guaranteed "
+          f"{manifest['guaranteed_folds']}, rare <= "
+          f"{manifest['rare_prevalence_max']} per hospital")
 
-    # STEP 2: Apply the eICU EHR generation task. One fitted SampleDataset gives
-    # a single shared code vocabulary, so all per-hospital client models are
-    # weight-compatible. Each sample carries a passthrough ``hospital_id``.
-    sample_dataset = base_dataset.set_task(EHRGenerationEICU(min_visits=MIN_VISITS))
+    clients_by_fold = load_clients(cache, folds=("train", EVAL_FOLD))
+    clients = {hid: f["train"] for hid, f in clients_by_fold.items()}
+    client_tests = {hid: f[EVAL_FOLD] for hid, f in clients_by_fold.items()}
+    pooled_train = load_fold(cache, "train")
+    pooled_test = load_fold(cache, EVAL_FOLD)
+    sample_dataset = pooled_train          # any fold: they share one processor
     vocab_size = sample_dataset.input_processors["visits"].vocab_size()
-    print(f"Total samples: {len(sample_dataset)}  code vocab: {vocab_size}")
+
+    info = {hid: {"n_total": manifest["per_hospital"][hid]["n_total"],
+                  "n_train": len(clients[hid]),
+                  f"n_{EVAL_FOLD}": len(client_tests[hid])}
+            for hid in cohort}
+    for hid in cohort:
+        want = {f: manifest["per_hospital"][hid][f"n_{f}"]
+                for f in ("train", EVAL_FOLD)}
+        got = {"train": len(clients[hid]), EVAL_FOLD: len(client_tests[hid])}
+        if got != want:
+            raise ValueError(
+                f"hospital {hid}: loaded {got} but the cache manifest says "
+                f"{want}; the Parquet files and the manifest disagree.")
 
     sample = sample_dataset[0]
-    print("\nSample structure:")
-    print(f"  Patient ID: {sample['patient_id']}")
-    print(f"  Hospital ID: {sample.get('hospital_id')}")
-    print(f"  Visits tensor shape: {tuple(sample['visits'].shape)}")
+    print(f"\nCode vocab: {vocab_size}   sample visits tensor: "
+          f"{tuple(sample['visits'].shape)}")
 
-    # STEP 3: Partition by hospital -> FedAvg clients + a pooled real test set.
-    # If a frozen cohort manifest is given, use exactly its hospitals (in order)
-    # so every baseline trains on the identical client set; otherwise fall back
-    # to the top-K largest hospitals.
-    cohort = None
-    split_map = None
-    manifest = None
-    split_sha = None
-    if cfg.get("cohort_file"):
-        with open(cfg["cohort_file"]) as f:
-            manifest = json.load(f)
-        cohort = [h["hospital_id"] for h in manifest["hospitals"]]
-        # A freeze manifest carries per-hospital patient ids; a selection file
-        # names hospitals only and leaves the split to this run.
-        frozen = "train_patient_ids" in manifest["hospitals"][0]
-        if frozen:
-            _assert_manifest_matches(manifest, cfg, sample_dataset)
-            split_sha = _manifest_sha256(manifest)
-            split_map = {
-                h["hospital_id"]: {"train": h["train_patient_ids"],
-                                   "val": h["val_patient_ids"]}
-                for h in manifest["hospitals"]
-            }
-            print(f"Using frozen cohort + rare-code-stratified split from "
-                  f"{cfg['cohort_file']}: {cohort}")
-        else:
-            print(f"WARNING: {cfg['cohort_file']} is a legacy (v1) manifest "
-                  "with no frozen patient ids -- falling back to position-"
-                  "seeded random splits. Rare-code metrics will not be "
-                  "stratified.")
-            print(f"Using frozen cohort from {cfg['cohort_file']}: {cohort}")
-    clients, client_tests, pooled_train, pooled_test, info = partition_by_hospital(
-        sample_dataset,
-        field="hospital_id",
-        max_clients=cfg["max_hospitals"],
-        min_samples=cfg["min_hospital_samples"],
-        test_frac=cfg["test_frac"],
-        seed=SEED,
-        cohort=cohort,
-        split_map=split_map,
-    )
-    if split_map is not None:
-        for h in manifest["hospitals"]:
-            hid = h["hospital_id"]
-            got = (info[hid]["n_train"], info[hid]["n_test"])
-            want = (h["n_train"], h["n_val"])
-            if got != want:
-                raise ValueError(
-                    f"hospital {hid}: resolved split {got} != manifest {want}"
-                )
-        # A synthetic set of size S can only express prevalences in multiples of
-        # 1/S. If the rarest scored code sits below that grid, PrevVal_Rare_* is
-        # measuring quantization, not fidelity -- and it looks like a real number.
-        smallest = min(h["min_rare_prevalence"] for h in manifest["hospitals"])
-        floor = int(np.ceil(10 / smallest)) if smallest > 0 else 0
-        if cfg["num_synth"] < floor:
-            print(
-                f"\n!! WARNING: num_synth={cfg['num_synth']} resolves prevalence "
-                f"only to {1.0 / max(1, cfg['num_synth']):.6f}, but the rarest "
-                f"scored code has prevalence {smallest:.6f}. PrevVal_Rare_* will "
-                f"be dominated by quantization noise.\n!! Use --num-synth >= "
-                f"{floor} for this cohort.\n"
-            )
+    # A synthetic set of size S can only express prevalences in multiples of
+    # 1/S. If the rarest scored code sits below that grid, PrevVal_Rare_* is
+    # measuring quantization, not fidelity -- and it looks like a real number.
+    smallest = min(h["min_rare_prevalence"]
+                   for h in manifest["per_hospital"].values())
+    floor = int(np.ceil(10 / smallest)) if smallest > 0 else 0
+    if cfg["num_synth"] < floor:
+        print(
+            f"\n!! WARNING: num_synth={cfg['num_synth']} resolves prevalence "
+            f"only to {1.0 / max(1, cfg['num_synth']):.6f}, but the rarest "
+            f"scored code has prevalence {smallest:.6f}. PrevVal_Rare_* will "
+            f"be dominated by quantization noise.\n!! Use --num-synth >= "
+            f"{floor} for this cohort.\n"
+        )
     print(f"\nHospitals (FedAvg clients): {info}")
-    print(f"pooled_train={len(pooled_train)}  pooled_test={len(pooled_test)}")
+    print(f"pooled_train={len(pooled_train)}  "
+          f"pooled_{EVAL_FOLD}={len(pooled_test)} (scoring fold)")
 
     # STEP 4: Build + train the generator under the chosen regime. Every regime
     # gets the SAME apples-to-apples compute budget -- `total_epochs` =
@@ -1256,20 +1008,16 @@ if __name__ == "__main__":
     # heterogeneous, non-IID hospitals); for local it is that hospital's OWN
     # model's output (so this is each local baseline scored on its home turf).
     print("\n=== Per-client metrics (each hospital's synthetic vs its own data) ===")
-    rare_by_hospital = {}
-    if manifest is not None and "rare_codes" in manifest["hospitals"][0]:
-        rare_by_hospital = {
-            h["hospital_id"]: sorted(h["rare_codes"])
-            for h in manifest["hospitals"]
-        }
+    rare_by_hospital = {hid: list(h["rare_codes"])
+                        for hid, h in manifest["per_hospital"].items()}
     per_client: Dict[str, Dict[str, tuple]] = {}
     for hid in clients:
         res = evaluate_run(
             clients[hid], client_tests[hid], client_synth[hid], index_to_code,
             metrics=cfg["metrics"], label=f"hosp {hid}", eval_cfg=eval_cfg,
         ) or {}
-        # TEST 1: prevalence against this hospital's OWN validation split, over
-        # its rare codes and over the full vocabulary.
+        # TEST 1: prevalence against this hospital's OWN scoring fold, over its
+        # rare codes and over the full vocabulary.
         res.update(evaluate_rare_prevalence(
             client_tests[hid], client_synth[hid], index_to_code,
             rare_codes=rare_by_hospital.get(hid),
