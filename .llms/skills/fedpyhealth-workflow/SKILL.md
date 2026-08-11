@@ -34,12 +34,15 @@ Scoring runs on the **val** fold during development. Test is not read by any scr
 ## Default workflow
 
 ```bash
-# 1. build the cohort cache once (~1-2h, GPU-partition job; see below)
-python examples/fedpyhealth/utils/cohort.py \
-  --bands 0-199,200-499,500-1999,2000- --per-band 2 --seed 0 \
-  --out /work/nvme/bgyw/janezdu/cache/fedcohort/strat8
+# 0. paths come from the environment, never hardcoded (data-safety rule)
+export EICU_ROOT=/path/to/eicu-crd/2.0
+export FEDCOHORT_CACHE=/fast/scratch/fedcohort   # optional; defaults under _outputs/
 
-# it prints `--hospitals 420,199,...` -- pin that to rebuild the same draw
+# 1. build both cohort caches once (~1-2h, one job)
+sbatch examples/fedpyhealth/scripts/run_cohort.sh
+
+# builds strat8 (rare-code stratified) and strat8_random (plain shuffle) over
+# the same 8 hospitals, then prints the coverage report for each
 
 # 2. train against the cache
 python examples/fedpyhealth/main.py train --profile tiny --dry-run   # inspect first
@@ -50,7 +53,7 @@ python examples/fedpyhealth/main.py test1 --run fedavg=_outputs/<run_name>_save
 python examples/fedpyhealth/main.py test2 --run fedavg=_outputs/<run_name>_save
 ```
 
-Use the default cache path unless the user explicitly asks for another. Keep the same cache directory across training and evaluation so sample assignment stays identical across regimes.
+Use `$FEDCOHORT_CACHE/strat8` unless the user explicitly asks for another. Keep the same cache directory across training and evaluation so sample assignment stays identical across regimes.
 
 ## Writing a SLURM job script for this cluster
 
@@ -89,7 +92,7 @@ Rules that are easy to get wrong:
 - **Submit from the repo root.** Every path in these scripts is repo-relative, and `main.py` refuses to run from anywhere else.
 - **`"$@"` at the end** so per-knob overrides pass through: `sbatch scripts/run_train_full.sh --n-rounds 100`.
 - **Size the wall clock to the work.** Building the cache ~2h. A full FedAvg run trains clients sequentially on one GPU, so budget 48h. Test 2 trains a classifier per hospital per mask fold — 6h is generous.
-- **Put the cache on `/work/nvme`**, not in the repo and not on `/work/hdd`. It is read at the start of every job.
+- **Point `FEDCOHORT_CACHE` at fast local storage** (on Delta, `/work/nvme`), not the repo and not `/work/hdd`. It is read at the start of every job.
 - **Everything else writes under `_outputs/`**, which is gitignored: SLURM logs, checkpoints, `synthetic.json`, results.
 
 For resumable training, checkpoint every round and resubmit with `--resume`; chain windows with `sbatch --dependency=afterany:<jobid>`. Chain scoring after training with `--dependency=afterok:<id1>:<id2>...`, which `main.py all` does automatically.

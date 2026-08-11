@@ -4,6 +4,7 @@ Everything downstream -- all four training regimes, Test 1, Test 2 -- reads its
 patients from a cache directory built by this script. Run it once; nothing else
 ever touches eICU.
 
+    export EICU_ROOT=/path/to/eicu-crd/2.0
     python cohort.py --hospitals 420,199,345,79,259,253,438,201 --out $CACHE
     python cohort.py --bands 0-199,200-499,500-1999,2000- --per-band 2 --out $CACHE
 
@@ -47,8 +48,22 @@ from typing import Dict, Iterable, List, Sequence, Set, Tuple
 
 import numpy as np
 
+# --- where the data lives --------------------------------------------------
+# From the environment, never hardcoded: eICU is credentialed data whose
+# location differs per machine, and a personal path baked into a committed file
+# is both unusable for anyone else and a data-safety problem (see
+# .llms/rules/03-data-safety.md). Set these once, e.g. in ~/.bashrc:
+#
+#     export EICU_ROOT=/path/to/eicu-crd/2.0
+#     export FEDCOHORT_CACHE=/fast/scratch/fedcohort     # optional
+#
+# The cache root falls back to a repo-relative gitignored directory, so a fresh
+# clone works with no configuration at all -- just slower storage.
+EICU_ROOT = os.environ.get("EICU_ROOT", "")
+CACHE_ROOT = os.environ.get("FEDCOHORT_CACHE",
+                            os.path.join("_outputs", "cache", "fedcohort"))
+
 # --- what the cohort IS (not scale knobs -- changing these changes the data) --
-EICU_ROOT = "/work/hdd/bgyw/janezdu/data/eicu/eicu-crd/2.0"
 MIN_VISITS = 1                 # eICU patients are often single-stay; keep them
 TASK_NAME = "ehr_generation_eicu"
 
@@ -69,7 +84,7 @@ GLOBAL_RARE_PREVALENCE_MAX = 0.01
 
 DEFAULT_BANDS = "0-199,200-499,500-1999,2000-"
 DEFAULT_PER_BAND = 2
-DEFAULT_CACHE_DIR = "/work/nvme/bgyw/janezdu/cache/fedcohort/strat8"
+DEFAULT_CACHE_DIR = os.path.join(CACHE_ROOT, "strat8")
 
 MANIFEST_FILE = "manifest.json"
 VOCAB_FILE = "vocab.json"
@@ -529,6 +544,38 @@ def stratified_split(patient_codes: Dict[str, Set[str]],
     return splits, moved
 
 
+def random_split(patient_codes: Dict[str, Set[str]],
+                 fracs: Dict[str, float] = None,
+                 seed: int = 0) -> Tuple[Dict[str, List[str]], int]:
+    """Plain seeded 70/10/20, blind to rare codes. The control condition.
+
+    This is what most work does, and it is the honest baseline for asking
+    whether the stratified split is worth its complexity. It makes no promise
+    that a rare code appears in any particular fold -- a code carried by two
+    patients has a ~0.64 chance of missing test entirely -- so codes drop out
+    of the scoring pool by luck rather than by design.
+
+    Returns:
+        ``({fold: sorted patient ids}, 0)``. The trailing 0 mirrors
+        :func:`stratified_split`'s repair count so callers need no special case.
+    """
+    fracs = dict(fracs or FRACS)
+    folds = list(fracs)
+    pids = sorted(patient_codes)              # sorted in => reproducible out
+    rng = np.random.default_rng(seed)
+    order = [pids[int(i)] for i in rng.permutation(len(pids))]
+
+    n_total = len(pids)
+    slots = {f: int(round(fracs[f] * n_total)) for f in folds}
+    slots[folds[0]] += n_total - sum(slots.values())      # absorb rounding
+
+    out, start = {}, 0
+    for f in folds:
+        out[f] = sorted(order[start:start + slots[f]])
+        start += slots[f]
+    return out, 0
+
+
 def verify_split(patient_codes: Dict[str, Set[str]], rare: Iterable[str],
                  splits: Dict[str, List[str]], fracs: Dict[str, float] = None,
                  guaranteed: Sequence[str] = GUARANTEED_FOLDS,
@@ -649,6 +696,18 @@ def _describe(values: Sequence[float]) -> dict:
 # --------------------------------------------------------------------------- #
 def build(args) -> None:
     """Walk eICU once, select, split, and write the cache."""
+    if not args.eicu_root:
+        raise SystemExit(
+            "eICU location unknown: set EICU_ROOT in your environment, or pass "
+            "--eicu-root /path/to/eicu-crd/2.0.\n"
+            "  export EICU_ROOT=/path/to/eicu-crd/2.0"
+        )
+    if not os.path.isdir(args.eicu_root):
+        raise SystemExit(
+            f"--eicu-root {args.eicu_root!r} is not a directory. It should be "
+            "the folder holding patient.csv and diagnosis.csv."
+        )
+
     from pyhealth.datasets import eICUDataset
     from pyhealth.tasks import EHRGenerationEICU
 
@@ -738,11 +797,17 @@ def build(args) -> None:
                     for pid, v in patients.items()}
         rare = compute_rare_codes(codes_of, args.rare_prevalence_max,
                                   args.rare_min_patients)
-        split, n_repaired = stratified_split(
-            codes_of, rare, fracs=fracs, guaranteed=GUARANTEED_FOLDS,
-            seed=args.seed)
-        verify_split(codes_of, rare, split, fracs=fracs,
-                     guaranteed=GUARANTEED_FOLDS)
+        # The random split makes no coverage promise, so verifying one would
+        # always fail. Overlap, coverage and fraction checks still apply.
+        guaranteed = GUARANTEED_FOLDS if args.split == "stratified" else ()
+        if args.split == "stratified":
+            split, n_repaired = stratified_split(
+                codes_of, rare, fracs=fracs, guaranteed=guaranteed,
+                seed=args.seed)
+        else:
+            split, n_repaired = random_split(codes_of, fracs=fracs,
+                                             seed=args.seed)
+        verify_split(codes_of, rare, split, fracs=fracs, guaranteed=guaranteed)
         splits[hid] = split
         pooled_rare.update(rare)
 
@@ -793,7 +858,9 @@ def build(args) -> None:
         "per_band": args.per_band,
         "seed": args.seed,
         "fracs": fracs,
-        "guaranteed_folds": list(GUARANTEED_FOLDS),
+        "split_method": args.split,
+        "guaranteed_folds": (list(GUARANTEED_FOLDS)
+                             if args.split == "stratified" else []),
         "rare_prevalence_max": args.rare_prevalence_max,
         "rare_min_patients": args.rare_min_patients,
         "rare_scope": "per-hospital: rare at any one hospital counts as rare",
@@ -862,6 +929,111 @@ def build(args) -> None:
     print(f"\nUse it with:  --cohort-cache {args.out}")
 
 
+# --------------------------------------------------------------------------- #
+# Report                                                                       #
+# --------------------------------------------------------------------------- #
+def _table(header: Sequence[str], rows: Sequence[Sequence]) -> None:
+    """Right-aligned numeric table with a left-aligned first column."""
+    cells = [[str(c) for c in r] for r in rows]
+    w = [max(len(str(header[i])), *(len(r[i]) for r in cells)) if cells
+         else len(str(header[i])) for i in range(len(header))]
+    print("  " + "  ".join(str(h).ljust(w[0]) if i == 0 else str(h).rjust(w[i])
+                           for i, h in enumerate(header)))
+    print("  " + "-" * (sum(w) + 2 * (len(w) - 1)))
+    for r in cells:
+        print("  " + "  ".join(c.ljust(w[0]) if i == 0 else c.rjust(w[i])
+                               for i, c in enumerate(r)))
+
+
+def report(cache_dir: str) -> None:
+    """Print fold coverage: which codes and patients land where.
+
+    The code table is the one that matters for interpreting a rare-code result.
+    A code present in train but absent from the scoring fold cannot be measured
+    however good the generator is, and a code in the scoring fold but not train
+    is being asked for blind -- both look like ordinary rows in a metric table.
+    """
+    manifest = load_manifest(cache_dir)
+    hosp = list(manifest["hospitals"])
+    rare = set(manifest["pooled_rare_codes"])
+    traj = {f: read_trajectories(cache_dir, f, hosp) for f in FOLDS}
+
+    codes_in = {f: {c for pats in traj[f].values() for visits in pats.values()
+                    for visit in visits for c in visit} for f in FOLDS}
+    every = set().union(*codes_in.values())
+
+    # Total carriers per code across the whole cohort. Needed because "not in
+    # the rare set" is NOT the same as "common": a code carried by one patient
+    # fails the >=RARE_MIN_PATIENTS floor and so never qualifies as rare, even
+    # though it is the rarest thing in the data. Without this the non-rare
+    # column reads as "common codes" and badly misleads.
+    carriers: Dict[str, int] = {}
+    for pats in traj.values():
+        for patients in pats.values():
+            for visits in patients.values():
+                for code in {c for visit in visits for c in visit}:
+                    carriers[code] = carriers.get(code, 0) + 1
+
+    # Which folds each code appears in -> one row per non-empty combination.
+    where: Dict[Tuple[str, ...], List[str]] = {}
+    for code in every:
+        key = tuple(f for f in FOLDS if code in codes_in[f])
+        where.setdefault(key, []).append(code)
+
+    print(f"\ncohort '{manifest.get('cohort_name')}'   split="
+          f"{manifest.get('split_method', 'stratified')}"
+          f"   guaranteed={manifest.get('guaranteed_folds') or 'none'}")
+    print(f"  {len(hosp)} hospitals, {len(every)} distinct codes of "
+          f"{manifest['vocab_size']} in vocab, {len(rare)} pooled rare")
+
+    print("\nCODES by fold presence")
+    order = sorted(where, key=lambda k: (-len(k), [FOLDS.index(f) for f in k]))
+    rows = []
+    for key in order:
+        found = where[key]
+        n_rare = sum(1 for c in found if c in rare)
+        rows.append(["+".join(key), n_rare, len(found) - n_rare, len(found)])
+    rows.append(["TOTAL", len(rare & every), len(every - rare), len(every)])
+    thin = {c for c in every - rare if carriers[c] < RARE_MIN_PATIENTS}
+    # A code in the vocabulary that no cohort patient carries is not a gap in
+    # the split -- it belongs to one of the other ~200 hospitals.
+    absent = manifest["vocab_size"] - len(every)
+    _table(["present in", "rare", "not rare", "all"], rows)
+    print(f"  ({absent} more codes exist in the pinned vocabulary but no cohort "
+          f"patient carries them)")
+    print(f"  NOTE: 'not rare' is not the same as common -- {len(thin)} of those "
+          f"{len(every - rare)} codes have < {RARE_MIN_PATIENTS} carriers in the "
+          f"whole cohort\n        and were excluded from the rare set by the "
+          f"minimum-carriers floor, not by prevalence.")
+
+    scoreable = {f: sum(1 for c in rare if c in codes_in[f]) for f in FOLDS}
+    print("\n  rare codes reachable per fold: " + "   ".join(
+        f"{f} {scoreable[f]}/{len(rare)} ({scoreable[f] / len(rare):.1%})"
+        for f in FOLDS))
+
+    print("\nPATIENTS by fold")
+    rows = []
+    for hid in hosp:
+        n = {f: len(traj[f][hid]) for f in FOLDS}
+        total = sum(n.values())
+        rows.append([hid, *(n[f] for f in FOLDS), total,
+                     " ".join(f"{n[f] / total:.2f}" for f in FOLDS)])
+    tot = {f: sum(len(traj[f][h]) for h in hosp) for f in FOLDS}
+    n_all = sum(tot.values())
+    rows.append(["TOTAL", *(tot[f] for f in FOLDS), n_all,
+                 " ".join(f"{tot[f] / n_all:.2f}" for f in FOLDS)])
+    _table(["hospital", *FOLDS, "all", "fractions"], rows)
+
+    # Patients are assigned to exactly one fold, so every cross term must be
+    # empty. If one is not, folds overlap and every metric is contaminated.
+    ids = {f: {p for pats in traj[f].values() for p in pats} for f in FOLDS}
+    overlaps = {f"{a}+{b}": len(ids[a] & ids[b])
+                for i, a in enumerate(FOLDS) for b in FOLDS[i + 1:]}
+    bad = {k: v for k, v in overlaps.items() if v}
+    print(f"  patient overlap between folds: "
+          + ("NONE (as it must be)" if not bad else f"!! {bad} !!"))
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Build the frozen cohort cache read by every downstream job.",
@@ -869,8 +1041,12 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=__doc__)
     p.add_argument("--out", default=DEFAULT_CACHE_DIR,
                    help="cache directory (put it on fast local storage)")
+    p.add_argument("--report", action="store_true",
+                   help="do not build: read the cache at --out and print fold "
+                        "coverage for codes and patients, then exit")
     p.add_argument("--name", default="strat8", help="cohort name, for the record")
-    p.add_argument("--eicu-root", default=EICU_ROOT)
+    p.add_argument("--eicu-root", default=EICU_ROOT,
+                   help="eICU CRD root (default: $EICU_ROOT)")
     p.add_argument("--hospitals",
                    help="comma-separated hospital ids to use verbatim; omit to "
                         "draw --per-band from each of --bands")
@@ -889,8 +1065,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--global-rare-prevalence-max", type=float,
                    default=GLOBAL_RARE_PREVALENCE_MAX,
                    help="stricter subset: rare across the whole pooled cohort")
+    p.add_argument("--split", choices=["stratified", "random"],
+                   default="stratified",
+                   help="stratified: iterative multilabel stratification over "
+                        "rare codes, with train/test coverage guaranteed. "
+                        "random: a plain seeded shuffle, blind to rare codes "
+                        "-- the control condition")
     p.add_argument("--seed", type=int, default=0,
-                   help="seeds the band draw and the split's tie-breaks")
+                   help="seeds the band draw and the split")
     p.add_argument("--dev", action="store_true",
                    help="load a small eICU subset -- for wiring checks ONLY")
     p.add_argument("--keep-cross-hospital", dest="drop_cross",
@@ -903,4 +1085,5 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 if __name__ == "__main__":
-    build(build_parser().parse_args())
+    _args = build_parser().parse_args()
+    report(_args.out) if _args.report else build(_args)

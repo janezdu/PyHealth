@@ -13,7 +13,7 @@ half-finished comparison.
 
     # the whole table: four regimes, then Test 2 chained after they all finish
     python examples/fedpyhealth/main.py all --profile full \
-        --cohort-cache /work/nvme/.../strat8
+        --cohort-cache $FEDCOHORT_CACHE/strat8
 
     # see the generated sbatch script without submitting anything
     python examples/fedpyhealth/main.py train --regime local --dry-run
