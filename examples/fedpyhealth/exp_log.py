@@ -11,7 +11,7 @@ A small, deterministic state engine so launching and checking runs stay in sync:
     still RUNNING/PENDING stay unprocessed and get re-checked next time.
 
 Everything here is login-node-safe: an ``sacct`` query, file IO, and a no-torch
-python aggregate (``sweeps/aggregate_results.py``). No training is run. Always
+python aggregate (``results.py``). No training is run. Always
 run from the PyHealth repo root.
 
 Subcommands:
@@ -38,8 +38,8 @@ import sys
 from datetime import datetime, timezone
 
 LOG = "_outputs/experiment_log.jsonl"
-RESULTS_DIR = "_outputs/results"
-AGG = "examples/fedpyhealth/sweeps/aggregate_results.py"
+RESULTS_DIR = "_outputs/results/runs"
+AGG = "examples/fedpyhealth/results.py"
 
 # SLURM final states. COMPLETED -> sweepable; the rest -> finished-but-no-metrics.
 TERMINAL_OK = {"COMPLETED"}

@@ -29,7 +29,7 @@ compute budget, and evaluation, so their metrics are directly comparable.
 The federated helpers (``partition_by_hospital``, ``average_state_dicts``,
 ``run_fedavg``) and the baseline helpers (``train_centralized``, ``train_local``,
 ``finetune_local``) are inlined below so this example is self-contained. Defaults
-are sized for a quick dev/smoke run on one GPU.
+are sized for a quick tiny run on one GPU.
 """
 
 import argparse
@@ -45,7 +45,13 @@ import torch
 
 from pyhealth.datasets import eICUDataset
 from pyhealth.metrics.generative import evaluate_synthetic_ehr
-from pyhealth.metrics.generative.utility import compute_prevalence_metrics
+from utils.cohort_io import DEFAULT_COHORT_FILE
+from test1_prevalence import (
+    EVAL_SCHEMA,
+    evaluate_rare_prevalence,
+    real_subset_to_records,
+    synthetic_to_records,
+)
 from pyhealth.models import HALO
 from pyhealth.tasks import EHRGenerationEICU
 
@@ -55,22 +61,32 @@ EICU_ROOT = "/work/hdd/bgyw/janezdu/data/eicu/eicu-crd/2.0"
 MIN_VISITS = 1            # eICU patients are often single-stay; keep them
 SEED = 0
 
-# Profiles select the *scale* of a run. "smoke" is the committed quick dev run
-# (tiny everything, ~minutes on one GPU). "full" is a suggested production-scale
-# run -- tune to your compute budget; it is a starting point, not a validated
-# config. Pick one with `--profile {smoke,full}` (default: smoke), and override
-# any individual knob with its `--<knob>` flag (see _build_arg_parser).
+# Profiles select the *scale* of a run, NOT the data. Both load the full eICU
+# and both use the frozen cohort, so a "tiny" run exercises the same code path
+# and the same 8 clients as the real thing -- it just does less of it (~5-10 min
+# of training after the dataset load). That matters: the old dev=True smoke run
+# could never use a frozen manifest at all, because _assert_manifest_matches
+# rejects a dev/full mismatch, so it exercised a path the real run never takes.
+#
+# What a tiny run does NOT give you is numbers. At num_synth=64 prevalence
+# resolves only to 1/64, so Test 1's R^2 is quantization noise. Tiny answers
+# "does this run end to end", never "is this any good".
+#
+# "full" is a suggested production-scale run -- tune to your compute budget; it
+# is a starting point, not a validated config. Pick one with
+# `--profile {tiny,full}` (default: tiny), and override any individual knob with
+# its `--<knob>` flag (see _build_arg_parser).
 PROFILES: Dict[str, dict] = {
-    "smoke": dict(
-        dev=True,                  # eICUDataset dev mode caps to ~1000 patients
-        max_hospitals=3,           # number of FedAvg clients (top-K by size)
-        min_hospital_samples=10,   # skip hospitals with fewer patients than this
+    "tiny": dict(
+        dev=False,                 # full eICU -- required to match a frozen cohort
+        max_hospitals=50,          # ignored when a --cohort-file names the clients
+        min_hospital_samples=50,
         test_frac=0.2,             # per-hospital held-out fraction (-> pooled test)
-        n_rounds=2,                # FedAvg communication rounds
+        n_rounds=1,                # FedAvg communication rounds
         local_epochs=1,            # local training epochs per client per round
-        num_synth=64,              # synthetic patients to generate
+        num_synth=64,              # too few to measure prevalence -- see note above
         metrics="privacy",         # "privacy" | "utility" | "all" (utility needs label_fn)
-        # small HALO config for the dev subset
+        # small HALO config: enough to prove the wiring, not to learn anything
         embed_dim=64, n_heads=2, n_layers=2, n_ctx=20, batch_size=16, lr=1e-4,
         # downsized metric evaluator
         eval_sample_cap=30,
@@ -84,8 +100,23 @@ PROFILES: Dict[str, dict] = {
         test_frac=0.2,
         n_rounds=50,               # FedAvg needs many rounds to converge
         local_epochs=2,
-        num_synth=2000,            # generate enough to match the real distribution
-        metrics="privacy",         # set "all" only if you wire a label_fn (see STEP 6)
+        # Sized from the frozen cohort, not guessed: a synthetic set resolves
+        # prevalence only to 1/num_synth, and strat8's rarest frozen code sits at
+        # 0.00067 (2 of 3005 patients at hospital 420). 10 expected occurrences
+        # of that code needs 10/0.00067 ~= 15000. 5000 is the deliberate
+        # compromise: it clears 10 expected occurrences for 75% of the cohort's
+        # (hospital, code) rare pairs (the median rare code gets ~22), leaving
+        # the deepest quartile quantization-limited. Report Test 1's rare R^2
+        # banded by support, or raise this, before claiming the deep tail.
+        num_synth=5000,
+        # NOT "utility"/"all". That group is compute_mle, whose downstream task
+        # is hard-coded to next-visit prediction -- degenerate here, because this
+        # cohort's median patient has ONE unit stay (p50=1, p90=2), so most
+        # patients yield no train pair and the score would describe the ~30%
+        # multi-stay minority while looking like a cohort-wide number. The real
+        # ML-efficacy evidence is Test 2 (test2_rare_efficacy.py), which scores
+        # rare-code recovery with a per-hospital classifier instead.
+        metrics="privacy",
         # larger HALO config for full vocabulary / longer sequences
         embed_dim=256, n_heads=4, n_layers=4, n_ctx=50, batch_size=64, lr=1e-4,
         # heavier metric evaluator for tighter confidence intervals
@@ -95,21 +126,21 @@ PROFILES: Dict[str, dict] = {
     ),
 }
 
-# Helper-function default args reference the smoke profile so the partition /
+# Helper-function default args reference the tiny profile so the partition /
 # FedAvg helpers stay importable standalone with sane defaults.
-_SMOKE = PROFILES["smoke"]
-MAX_HOSPITALS = _SMOKE["max_hospitals"]
-MIN_HOSPITAL_SAMPLES = _SMOKE["min_hospital_samples"]
-TEST_FRAC = _SMOKE["test_frac"]
-N_ROUNDS = _SMOKE["n_rounds"]
-METRICS = _SMOKE["metrics"]
+_TINY = PROFILES["tiny"]
+MAX_HOSPITALS = _TINY["max_hospitals"]
+MIN_HOSPITAL_SAMPLES = _TINY["min_hospital_samples"]
+TEST_FRAC = _TINY["test_frac"]
+N_ROUNDS = _TINY["n_rounds"]
+METRICS = _TINY["metrics"]
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
     """CLI: pick a profile, then optionally override individual knobs."""
     p = argparse.ArgumentParser(description=__doc__ or "")
     p.add_argument("--profile", choices=sorted(PROFILES), default=None,
-                   help="run scale preset (default: smoke, or the --config YAML's "
+                   help="run scale preset (default: tiny, or the --config YAML's "
                         "'profile' if it sets one)")
     p.add_argument("--config",
                    help="YAML file of config overrides, applied ON TOP of "
@@ -152,7 +183,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--ckpt-every", type=int, default=None,
                    help="checkpoint frequency in rounds (1=every round); the "
                         "final round is always checkpointed (default: 1)")
-    p.add_argument("--cohort-file",
+    p.add_argument("--cohort-file", default=DEFAULT_COHORT_FILE,
                    help="JSON manifest from select_cohort.py: use exactly its "
                         "hospitals as clients instead of the top-K by size")
     p.add_argument("--tb-logdir",
@@ -164,7 +195,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                    help="log per-hospital loss every N local epochs (last epoch "
                         "of each round is always logged; default: 1)")
     p.add_argument("--run-name",
-                   help="readable run id for artifacts + compare_runs labelling "
+                   help="readable run id for artifacts + results.py labelling "
                         "(default: auto from regime/E/R/cohort/metrics)")
     return p
 
@@ -172,10 +203,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 def make_run_name(cfg: dict) -> str:
     """Readable, filesystem-safe run id derived from the run's key knobs.
 
-    e.g. ``fedavg_E2_R39_standard_8_utility`` or ``centralized_E2_R39_...``.
+    e.g. ``fedavg_E2_R39_strat8_utility`` or ``centralized_E2_R39_...``.
     Encodes the regime, local_epochs (E), n_rounds (R), the cohort manifest stem
     (or ``topk`` when none), and the metric group -- enough to tell co-located
-    runs apart and to drive ``compare_runs.py`` labelling. Two runs that differ
+    runs apart and to drive ``results.py`` labelling. Two runs that differ
     in any of these get distinct artifact dirs (save/checkpoint/TensorBoard), so
     they never clobber -- including a fedavg run and its centralized/local
     baselines on the same cohort.
@@ -230,11 +261,11 @@ def build_config(argv: List[str] = None) -> dict:
     args = _build_arg_parser().parse_args(argv)
 
     # Layer 1: profile defaults. The effective profile is the CLI --profile if
-    # given, else the YAML's 'profile', else smoke -- resolved BEFORE building the
+    # given, else the YAML's 'profile', else tiny -- resolved BEFORE building the
     # base dict so a YAML 'profile: full' actually pulls the full-profile defaults
     # (embed_dim, batch_size, eval_* ...), not just the keys the YAML restates.
     ycfg = _load_yaml(args.config) if args.config else {}
-    profile = args.profile or ycfg.get("profile") or "smoke"
+    profile = args.profile or ycfg.get("profile") or "tiny"
     if profile not in PROFILES:
         raise ValueError(
             f"unknown profile {profile!r}; choose from {sorted(PROFILES)}")
@@ -328,7 +359,7 @@ def _assert_manifest_matches(manifest: dict, cfg: dict, dataset) -> None:
         raise ValueError(
             "Frozen manifest does not match this run:\n  - "
             + "\n  - ".join(problems)
-            + "\nRe-run freeze_cohort_split.py, or point --cohort-file at the "
+            + "\nRe-run prepare_dataset.py freeze, or point --cohort-file at the "
               "manifest that matches this dataset."
         )
 
@@ -372,7 +403,7 @@ def _resolve_frozen_split(
         raise ValueError(
             f"hospital {hid}: {len(missing)} manifest patient ids are absent "
             f"from the dataset, e.g. {missing[:10]}. The manifest is stale for "
-            "this eICU build -- re-run freeze_cohort_split.py."
+            "this eICU build -- re-run prepare_dataset.py freeze."
         )
 
     train_idx = [pid_to_index[p] for p in train_ids]
@@ -802,30 +833,6 @@ def generate_local(
 # global model once on the pooled cohort AND once per hospital (client) against
 # that hospital's own real data.
 # ----------------------------------------------------------------------------
-EVAL_SCHEMA = {"visit_codes": str, "labels": int, "time": int, "id": str}
-
-
-def real_subset_to_records(subset, index_to_code: Dict[int, str]):
-    """Decode a real SampleDataset subset (index tensors) into long-format rows."""
-    for sample in subset:
-        pid = str(sample["patient_id"])
-        for t, visit in enumerate(sample["visits"].tolist()):
-            for idx in visit:
-                code = index_to_code.get(int(idx))
-                if code in (None, "<pad>", "<unk>"):
-                    continue
-                yield {"id": pid, "time": t, "visit_codes": code, "labels": 0}
-
-
-def synthetic_to_records(patients: List[Dict]):
-    """Convert generator output [{patient_id, visits:[[code]]}] into long-format rows."""
-    for p in patients:
-        pid = str(p["patient_id"])
-        for t, visit in enumerate(p["visits"]):
-            for code in visit:
-                yield {"id": pid, "time": t, "visit_codes": str(code), "labels": 0}
-
-
 def evaluate_run(train_subset, test_subset, synthetic, index_to_code,
                  metrics: str = METRICS, label: str = "global",
                  eval_cfg: dict = None):
@@ -836,7 +843,7 @@ def evaluate_run(train_subset, test_subset, synthetic, index_to_code,
     the single aggregated global model) is scored against each cohort.
 
     ``eval_cfg`` carries the metric-evaluator scale knobs (``sample_cap``,
-    ``lstm``, ``n_bootstraps``, ``n_runs``); when None, smoke-sized defaults are
+    ``lstm``, ``n_bootstraps``, ``n_runs``); when None, tiny-sized defaults are
     used so the helper stays usable standalone.
     """
     cfg = eval_cfg or {}
@@ -868,70 +875,6 @@ def evaluate_run(train_subset, test_subset, synthetic, index_to_code,
     except Exception as e:  # small/degenerate cohorts can trip the metric suite
         print(f"  [{label}] eval failed: {type(e).__name__}: {e}")
         return None
-
-
-def _prefixed(results: Dict[str, tuple], prefix: str) -> Dict[str, tuple]:
-    """Namespace a metric dict so several variants coexist in one result set."""
-    return {f"{prefix}{k}": v for k, v in results.items()}
-
-
-def evaluate_rare_prevalence(
-    val_subset,
-    synthetic,
-    index_to_code: Dict[int, str],
-    rare_codes: List[str] = None,
-    n_bootstraps: int = 5,
-    label: str = "global",
-) -> Dict[str, tuple]:
-    """Test 1: prevalence fidelity against a *held-out* real split.
-
-    Two variants are reported. ``PrevVal_All_*`` scores the full code
-    vocabulary; ``PrevVal_Rare_*`` scores only this hospital's rare codes, which
-    is where a federated generator is supposed to earn its keep. Both use the
-    validation split as the real reference, so they measure out-of-sample
-    fidelity rather than how well the generator memorised its training set --
-    unlike the legacy ``Prevalence_*`` numbers from ``evaluate_synthetic_ehr``,
-    which stay in the results for continuity.
-
-    ``code_subset`` is used rather than pre-filtering rows, because filtering
-    would also shrink the per-patient denominator and bias the comparison (see
-    :func:`pyhealth.metrics.generative.utility.compute_prevalence_metrics`).
-
-    Args:
-        val_subset: The hospital's held-out real samples.
-        synthetic: Generated patients, ``[{"patient_id", "visits"}, ...]``.
-        index_to_code: Inverted code vocabulary for decoding real samples.
-        rare_codes: This hospital's rare codes. Falsy skips the rare variant.
-        n_bootstraps: Bootstrap resamples over codes.
-        label: Tag used in log lines.
-
-    Returns:
-        ``{metric_name: (mean, std)}``, empty if either frame came out empty.
-    """
-    val_df = pd.DataFrame(
-        real_subset_to_records(val_subset, index_to_code)
-    ).astype(EVAL_SCHEMA)
-    syn_df = pd.DataFrame(synthetic_to_records(synthetic)).astype(EVAL_SCHEMA)
-    if val_df.empty or syn_df.empty:
-        print(f"  [{label}] prevalence skipped: empty frame")
-        return {}
-
-    out: Dict[str, tuple] = {}
-    out.update(_prefixed(
-        compute_prevalence_metrics(val_df, syn_df, n_bootstraps=n_bootstraps),
-        "PrevVal_All_",
-    ))
-    if rare_codes:
-        out.update(_prefixed(
-            compute_prevalence_metrics(
-                val_df, syn_df, n_bootstraps=n_bootstraps,
-                code_subset=list(rare_codes),
-            ),
-            "PrevVal_Rare_",
-        ))
-    else:
-        print(f"  [{label}] no rare codes supplied; PrevVal_Rare_* skipped")
-    return out
 
 
 def print_metrics(results: Dict[str, tuple], indent: str = "  "):
@@ -981,7 +924,7 @@ def _metrics_to_json(results: Dict[str, tuple]) -> Dict[str, dict]:
 def _macro_average(per_client: Dict[str, Dict[str, tuple]]) -> Dict[str, dict]:
     """Macro-average each metric across hospitals (unweighted mean of the
     per-hospital means; ``between_hospital_std`` = spread across hospitals).
-    Mirrors how compare_runs.py collapses the per-hospital table to one number."""
+    Mirrors how results.py collapses the per-hospital table to one number."""
     names: List[str] = []
     for res in per_client.values():
         for name in res:
@@ -1016,6 +959,9 @@ def save_results_json(path: str, cfg: dict, info: Dict[str, dict],
                  "batch_size", "num_synth", "metrics", "max_hospitals",
                  "min_hospital_samples", "test_frac", "cohort_file")
     payload = {
+        # Kind is stamped so a file pointed at directly still identifies itself;
+        # the runs/ vs tests/ split is what keeps the two shapes from mixing.
+        "kind": "run",
         "run_name": cfg["run_name"],
         "regime": cfg["regime"],
         "weighting": cfg.get("weighting", "sample"),
@@ -1033,7 +979,6 @@ def save_results_json(path: str, cfg: dict, info: Dict[str, dict],
         payload["split"] = {
             "manifest_path": cfg.get("cohort_file"),
             "sha256": split_sha,
-            "schema_version": manifest.get("schema_version", 1),
             "cohort_name": meta.get("cohort_name"),
             "sample_unit": meta.get("sample_unit", "patient"),
             "rare_prevalence_max": meta.get("rare_prevalence_max"),
@@ -1092,8 +1037,10 @@ if __name__ == "__main__":
         with open(cfg["cohort_file"]) as f:
             manifest = json.load(f)
         cohort = [h["hospital_id"] for h in manifest["hospitals"]]
-        schema_version = int(manifest.get("schema_version", 1))
-        if schema_version >= 2:
+        # A freeze manifest carries per-hospital patient ids; a selection file
+        # names hospitals only and leaves the split to this run.
+        frozen = "train_patient_ids" in manifest["hospitals"][0]
+        if frozen:
             _assert_manifest_matches(manifest, cfg, sample_dataset)
             split_sha = _manifest_sha256(manifest)
             split_map = {
@@ -1310,7 +1257,7 @@ if __name__ == "__main__":
     # model's output (so this is each local baseline scored on its home turf).
     print("\n=== Per-client metrics (each hospital's synthetic vs its own data) ===")
     rare_by_hospital = {}
-    if manifest is not None and int(manifest.get("schema_version", 1)) >= 2:
+    if manifest is not None and "rare_codes" in manifest["hospitals"][0]:
         rare_by_hospital = {
             h["hospital_id"]: sorted(h["rare_codes"])
             for h in manifest["hospitals"]
@@ -1336,13 +1283,13 @@ if __name__ == "__main__":
     # STEP 8: persist the raw stats (config + partition + per-hospital metrics +
     # macro summary) so a sweep can be aggregated without re-parsing SLURM logs.
     results_path = save_results_json(
-        os.path.join("_outputs", "results", f"{cfg['run_name']}.json"),
+        os.path.join("_outputs", "results", "runs", f"{cfg['run_name']}.json"),
         cfg, info, num_params, global_results, per_client,
         split_sha=split_sha, manifest=manifest,
     )
     print(f"\nSaved results -> {results_path}")
 
-    # STEP 9: persist the synthetic data itself. Test 2 (rare_code_efficacy.py)
+    # STEP 9: persist the synthetic data itself. Test 2 (test2_rare_efficacy.py)
     # consumes it, and any later metric fix can then be re-scored in minutes on
     # CPU instead of repeating a 24h GPU run.
     synth_path = os.path.join(save_dir, "synthetic.json")

@@ -5,14 +5,14 @@ Reads a grid spec (a ``base:`` config + a ``grid:`` of lists), takes the
 Cartesian product of the grid axes, overlays each combination on ``base:``, and
 for every combination writes, under ``_outputs/sweeps/<sweep_name>/``:
 
-  * ``configs/NNN.yaml``   -- a ready-to-run config (``ehr_eicu.py --config ...``)
+  * ``configs/NNN.yaml``   -- a ready-to-run config (``train.py --config ...``)
   * ``jobs/NNN-<label>.sbatch`` -- a self-contained, individually launchable
     SLURM script for that one config (so each run is its own queue job you can
     squeue / scancel / resubmit on its own; they run in parallel)
   * ``submit_all.sh``      -- sbatch every job script in one go
   * ``runlist.txt``        -- one config path per line (for the array alternative)
 
-Run names are auto-derived by ``ehr_eicu.py`` from each config's knobs, so per-run
+Run names are auto-derived by ``train.py`` from each config's knobs, so per-run
 artifacts + ``_outputs/results/<run_name>.json`` never collide.
 
 Usage (from the repo root)::
@@ -31,7 +31,7 @@ import sys
 import yaml
 
 # SLURM resource block shared by every generated per-config job. Mirrors
-# run_ehr_eicu_full.sh (single A100). Runtime ~ n_rounds * local_epochs; 18h
+# run_train_full.sh (single A100). Runtime ~ n_rounds * local_epochs; 18h
 # covers the default grid's heaviest cell with margin.
 SBATCH_TEMPLATE = """#!/bin/bash
 #SBATCH --partition=gpuA100x4
@@ -53,7 +53,7 @@ SBATCH_TEMPLATE = """#!/bin/bash
 # Submit from the repo root:  sbatch {job_path}
 set -euo pipefail
 source .venv/bin/activate
-python examples/fedpyhealth/ehr_eicu.py --config {config}
+python examples/fedpyhealth/train.py --config {config}
 """
 
 
@@ -98,7 +98,7 @@ def main(argv=None):
         label = "-".join(str(v) for v in combo) if combo else "run"
         jobname = f"{sweep_name}-{i:03d}-{label}"
 
-        # CRITICAL: pin a unique run_name per combo. ehr_eicu's auto run_name only
+        # CRITICAL: pin a unique run_name per combo. train.py's auto run_name only
         # encodes regime/E/R/cohort/metrics/weighting -- NOT lr or other swept
         # knobs -- so without this, two combos that differ only in (e.g.) lr would
         # share a run_name and clobber each other's results.json + checkpoints.

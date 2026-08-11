@@ -1,7 +1,7 @@
 # fedavg_ft fine-tuning sweep, at a FIXED apples-to-apples budget.
 #
 # Total budget = n_rounds * local_epochs = 30 passes/hospital -- the SAME as the
-# local / centralized / fedavg runs at E1/R30. ehr_eicu.py now SPLITS that budget
+# local / centralized / fedavg runs at E1/R30. train.py now SPLITS that budget
 # for fedavg_ft: (30 - ft_epochs) passes of FedAvg, then ft_epochs of per-hospital
 # fine-tuning. So every run below does exactly 30 passes/hospital; only the
 # FedAvg-vs-personalize split changes. This traces the path:
@@ -20,7 +20,7 @@ sweep_name: fedavg_ft_sweep
 
 base:
   profile: full
-  cohort_file: examples/fedpyhealth/cohorts/standard_8.json
+  cohort_file: examples/fedpyhealth/cohorts/strat8.json
   metrics: utility
   regime: fedavg_ft
   weighting: sample

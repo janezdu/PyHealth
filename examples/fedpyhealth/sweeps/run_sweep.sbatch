@@ -32,7 +32,7 @@
 #          _outputs/sweeps/fedavg_opt_v1/runlist.txt
 #
 # 3) After it finishes, rank the runs:
-#      .venv/bin/python examples/fedpyhealth/sweeps/aggregate_results.py \
+#      .venv/bin/python examples/fedpyhealth/results.py \
 #          --sort Prevalence_R2 --desc
 #
 # Wall time: runtime ~ n_rounds * local_epochs. The 18h budget covers the default

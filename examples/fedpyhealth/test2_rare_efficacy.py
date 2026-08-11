@@ -86,10 +86,10 @@ Runs on one GPU. Loads eICU once and scores every regime, so submit it after the
 training jobs finish -- it consumes the ``synthetic.json`` each run persists.
 
 Example:
-    python examples/fedpyhealth/rare_code_efficacy.py \\
-        --cohort-file examples/fedpyhealth/cohorts/rare8_v2.json \\
-        --run centralized=_outputs/centralized_E2_R20_rare8_v2_utility_save \\
-        --run local=_outputs/local_E2_R20_rare8_v2_utility_save
+    python examples/fedpyhealth/test2_rare_efficacy.py \\
+        --cohort-file examples/fedpyhealth/cohorts/strat8.json \\
+        --run centralized=_outputs/centralized_E2_R20_strat8_utility_save \\
+        --run local=_outputs/local_E2_R20_strat8_utility_save
 """
 
 import argparse
@@ -104,9 +104,14 @@ from pyhealth.datasets import create_sample_dataset, get_dataloader
 from pyhealth.models import RNN
 from pyhealth.processors import MultiLabelProcessor, NestedSequenceProcessor
 from pyhealth.trainer import Trainer
+from utils.cohort_io import DEFAULT_COHORT_FILE
 
-EICU_ROOT = "/work/hdd/bgyw/janezdu/data/eicu/eicu-crd/2.0"
-MIN_VISITS = 1
+from utils.cohort_io import (
+    EICU_ROOT,
+    load_manifest,
+    load_real_trajectories,
+    load_synthetic,
+)
 SEED = 0
 
 # Validation-support bands for stratified reporting. A single macro mean over
@@ -124,8 +129,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__ or "",
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--cohort-file",
-                   default="examples/fedpyhealth/cohorts/rare8_v2.json",
-                   help="frozen manifest (schema_version >= 2)")
+                   default=DEFAULT_COHORT_FILE,
+                   help="frozen manifest with per-hospital train/val patient ids")
     p.add_argument("--run", action="append", default=[], metavar="NAME=SAVE_DIR",
                    help="a regime to score; SAVE_DIR is the run's _outputs/"
                         "<run_name>_save/ folder holding synthetic.json. "
@@ -136,11 +141,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                    help="a rare code needs this many positives in the pooled "
                         "validation set to be scored (average_precision is "
                         "undefined at 0 and meaningless at 1)")
-    p.add_argument("--mask-folds", type=int, default=1,
+    p.add_argument("--mask-folds", type=int, default=4,
                    help="partition scored codes into this many folds and strip "
-                        "only one fold per model. 1 strips everything at once "
-                        "(cheap, destroys rare-rare co-occurrence); 10 is the "
-                        "recommended setting for a headline run and costs 10x")
+                        "only one fold per model. K does not change coverage -- "
+                        "every scored code sits in exactly one fold and so is "
+                        "always tested -- it changes how much rare-to-rare "
+                        "co-occurrence survives in each fold: K keeps (K-1)/K "
+                        "of it, at K times the classifiers. 4 (75%, 168 "
+                        "classifiers for 4 regimes) is the default; 1 strips "
+                        "the whole tail at once and is smoke-only, since no arm "
+                        "can learn co-occurrence that is not there")
     p.add_argument("--train-budget", type=int, default=0,
                    help="records per classifier. 0 = the smallest hospital's "
                         "real train split, which is the largest budget every "
@@ -158,7 +168,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--recall-at", default="5,10,20",
                    help="comma-separated k values for recall@k")
-    p.add_argument("--out", default="_outputs/results/test2_rare_efficacy.json")
+    p.add_argument("--out",
+                   default="_outputs/results/tests/test2_rare_efficacy.json")
     return p
 
 
@@ -262,68 +273,12 @@ def build_records(
     return records, diagnostics
 
 
-def load_real_trajectories(
-    eicu_root: str, wanted: Set[str], dev: bool = False
-) -> Dict[str, List[List[str]]]:
-    """Decode the cohort's real patients back to code-string trajectories."""
-    from pyhealth.datasets import eICUDataset
-    from pyhealth.tasks import EHRGenerationEICU
-
-    print(f"Loading eICU from {eicu_root} (dev={dev})...", flush=True)
-    base = eICUDataset(root=eicu_root, tables=["diagnosis"], dev=dev)
-    samples = base.set_task(EHRGenerationEICU(min_visits=MIN_VISITS))
-    index_to_code = {
-        v: k for k, v in samples.input_processors["visits"].code_vocab.items()
-    }
-    out: Dict[str, List[List[str]]] = {}
-    for i in range(len(samples)):
-        sample = samples[i]
-        pid = str(sample["patient_id"])
-        if pid not in wanted:
-            continue
-        visits = []
-        for visit in sample["visits"].tolist():
-            codes = [index_to_code.get(int(c)) for c in visit]
-            codes = [c for c in codes if c not in (None, "<pad>", "<unk>")]
-            if codes:
-                visits.append(codes)
-        if visits:
-            out[pid] = visits
-    missing = wanted - set(out)
-    if missing:
-        raise ValueError(
-            f"{len(missing)} manifest patients absent from this eICU build, "
-            f"e.g. {sorted(missing)[:5]}. The manifest is stale -- re-run "
-            "freeze_cohort_split.py."
-        )
-    return out
-
-
-def load_synthetic(save_dir: str) -> Dict[str, List[dict]]:
-    """Read a run's persisted per-hospital synthetic patients."""
-    path = os.path.join(save_dir, "synthetic.json")
-    if not os.path.exists(path):
-        raise FileNotFoundError(
-            f"{path} not found. It is written at the end of ehr_eicu.py; a run "
-            "that timed out before STEP 9 has no synthetic data to score."
-        )
-    with open(path) as fh:
-        blob = json.load(fh)
-    if "per_hospital" not in blob:
-        raise ValueError(
-            f"{path} has no 'per_hospital' block -- it predates the per-hospital "
-            "classifier protocol. Re-run the regime, or score it with an older "
-            "revision of this script."
-        )
-    return blob["per_hospital"]
-
-
 def slice_per_hospital(
     per_hospital: Dict[str, List[dict]], hospitals: Sequence[str], budget: int,
 ) -> Tuple[Dict[str, Dict[str, List[List[str]]]], bool]:
     """Give every hospital ``budget`` synthetic patients, disjointly if shared.
 
-    Centralized and FedAvg train one global generator, and ``ehr_eicu.py`` files
+    Centralized and FedAvg train one global generator, and ``train.py`` files
     the same pooled output under every hospital key. Training eight identical
     classifiers on it would report eight identical numbers and a spread of zero.
     Those arms instead get disjoint consecutive slices, so the protocol still
@@ -560,13 +515,7 @@ def main(argv=None) -> None:
     args = _build_arg_parser().parse_args(argv)
     ks = [int(k) for k in args.recall_at.split(",") if k.strip()]
 
-    with open(args.cohort_file) as fh:
-        manifest = json.load(fh)
-    if int(manifest.get("schema_version", 1)) < 2:
-        raise ValueError(
-            f"{args.cohort_file} is a legacy manifest with no frozen splits or "
-            "pooled rare codes; Test 2 needs a schema_version >= 2 manifest."
-        )
+    manifest = load_manifest(args.cohort_file)
     meta = manifest["meta"]
     hospitals = [h["hospital_id"] for h in manifest["hospitals"]]
     strict = set(meta.get("global_rare_codes", []))
@@ -574,7 +523,7 @@ def main(argv=None) -> None:
     if not support:
         raise ValueError(
             "manifest has no 'pooled_rare_val_support'; re-run "
-            "freeze_cohort_split.py so support bands can be frozen with the "
+            "prepare_dataset.py freeze so support bands can be frozen with the "
             "split rather than re-derived here."
         )
 
@@ -829,7 +778,7 @@ def main(argv=None) -> None:
     if len(folds) == 1:
         print("NOTE: --mask-folds 1 strips every scored rare code at once, so "
               "no rare-rare co-occurrence is available to any arm. Expect "
-              "scores near the prior; use --mask-folds 10 for the headline run.")
+              "scores near the prior; use --mask-folds 4 for the headline run.")
 
 
 if __name__ == "__main__":

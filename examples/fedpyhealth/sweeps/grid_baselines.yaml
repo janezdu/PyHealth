@@ -19,7 +19,7 @@ sweep_name: fedavg_opt_v1_baselines
 
 base:
   profile: full
-  cohort_file: examples/fedpyhealth/cohorts/standard_8.json
+  cohort_file: examples/fedpyhealth/cohorts/strat8.json
   metrics: utility
   n_rounds: 30
   local_epochs: 1

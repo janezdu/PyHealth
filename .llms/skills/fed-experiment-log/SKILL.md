@@ -1,6 +1,6 @@
 ---
 name: fed-experiment-log
-description: Track fedpyhealth SLURM runs in an experiment log and sweep finished ones. Use when asked to check on launched runs, see which jobs finished, sweep/aggregate the latest runs into a leaderboard, or record a just-launched job. Stateful — it remembers which runs were already swept, so each check only processes what's new. Pairs with the fed-ehr-run / fed-eicu-settings launch skills and the slurm-inspect skill.
+description: Track fedpyhealth SLURM runs in an experiment log and sweep finished ones. Use when asked to check on launched runs, see which jobs finished, sweep/aggregate the latest runs into a leaderboard, or record a just-launched job. Stateful — it remembers which runs were already swept, so each check only processes what's new. Pairs with the fedpyhealth-workflow launch skill and the slurm-inspect skill.
 ---
 
 # fed-experiment-log — track + sweep federated-EHR runs
@@ -74,28 +74,26 @@ The launchers feed this log so a later `check` knows what to look up:
 - **Sweeps (`make_sweep.py`)**: the generated `submit_all.sh` already does
   `sbatch --parsable` and `exp_log.py record` for every job — launching a sweep
   auto-populates the log. Just `bash _outputs/sweeps/<name>/submit_all.sh`.
-- **`fed-ehr-run` / `fed-eicu-settings`** (single sbatch): after submitting, capture
-  the job id and record it, e.g.
+- **Single job**: `main.py` prints the job id it submitted; record it, e.g.
   ```bash
-  jid=$(sbatch --parsable --job-name=fedavg_E2_R39_standard_8_utility ... run_ehr_eicu_full.sh ...)
+  jid=$(sbatch --parsable examples/fedpyhealth/scripts/run_train_full.sh)
   .venv/bin/python examples/fedpyhealth/exp_log.py record \
-      --job-id "$jid" --run-name fedavg_E2_R39_standard_8_utility
+      --job-id "$jid" --run-name fedavg_E2_R39_strat8_utility
   ```
-  (Those skills note this step; the `run_name` must match the one `ehr_eicu.py`
-  derives / you pass, so the `results_path` lines up.)
+  The `run_name` must match the one `train.py` derives (it prints `RUN_NAME:`) or
+  the one you passed with `--run-name`, so the `results_path` lines up.
 
 ## Handoffs
 
 - **Failures / "why did it die":** the check flags non-COMPLETED finals; diagnose
   with the **slurm-inspect** skill (`sacct`/`seff` + the `.out` log).
-- **Launching / sizing / resuming:** **fed-ehr-run** (standard cohort) or
-  **fed-eicu-settings** (smoke/full).
-- **Manual deep dive on logs:** `compare_runs.py` parses the per-hospital tables
-  straight from `.out` logs (useful for runs that predate the log or whose
-  `results.json` is missing).
+- **Launching / sizing / resuming:** **fedpyhealth-workflow** (which command for
+  which stage, and the SLURM preamble for this cluster).
+- **Runs with no `results.json`** (died before the final save): there is no
+  structured record to sweep, so read the `.out` log with **slurm-inspect**.
 
 ## Notes
 - The log lives under `_outputs/` (gitignored) — it's per-clone state, not committed.
-- Sweeping reads `_outputs/results/<run_name>.json`, written by `ehr_eicu.py` at the
+- Sweeping reads `_outputs/results/<run_name>.json`, written by `train.py` at the
   end of each run; a run that COMPLETED but has no results.json is flagged, not swept.
 - Never run training here. This skill only queries + aggregates.

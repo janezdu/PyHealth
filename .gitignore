@@ -145,10 +145,19 @@ data/physionet.org/
 # Model weight files (large binaries, distributed separately)
 weightfiles/
 
-# fedpyhealth: derived hospital-index cache (keep the cohort manifest, not this)
-examples/fedpyhealth/cohorts/.field_index.json
-# Frozen split manifests carry per-patient eICU uniquepids. The committable
-# aggregate is the sibling *.summary.json (counts + sha256, no ids), and the
-# full manifest regenerates deterministically from freeze_cohort_split.py.
-examples/fedpyhealth/cohorts/rare*.json
-!examples/fedpyhealth/cohorts/rare*.summary.json
+# fedpyhealth cohorts. Default-deny, keyed on what a file *is* rather than on a
+# name prefix -- a prefix rule only protects the cohorts someone remembered to
+# name that way, and the file it fails to match is a patient-id leak.
+#
+#   *.cohort.json   selection input: hospital ids + provenance    -> committed
+#   *.summary.json  generated aggregates + sha256 fingerprints    -> committed
+#   anything else   frozen split manifest, carries per-patient eICU uniquepids
+#                   -> never committed. It regenerates deterministically from
+#                      freeze_cohort_split.py, and the sha256 in the summary is
+#                      what proves the regenerated split is byte-identical.
+examples/fedpyhealth/cohorts/*.json
+!examples/fedpyhealth/cohorts/*.cohort.json
+!examples/fedpyhealth/cohorts/*.summary.json
+# Legacy selection record (ids + size stats, no patient ids). Predates the
+# naming scheme; keeps its name because sweep configs and run names cite it.
+!examples/fedpyhealth/cohorts/standard_8.json
