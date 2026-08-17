@@ -1,0 +1,109 @@
+{
+ "regimes": [
+  {
+   "id": "local",
+   "prev_all_r2": 0.19494818584841989,
+   "prev_all_pearson": 0.7831347127618331,
+   "prev_all_rmse": 0.021828775939534927,
+   "prev_rare_r2": -2.7518824552691483,
+   "prev_rare_pearson": 0.34551769082148354,
+   "prev_rare_rmse": 0.027565915387140656,
+   "tstr_ap": 0.013536324869657767,
+   "tstr_ap_rare": 0.005222417577662772,
+   "tstr_auroc": 0.3187509424303753,
+   "tstr_auroc_rare": 0.322439505686433,
+   "tstr_recall10": 0.40659688011776257,
+   "n_records": 2000,
+   "n_classifiers": 8,
+   "n_records_lo": 2000
+  },
+  {
+   "id": "fedavg_ft",
+   "prev_all_r2": -1.6980936947276768,
+   "prev_all_pearson": 0.7363448497689675,
+   "prev_all_rmse": 0.028704434521202405,
+   "prev_rare_r2": -7.127336455522883,
+   "prev_rare_pearson": 0.42179435336769083,
+   "prev_rare_rmse": 0.047907033845614316,
+   "tstr_ap": 0.012908179931654194,
+   "tstr_ap_rare": 0.004668012337543429,
+   "tstr_auroc": 0.3029127887934959,
+   "tstr_auroc_rare": 0.30525122404269095,
+   "tstr_recall10": 0.5188233898701357,
+   "n_records": 2000,
+   "n_classifiers": 8,
+   "n_records_lo": 2000
+  },
+  {
+   "id": "fedavg",
+   "prev_all_r2": -12.77783288550401,
+   "prev_all_pearson": 0.5819731696721764,
+   "prev_all_rmse": 0.0501954265738486,
+   "prev_rare_r2": -36.85539154213515,
+   "prev_rare_pearson": 0.3553864139169933,
+   "prev_rare_rmse": 0.09688966352905692,
+   "tstr_ap": 0.01891331010239073,
+   "tstr_ap_rare": 0.0053698248332947306,
+   "tstr_auroc": 0.4401046359656524,
+   "tstr_auroc_rare": 0.42071284819252275,
+   "tstr_recall10": 0.5507568330535199,
+   "n_records": 16000,
+   "n_classifiers": 1,
+   "n_records_lo": 16000
+  },
+  {
+   "id": "centralized",
+   "prev_all_r2": -51.06392248812574,
+   "prev_all_pearson": 0.3654906303616895,
+   "prev_all_rmse": 0.1166182170437324,
+   "prev_rare_r2": -128.79751003547617,
+   "prev_rare_pearson": 0.22156720060357826,
+   "prev_rare_rmse": 0.16193562851502857,
+   "tstr_ap": 0.03425536715239549,
+   "tstr_ap_rare": 0.006679680496217142,
+   "tstr_auroc": 0.46581635798333376,
+   "tstr_auroc_rare": 0.41730768637127214,
+   "tstr_recall10": 0.5002068079087388,
+   "n_records": 16000,
+   "n_classifiers": 1,
+   "n_records_lo": 16000
+  }
+ ],
+ "baselines": {
+  "prior": {
+   "tstr_ap": 0.014673701815661883,
+   "tstr_ap_rare": 0.0035070991611070848,
+   "tstr_auroc": 0.5,
+   "tstr_auroc_rare": 0.5,
+   "tstr_recall10": null,
+   "n_records": null,
+   "n_records_lo": null
+  },
+  "real_local": {
+   "tstr_ap": 0.017644258317559884,
+   "tstr_ap_rare": 0.008470118189021849,
+   "tstr_auroc": 0.37716012656382886,
+   "tstr_auroc_rare": 0.3806562255732385,
+   "tstr_recall10": 0.27970165102367267,
+   "n_records": 2104,
+   "n_records_lo": 79
+  },
+  "real_pooled": {
+   "tstr_ap": 0.06206908979905486,
+   "tstr_ap_rare": 0.01761192175394699,
+   "tstr_auroc": 0.7105707815770902,
+   "tstr_auroc_rare": 0.6833182667744543,
+   "tstr_recall10": 0.61974532728567,
+   "n_records": 5800,
+   "n_records_lo": 5800
+  }
+ },
+ "meta": {
+  "cohort": "strat8_random",
+  "n_hospitals": 8,
+  "fold": "val",
+  "synth_cap": 2000,
+  "n_scored_codes": 476,
+  "prior_recall10": 0.5439
+ }
+}

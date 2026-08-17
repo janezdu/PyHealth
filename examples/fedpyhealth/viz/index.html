@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Federated EHR — fidelity vs utility</title>
+<style>
+  :root {
+    color-scheme: light;
+    --surface-1:#fcfcfb; --page:#f9f9f7;
+    --text-primary:#0b0b0b; --text-secondary:#52514e; --text-muted:#898781;
+    --grid:#e1e0d9; --axis:#c3c2b7; --border:rgba(11,11,11,0.10);
+    --s-local:#86b6ef; --s-fedavg_ft:#5598e7; --s-fedavg:#2a78d6; --s-centralized:#184f95;
+    --warn:#ec835a; --crit:#d03b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --surface-1:#1a1a19; --page:#0d0d0d;
+      --text-primary:#ffffff; --text-secondary:#c3c2b7; --text-muted:#898781;
+      --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,0.10);
+      --s-local:#9ec5f4; --s-fedavg_ft:#6da7ec; --s-fedavg:#3987e5; --s-centralized:#1c5cab;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface-1:#1a1a19; --page:#0d0d0d;
+    --text-primary:#ffffff; --text-secondary:#c3c2b7; --text-muted:#898781;
+    --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,0.10);
+    --s-local:#9ec5f4; --s-fedavg_ft:#6da7ec; --s-fedavg:#3987e5; --s-centralized:#1c5cab;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; padding:32px 20px 64px;
+    background:var(--page); color:var(--text-primary);
+    font-family:system-ui,-apple-system,"Segoe UI",sans-serif;
+    line-height:1.5;
+  }
+  .wrap { max-width:1060px; margin:0 auto; }
+  h1 { font-size:1.5rem; font-weight:600; margin:0 0 6px; letter-spacing:-0.01em; }
+  .sub { color:var(--text-secondary); font-size:0.9rem; margin:0 0 4px; }
+  .meta { color:var(--text-muted); font-size:0.8rem; margin:0 0 24px; }
+  .card {
+    background:var(--surface-1); border:1px solid var(--border);
+    border-radius:10px; padding:20px; margin-bottom:20px;
+  }
+  .controls { display:flex; flex-wrap:wrap; gap:16px; align-items:flex-end; margin-bottom:4px; }
+  .ctl { display:flex; flex-direction:column; gap:5px; }
+  .ctl label { font-size:0.72rem; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-muted); }
+  select, button {
+    font:inherit; font-size:0.86rem; padding:7px 10px;
+    background:var(--surface-1); color:var(--text-primary);
+    border:1px solid var(--axis); border-radius:6px; min-height:36px;
+  }
+  button { cursor:pointer; }
+  button[aria-pressed="true"] { border-color:var(--s-fedavg); color:var(--s-fedavg); }
+  .plotwrap { position:relative; overflow-x:auto; }
+  svg { display:block; max-width:100%; height:auto; }
+  .legend { display:flex; flex-wrap:wrap; gap:18px; margin:14px 0 0; font-size:0.82rem; color:var(--text-secondary); }
+  .legend .item { display:flex; align-items:center; gap:7px; }
+  .swatch { width:11px; height:11px; border-radius:50%; flex:none; }
+  .tip {
+    position:absolute; pointer-events:none; opacity:0; transition:opacity .12s;
+    background:var(--surface-1); border:1px solid var(--border); border-radius:8px;
+    padding:9px 11px; font-size:0.78rem; color:var(--text-secondary);
+    box-shadow:0 4px 14px rgba(0,0,0,.14); min-width:170px; z-index:5;
+  }
+  .tip b { color:var(--text-primary); font-size:0.86rem; display:block; margin-bottom:5px; }
+  .tip .row { display:flex; justify-content:space-between; gap:14px; }
+  .tip .row span:last-child { font-variant-numeric:tabular-nums; color:var(--text-primary); }
+  table { border-collapse:collapse; width:100%; font-size:0.82rem; }
+  th, td { text-align:right; padding:7px 9px; border-bottom:1px solid var(--grid); font-variant-numeric:tabular-nums; }
+  th:first-child, td:first-child { text-align:left; font-variant-numeric:normal; }
+  th { color:var(--text-muted); font-weight:600; font-size:0.72rem; text-transform:uppercase; letter-spacing:0.04em; }
+  tr.base td { color:var(--text-secondary); font-style:italic; }
+  .note {
+    border-left:3px solid var(--warn); padding:12px 14px; margin:0 0 20px;
+    background:var(--surface-1); border-radius:0 8px 8px 0; font-size:0.85rem;
+    color:var(--text-secondary);
+  }
+  .note.crit { border-left-color:var(--crit); }
+  .note b { color:var(--text-primary); }
+  .hint { font-size:0.78rem; color:var(--text-muted); margin:10px 0 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Federated synthetic EHR — fidelity vs downstream utility</h1>
+  <p class="sub">Four training regimes on the same 8-hospital eICU cohort, ordered by how much
+     cross-site averaging they do. Prevalence fidelity on one axis, rare-code TSTR on the other.</p>
+  <p class="meta" id="meta"></p>
+
+  <div class="note crit">
+    <b>Read the TSTR axis with suspicion.</b> Every arm scores below chance on AUROC (0.5)
+    and at or below the prior floor on recall@10 — a model that is <em>inverted</em>, not merely weak.
+    The likely cause is a masking artifact: patients carrying more rare codes have more stripped from
+    their input, so the model reads them as low-risk. Until that is resolved, the vertical axis
+    measures a downstream task that is not working.
+  </div>
+  <div class="note">
+    <b>The axes are not matched the same way.</b> Prevalence is capped at 2,000 synthetic patients
+    per hospital for every regime. TSTR is uncapped, so <em>centralized</em> and <em>fedavg</em>
+    trained on 16,000 records against <em>local</em> and <em>fedavg_ft</em>'s 2,000. Part of the
+    vertical spread is data volume, not generator quality.
+  </div>
+
+  <div class="card">
+    <div class="controls">
+      <div class="ctl">
+        <label for="xsel">Prevalence fidelity (x)</label>
+        <select id="xsel"></select>
+      </div>
+      <div class="ctl">
+        <label for="ysel">Rare-code TSTR (y)</label>
+        <select id="ysel"></select>
+      </div>
+      <div class="ctl">
+        <label for="basetog">Baselines</label>
+        <button id="basetog" aria-pressed="true">Shown</button>
+      </div>
+    </div>
+    <div class="plotwrap">
+      <svg id="plot" viewBox="0 0 720 460" role="img" aria-labelledby="plottitle"></svg>
+      <div class="tip" id="tip" role="status"></div>
+    </div>
+    <div class="legend" id="legend"></div>
+    <p class="hint" id="hint"></p>
+  </div>
+
+  <div class="card">
+    <h2 style="font-size:1rem;font-weight:600;margin:0 0 12px;">All values</h2>
+    <div style="overflow-x:auto"><table id="tbl"></table></div>
+  </div>
+</div>
+
+<script>
+const DATA = {"regimes":[{"id":"local","prev_all_r2":0.19494818584841989,"prev_all_pearson":0.7831347127618331,"prev_all_rmse":0.021828775939534927,"prev_rare_r2":-2.7518824552691483,"prev_rare_pearson":0.34551769082148354,"prev_rare_rmse":0.027565915387140656,"tstr_ap":0.013536324869657767,"tstr_ap_rare":0.005222417577662772,"tstr_auroc":0.3187509424303753,"tstr_auroc_rare":0.322439505686433,"tstr_recall10":0.40659688011776257,"n_records":2000,"n_classifiers":8,"n_records_lo":2000},{"id":"fedavg_ft","prev_all_r2":-1.6980936947276768,"prev_all_pearson":0.7363448497689675,"prev_all_rmse":0.028704434521202405,"prev_rare_r2":-7.127336455522883,"prev_rare_pearson":0.42179435336769083,"prev_rare_rmse":0.047907033845614316,"tstr_ap":0.012908179931654194,"tstr_ap_rare":0.004668012337543429,"tstr_auroc":0.3029127887934959,"tstr_auroc_rare":0.30525122404269095,"tstr_recall10":0.5188233898701357,"n_records":2000,"n_classifiers":8,"n_records_lo":2000},{"id":"fedavg","prev_all_r2":-12.77783288550401,"prev_all_pearson":0.5819731696721764,"prev_all_rmse":0.0501954265738486,"prev_rare_r2":-36.85539154213515,"prev_rare_pearson":0.3553864139169933,"prev_rare_rmse":0.09688966352905692,"tstr_ap":0.01891331010239073,"tstr_ap_rare":0.0053698248332947306,"tstr_auroc":0.4401046359656524,"tstr_auroc_rare":0.42071284819252275,"tstr_recall10":0.5507568330535199,"n_records":16000,"n_classifiers":1,"n_records_lo":16000},{"id":"centralized","prev_all_r2":-51.06392248812574,"prev_all_pearson":0.3654906303616895,"prev_all_rmse":0.1166182170437324,"prev_rare_r2":-128.79751003547617,"prev_rare_pearson":0.22156720060357826,"prev_rare_rmse":0.16193562851502857,"tstr_ap":0.03425536715239549,"tstr_ap_rare":0.006679680496217142,"tstr_auroc":0.46581635798333376,"tstr_auroc_rare":0.41730768637127214,"tstr_recall10":0.5002068079087388,"n_records":16000,"n_classifiers":1,"n_records_lo":16000}],"baselines":{"prior":{"tstr_ap":0.014673701815661883,"tstr_ap_rare":0.0035070991611070848,"tstr_auroc":0.5,"tstr_auroc_rare":0.5,"tstr_recall10":0.5439,"n_records":null,"n_records_lo":null},"real_local":{"tstr_ap":0.017644258317559884,"tstr_ap_rare":0.008470118189021849,"tstr_auroc":0.37716012656382886,"tstr_auroc_rare":0.3806562255732385,"tstr_recall10":0.27970165102367267,"n_records":2104,"n_records_lo":79},"real_pooled":{"tstr_ap":0.06206908979905486,"tstr_ap_rare":0.01761192175394699,"tstr_auroc":0.7105707815770902,"tstr_auroc_rare":0.6833182667744543,"tstr_recall10":0.61974532728567,"n_records":5800,"n_records_lo":5800}},"meta":{"cohort":"strat8_random","n_hospitals":8,"fold":"val","synth_cap":2000,"n_scored_codes":476,"prior_recall10":0.5439}};
+
+const REGIMES = [
+  {id:"local",       label:"Local only",   note:"8 isolated generators",              css:"--s-local"},
+  {id:"fedavg_ft",   label:"FedAvg + FT",  note:"global model, fine-tuned per site",  css:"--s-fedavg_ft"},
+  {id:"fedavg",      label:"FedAvg",       note:"one federated generator",            css:"--s-fedavg"},
+  {id:"centralized", label:"Centralized",  note:"one generator on pooled raw data",   css:"--s-centralized"},
+];
+const BASE_LABEL = {prior:"prior (chance floor)", real_local:"real, own site only", real_pooled:"real, pooled (ceiling)"};
+
+const X_METRICS = [
+  {k:"prev_all_pearson", label:"Pearson, all codes",      better:"up",   fmt:v=>v.toFixed(3)},
+  {k:"prev_all_rmse",    label:"RMSE, all codes",         better:"down", fmt:v=>v.toFixed(4)},
+  {k:"prev_all_r2",      label:"R², all codes",      better:"up",   fmt:v=>v.toFixed(2)},
+  {k:"prev_rare_pearson",label:"Pearson, rare codes",     better:"up",   fmt:v=>v.toFixed(3)},
+  {k:"prev_rare_rmse",   label:"RMSE, rare codes",        better:"down", fmt:v=>v.toFixed(4)},
+  {k:"prev_rare_r2",     label:"R², rare codes",     better:"up",   fmt:v=>v.toFixed(2)},
+];
+const Y_METRICS = [
+  {k:"tstr_ap",        label:"AP, all rare codes",        better:"up", fmt:v=>v.toFixed(4)},
+  {k:"tstr_ap_rare",   label:"AP, global-rare subset",    better:"up", fmt:v=>v.toFixed(4)},
+  {k:"tstr_auroc",     label:"AUROC, all rare codes",     better:"up", fmt:v=>v.toFixed(3)},
+  {k:"tstr_auroc_rare",label:"AUROC, global-rare subset", better:"up", fmt:v=>v.toFixed(3)},
+  {k:"tstr_recall10",  label:"recall@10",                 better:"up", fmt:v=>v.toFixed(3)},
+];
+
+const $ = s => document.querySelector(s);
+const NS = "http://www.w3.org/2000/svg";
+const el = (n,a={}) => { const e=document.createElementNS(NS,n); for(const k in a) e.setAttribute(k,a[k]); return e; };
+const cssv = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+$("#meta").textContent =
+  `${DATA.meta.n_hospitals} hospitals · cohort ${DATA.meta.cohort} · ${DATA.meta.fold} fold · `
+  + `${DATA.meta.n_scored_codes} scored rare codes · prevalence capped at ${DATA.meta.synth_cap} synthetic patients/hospital`;
+
+for (const m of X_METRICS) $("#xsel").append(new Option(m.label, m.k));
+for (const m of Y_METRICS) $("#ysel").append(new Option(m.label, m.k));
+$("#xsel").value = "prev_all_pearson";
+$("#ysel").value = "tstr_ap";
+
+let showBase = true;
+$("#basetog").addEventListener("click", () => {
+  showBase = !showBase;
+  $("#basetog").setAttribute("aria-pressed", String(showBase));
+  $("#basetog").textContent = showBase ? "Shown" : "Hidden";
+  draw();
+});
+$("#xsel").addEventListener("change", draw);
+$("#ysel").addEventListener("change", draw);
+
+function niceTicks(lo, hi, n=5) {
+  const span = hi - lo || 1;
+  const raw = span / n;
+  const mag = Math.pow(10, Math.floor(Math.log10(Math.abs(raw))));
+  const step = [1,2,2.5,5,10].map(m=>m*mag).find(s=>s>=raw) || 10*mag;
+  const out = [];
+  for (let t = Math.ceil(lo/step)*step; t <= hi + step*1e-9; t += step) out.push(+t.toFixed(10));
+  return out;
+}
+
+function draw() {
+  const xm = X_METRICS.find(m=>m.k===$("#xsel").value);
+  const ym = Y_METRICS.find(m=>m.k===$("#ysel").value);
+  const svg = $("#plot");
+  svg.textContent = "";
+
+  const W=720, H=460, P={t:24,r:130,b:56,l:66};
+  const iw = W-P.l-P.r, ih = H-P.t-P.b;
+
+  const pts = REGIMES.map(r => {
+    const d = DATA.regimes.find(x=>x.id===r.id);
+    return {...r, x:d[xm.k], y:d[ym.k], d};
+  });
+  const baseVals = showBase
+    ? Object.entries(DATA.baselines).map(([k,v])=>({k, y:v[ym.k]})).filter(b=>b.y!=null)
+    : [];
+
+  const xs = pts.map(p=>p.x);
+  const ys = pts.map(p=>p.y).concat(baseVals.map(b=>b.y));
+  const pad = (a) => { const lo=Math.min(...a), hi=Math.max(...a), s=(hi-lo)||Math.abs(hi)||1;
+                       return [lo-s*0.16, hi+s*0.16]; };
+  let [x0,x1] = pad(xs), [y0,y1] = pad(ys);
+  const sx = v => P.l + (v-x0)/(x1-x0)*iw;
+  const sy = v => P.t + ih - (v-y0)/(y1-y0)*ih;
+
+  const g = el("g"); svg.append(g);
+  const GRID=cssv("--grid"), AXIS=cssv("--axis"), MUT=cssv("--text-muted"),
+        SEC=cssv("--text-secondary"), PRI=cssv("--text-primary"), SURF=cssv("--surface-1");
+
+  // gridlines + ticks (solid hairlines, recessive)
+  for (const t of niceTicks(y0,y1)) {
+    if (t<y0||t>y1) continue;
+    g.append(el("line",{x1:P.l,x2:P.l+iw,y1:sy(t),y2:sy(t),stroke:GRID,"stroke-width":1}));
+    const tx=el("text",{x:P.l-10,y:sy(t)+4,"text-anchor":"end","font-size":11,fill:MUT}); tx.textContent=ym.fmt(t); g.append(tx);
+  }
+  for (const t of niceTicks(x0,x1)) {
+    if (t<x0||t>x1) continue;
+    g.append(el("line",{x1:sx(t),x2:sx(t),y1:P.t,y2:P.t+ih,stroke:GRID,"stroke-width":1}));
+    const tx=el("text",{x:sx(t),y:P.t+ih+20,"text-anchor":"middle","font-size":11,fill:MUT}); tx.textContent=xm.fmt(t); g.append(tx);
+  }
+  g.append(el("line",{x1:P.l,x2:P.l+iw,y1:P.t+ih,y2:P.t+ih,stroke:AXIS,"stroke-width":1}));
+  g.append(el("line",{x1:P.l,x2:P.l,y1:P.t,y2:P.t+ih,stroke:AXIS,"stroke-width":1}));
+
+  // axis titles
+  const xt=el("text",{x:P.l+iw/2,y:H-14,"text-anchor":"middle","font-size":12,fill:SEC});
+  xt.textContent = `${xm.label}  (${xm.better==="up"?"higher":"lower"} = better fidelity) →`;
+  g.append(xt);
+  const yt=el("text",{x:16,y:P.t+ih/2,"text-anchor":"middle","font-size":12,fill:SEC,
+                      transform:`rotate(-90 16 ${P.t+ih/2})`});
+  yt.textContent = `${ym.label}  (higher = better) →`;
+  g.append(yt);
+
+  // baseline reference lines
+  for (const b of baseVals) {
+    const y = sy(b.y);
+    g.append(el("line",{x1:P.l,x2:P.l+iw,y1:y,y2:y,stroke:AXIS,"stroke-width":1}));
+    const t=el("text",{x:P.l+iw+8,y:y+4,"font-size":10.5,fill:MUT});
+    t.textContent = BASE_LABEL[b.k]; g.append(t);
+  }
+
+  // connector showing the collaboration ordering
+  const path = pts.map((p,i)=>`${i?"L":"M"}${sx(p.x)},${sy(p.y)}`).join(" ");
+  g.append(el("path",{d:path,fill:"none",stroke:AXIS,"stroke-width":2,"stroke-linecap":"round","opacity":0.5}));
+
+  // marks: 2px surface ring, r=7 (>=8px dia), generous invisible hit target
+  pts.forEach(p => { p.cx = sx(p.x); p.cy = sy(p.y); });
+  pts.forEach(p => {
+    g.append(el("circle",{cx:p.cx,cy:p.cy,r:7,fill:cssv(p.css),stroke:SURF,"stroke-width":2}));
+  });
+
+  // Direct labels with collision avoidance. Points here can sit within a few px
+  // of each other (local vs fedavg_ft), and stacked labels read as noise --
+  // so a displaced label keeps a leader line back to its own mark.
+  const CH = 6.4, LH = 15;                       // approx char width, line height
+  const placed = [];
+  const overlaps = (a,b) =>
+    Math.abs(a.cx-b.cx) < (a.w+b.w)/2 + 6 && Math.abs(a.ly-b.ly) < LH + 2;
+  [...pts].sort((a,b)=>a.cy-b.cy).forEach(p => {
+    const w = p.label.length*CH;
+    const cands = [p.cy-16, p.cy+24, p.cy-34, p.cy+42, p.cy-52];
+    let box = null;
+    for (const ly of cands) {
+      const c = {cx:p.cx, ly, w};
+      if (ly < P.t+10 || ly > P.t+ih-4) continue;
+      if (!placed.some(q => overlaps(c,q))) { box = c; break; }
+    }
+    if (!box) box = {cx:p.cx, ly:p.cy-16, w};
+    placed.push(box);
+    // leader line whenever the label had to move off its default seat
+    if (Math.abs(box.ly - (p.cy-16)) > 1) {
+      const endY = box.ly > p.cy ? box.ly-11 : box.ly+4;
+      g.append(el("line",{x1:p.cx,y1:p.cy,x2:p.cx,y2:endY,
+                          stroke:AXIS,"stroke-width":1}));
+    }
+    const lbl=el("text",{x:box.cx,y:box.ly,"text-anchor":"middle",
+                         "font-size":12,"font-weight":600,fill:PRI});
+    lbl.textContent=p.label; g.append(lbl);
+  });
+
+  pts.forEach(p => {
+    const hit=el("circle",{cx:p.cx,cy:p.cy,r:16,fill:"transparent",
+                           style:"cursor:pointer",tabindex:0,role:"img"});
+    hit.setAttribute("aria-label",
+      `${p.label}: ${xm.label} ${xm.fmt(p.x)}, ${ym.label} ${ym.fmt(p.y)}`);
+    const show = () => showTip(p, xm, ym, p.cx, p.cy);
+    hit.addEventListener("mouseenter",show); hit.addEventListener("focus",show);
+    hit.addEventListener("mouseleave",hideTip); hit.addEventListener("blur",hideTip);
+    g.append(hit);
+  });
+
+  // legend (always present for >= 2 series)
+  $("#legend").innerHTML = REGIMES.map(r =>
+    `<span class="item"><span class="swatch" style="background:var(${r.css})"></span>`
+    + `${r.label} <span style="color:var(--text-muted)">— ${r.note}</span></span>`).join("");
+
+  $("#hint").textContent =
+    "Colour runs light → dark with increasing cross-site averaging; the connector traces that order. "
+    + "Hover or tab to any point for its full metric set.";
+  buildTable(xm, ym);
+}
+
+function showTip(p, xm, ym, vbx, vby) {
+  const tip=$("#tip"), d=p.d;
+  tip.innerHTML = `<b>${p.label}</b>`
+    + row(xm.label, xm.fmt(d[xm.k]))
+    + row(ym.label, ym.fmt(d[ym.k]))
+    + row("Records/classifier", d.n_records.toLocaleString())
+    + row("Classifiers", d.n_classifiers);
+  tip.style.opacity = 1;
+  const wrap = $(".plotwrap").getBoundingClientRect();
+  const box  = $("#plot").getBoundingClientRect();
+  const clamp = (v,lo,hi) => Math.max(lo, Math.min(hi, v));
+  const tw = tip.offsetWidth, th = tip.offsetHeight;
+  // viewBox coords -> rendered pixels, relative to the positioned wrapper
+  const cx = box.left - wrap.left + (vbx/720)*box.width;
+  const cy = box.top  - wrap.top  + (vby/460)*box.height;
+  tip.style.left = clamp(cx+18, 4, Math.max(4, wrap.width-tw-4)) + "px";
+  tip.style.top  = clamp(cy-th/2, 4, Math.max(4, wrap.height-th-4)) + "px";
+}
+function row(k,v){ return `<div class="row"><span>${k}</span><span>${v}</span></div>`; }
+function hideTip(){ $("#tip").style.opacity=0; }
+
+function buildTable(xm, ym) {
+  const cols = [...X_METRICS, ...Y_METRICS];
+  let h = "<thead><tr><th>Arm</th><th>Records</th><th>Clf</th>"
+        + cols.map(c=>`<th>${c.label}</th>`).join("") + "</tr></thead><tbody>";
+  for (const r of REGIMES) {
+    const d = DATA.regimes.find(x=>x.id===r.id);
+    h += `<tr><td><span class="swatch" style="display:inline-block;background:var(${r.css});margin-right:7px"></span>${r.label}</td>`
+       + `<td>${d.n_records.toLocaleString()}</td><td>${d.n_classifiers}</td>`
+       + cols.map(c=>`<td>${d[c.k]!=null?c.fmt(d[c.k]):"—"}</td>`).join("") + "</tr>";
+  }
+  for (const [k,v] of Object.entries(DATA.baselines)) {
+    const rec = v.n_records==null ? "—"
+      : (v.n_records_lo!==v.n_records ? `${v.n_records_lo}–${v.n_records.toLocaleString()}` : v.n_records.toLocaleString());
+    h += `<tr class="base"><td>${BASE_LABEL[k]}</td><td>${rec}</td><td>—</td>`
+       + cols.map(c=>`<td>${v[c.k]!=null?c.fmt(v[c.k]):"—"}</td>`).join("") + "</tr>";
+  }
+  $("#tbl").innerHTML = h + "</tbody>";
+}
+
+draw();
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", draw);
+</script>
+</body>
+</html>

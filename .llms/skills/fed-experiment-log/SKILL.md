@@ -32,6 +32,13 @@ and its `_outputs/slurm/*<job_id>.out` log.
 
 ## When this skill is invoked
 
+### "are my jobs healthy?" / "how far along is it?"
+That is a *queue* question, not a sweep. Send it to
+`bash examples/fedpyhealth/scripts/status.sh` (fedpyhealth-workflow), which shows
+progress, ETA, trouble inside RUNNING jobs, and dead-dependency jobs to cancel.
+`status.sh --sweep` runs that first and then the check below, when the user wants
+both at once.
+
 ### "check my runs" / "what finished" / "sweep the latest runs"
 This is the headline path. Run:
 ```bash

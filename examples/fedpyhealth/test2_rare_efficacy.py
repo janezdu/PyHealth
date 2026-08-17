@@ -108,6 +108,7 @@ from utils.cohort import (
     DEFAULT_CACHE_DIR,
     load_manifest,
     load_synthetic,
+    load_shared_generator,
     read_trajectories,
 )
 SEED = 0
@@ -115,7 +116,13 @@ SEED = 0
 # Validation-support bands for stratified reporting. A single macro mean over
 # the whole scored pool is separated mostly by its head, which is why the
 # headline table reports these instead.
+# Banded, not filtered. A code with 1-4 validation positives gives a noisy
+# average_precision, but noisy is not the same as uninformative -- across ~200
+# such codes the band mean still carries signal, and dropping them silently
+# discards exactly the deep tail this test exists to measure. Read the low bands
+# with their n_scored counts in hand rather than pretending they do not exist.
 SUPPORT_BANDS: Tuple[Tuple[str, int, float], ...] = (
+    ("1_4", 1, 5),
     ("5_9", 5, 10),
     ("10_19", 10, 20),
     ("20_49", 20, 50),
@@ -135,10 +142,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--fold", default="val", choices=["val", "test"],
                    help="real fold the classifiers are scored on (default: val "
                         "-- keep test held out until the final numbers)")
-    p.add_argument("--min-positives", type=int, default=5,
+    p.add_argument("--min-positives", type=int, default=1,
                    help="a rare code needs this many positives in the pooled "
-                        "scoring fold to be scored (average_precision is "
-                        "undefined at 0 and meaningless at 1)")
+                        "scoring fold to be scored. Default 1 = score every "
+                        "code that is scoreable at all; average_precision is "
+                        "undefined at 0 positives, and low-support codes are "
+                        "reported in their own support band rather than "
+                        "dropped. NOTE this also controls what is MASKED out "
+                        "of the classifier inputs, so raising it does not just "
+                        "filter the report -- it changes the task")
     p.add_argument("--mask-folds", type=int, default=4,
                    help="partition scored codes into this many folds and strip "
                         "only one fold per model. K does not change coverage -- "
@@ -150,9 +162,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         "the whole tail at once and is smoke-only, since no arm "
                         "can learn co-occurrence that is not there")
     p.add_argument("--train-budget", type=int, default=0,
-                   help="records per classifier. 0 = the smallest hospital's "
-                        "real train split, which is the largest budget every "
-                        "arm can actually meet")
+                   help="records per classifier. 0 (default) = UNCAPPED: every "
+                        "arm trains on all the data it has, so a small "
+                        "hospital's 79 real records are compared against the "
+                        "thousands of synthetic ones a generator can produce. "
+                        "That is the volume question. Pass an explicit N to cap "
+                        "every arm at N instead, which asks the different "
+                        "question of whether synthetic matches real "
+                        "record-for-record")
     p.add_argument("--pooled-budget", type=int, default=0,
                    help="records for the real_pooled ceiling. 0 = all of them "
                         "(the ceiling is supposed to show what pooling buys)")
@@ -168,6 +185,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                    help="comma-separated k values for recall@k")
     p.add_argument("--out",
                    default="_outputs/results/tests/test2_rare_efficacy.json")
+    p.add_argument("--resume", action="store_true",
+                   help="reuse per-classifier scores cached in <out>.partial "
+                        "from an earlier run that was killed. The cache is "
+                        "keyed by a signature covering the cohort, fold, "
+                        "budget, run specs, mask folds and model "
+                        "hyperparameters, so a cache from a different "
+                        "configuration is ignored rather than mixed in")
     return p
 
 
@@ -271,63 +295,67 @@ def build_records(
     return records, diagnostics
 
 
-def slice_per_hospital(
-    per_hospital: Dict[str, List[dict]], hospitals: Sequence[str], budget: int,
-) -> Tuple[Dict[str, Dict[str, List[List[str]]]], bool]:
-    """Give every hospital ``budget`` synthetic patients, disjointly if shared.
+SHARED_ARM_KEY = ""
 
-    Centralized and FedAvg train one global generator, and ``train.py`` files
-    the same pooled output under every hospital key. Training eight identical
-    classifiers on it would report eight identical numbers and a spread of zero.
-    Those arms instead get disjoint consecutive slices, so the protocol still
-    reads "8 classifiers, ``budget`` records each" and the spread reflects real
-    sampling variance.
+
+def synthetic_arms(
+    per_hospital: Dict[str, List[dict]], hospitals: Sequence[str], budget: int,
+    shared: bool,
+) -> Tuple[Dict[str, Dict[str, List[List[str]]]], bool]:
+    """Turn a run's synthetic output into the classifier arms it supports.
+
+    How many arms a regime yields is a property of the regime, not a knob:
+
+    - ``centralized`` and ``fedavg`` train ONE generator, and ``train.py`` files
+      its single output under every hospital key. That is **one** arm: one
+      generator, one synthetic set, one classifier. Splitting it into eight
+      disjoint draws would train eight classifiers on eight slices of the same
+      distribution and score them against the same pooled validation set,
+      manufacturing a spread that reads as cross-hospital variation when it is
+      only generation sampling noise.
+    - ``local`` and ``fedavg_ft`` train one generator per hospital, so each
+      hospital is a genuinely distinct arm.
 
     Args:
         per_hospital: ``{hospital_id: [{patient_id, visits}, ...]}``.
         hospitals: Cohort hospital ids, in manifest order.
-        budget: Records per hospital.
+        budget: Records per classifier; ``<= 0`` means use every patient the
+            generator produced, which is the default and the setting under
+            which the "lots of synthetic data" claim is actually testable.
+        shared: Whether ONE generator produced every hospital's set. This is
+            read from the run (``load_shared_generator``) rather than inferred
+            here: every generator numbers its output ``synthetic_0..N``
+            independently, so eight different fine-tuned models emit identical
+            *id* lists over different patients, and an id-based guess would
+            collapse eight per-hospital classifiers into one.
 
     Returns:
-        ``({hospital_id: {patient_id: visits}}, shared)`` where ``shared`` says
-        whether the input was one global set rather than eight local ones.
+        ``({arm_key: {patient_id: visits}}, shared)``. When ``shared`` is True
+        the mapping holds exactly one entry, keyed ``SHARED_ARM_KEY``, because
+        there is no hospital identity to attach to it.
 
     Raises:
-        ValueError: If a hospital cannot supply ``budget`` records, or if the
-            shared global set is too small to slice disjointly.
+        ValueError: If a generator cannot supply ``budget`` records.
     """
-    ids = {h: [str(p["patient_id"]) for p in per_hospital.get(h, [])]
-           for h in hospitals}
-    shared = len({tuple(v) for v in ids.values()}) == 1 and len(hospitals) > 1
+    def take(pool: List[dict], key: str, who: str
+             ) -> Dict[str, List[List[str]]]:
+        if budget > 0 and len(pool) < budget:
+            raise ValueError(
+                f"{who} has {len(pool)} synthetic patients but the budget is "
+                f"{budget}. Raise --synth-per-hospital (multi-model regimes) or "
+                "--num-synth (single-model regimes) on the run, lower "
+                "--train-budget, or pass --train-budget 0 to use everything."
+            )
+        chosen = pool if budget <= 0 else pool[:budget]
+        return {f"{key}:{p['patient_id']}": [list(v) for v in p["visits"]]
+                for p in chosen}
 
-    out: Dict[str, Dict[str, List[List[str]]]] = {}
     if shared:
         pool = per_hospital[hospitals[0]]
-        need = budget * len(hospitals)
-        if len(pool) < need:
-            raise ValueError(
-                f"one global synthetic set of {len(pool)} patients cannot give "
-                f"{len(hospitals)} hospitals {budget} disjoint records each "
-                f"({need} needed). Raise --num-synth on the run, or lower "
-                "--train-budget."
-            )
-        for i, hid in enumerate(hospitals):
-            chunk = pool[i * budget:(i + 1) * budget]
-            out[hid] = {f"{hid}:{p['patient_id']}": [list(v) for v in p["visits"]]
-                        for p in chunk}
-        return out, True
+        return {SHARED_ARM_KEY: take(pool, "pooled", "the global generator")}, True
 
-    for hid in hospitals:
-        pool = per_hospital.get(hid, [])
-        if len(pool) < budget:
-            raise ValueError(
-                f"hospital {hid} has {len(pool)} synthetic patients but the "
-                f"budget is {budget}. Raise --num-synth on the run, or lower "
-                "--train-budget."
-            )
-        out[hid] = {f"{hid}:{p['patient_id']}": [list(v) for v in p["visits"]]
-                    for p in pool[:budget]}
-    return out, False
+    return {hid: take(per_hospital.get(hid, []), hid, f"hospital {hid}")
+            for hid in hospitals}, False
 
 
 def budgeted(
@@ -478,8 +506,70 @@ def aggregate(
     return out
 
 
+def run_signature(args, arms: Sequence[str], budget: int, n_folds: int) -> dict:
+    """Everything that must match for a partial result to still be valid.
+
+    A cached ``(arm, fold)`` score is only reusable if the task and the model
+    that produced it are unchanged. Fold assignment depends on the scored code
+    set (so on ``--min-positives`` and ``--fold``), the inputs depend on the
+    budget and the run specs, and the numbers depend on the classifier
+    hyperparameters. Any of those moving invalidates the cache -- silently
+    mixing old and new scores in one table would be worse than recomputing.
+    """
+    return {
+        "cohort_cache": args.cohort_cache,
+        "fold": args.fold,
+        "min_positives": args.min_positives,
+        "mask_folds": n_folds,
+        "train_budget": budget,
+        "runs": sorted(args.run),
+        "arms": sorted(arms),
+        "model": {"epochs": args.epochs, "batch_size": args.batch_size,
+                  "embedding_dim": args.embedding_dim,
+                  "hidden_dim": args.hidden_dim, "lr": args.lr},
+        "recall_at": args.recall_at,
+    }
+
+
+def load_partial(path: str, signature: dict) -> Dict[str, dict]:
+    """Read cached ``(arm, fold)`` scores, ignoring any from a different setup."""
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path) as fh:
+            blob = json.load(fh)
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"partial results at {path} unreadable ({e}); starting fresh")
+        return {}
+    if blob.get("signature") != signature:
+        print(f"partial results at {path} were written for a different "
+              "configuration; ignoring them and starting fresh")
+        return {}
+    return blob.get("entries", {})
+
+
+def save_partial(path: str, signature: dict, entries: Dict[str, dict]) -> None:
+    """Persist cached scores atomically (tmp + rename).
+
+    Written after every single classifier. The whole point is surviving a wall
+    -clock kill, so a half-written file at exactly the wrong moment would defeat
+    the feature; rename is atomic, so the file on disk is always complete.
+    """
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump({"signature": signature, "entries": entries}, fh)
+    os.replace(tmp, path)
+
+
 def spread(values: Sequence[float]) -> dict:
-    """min / mean / median / max over the eight per-hospital classifiers."""
+    """min / mean / median / max over a family's classifiers.
+
+    Multi-model families (``local``, ``fedavg_ft``) have one classifier per
+    hospital, so the spread is real cross-hospital variation. Single-model
+    families (``centralized``, ``fedavg``) have exactly one, and ``n == 1``
+    is the caller's cue to print a bare number instead of a fake interval.
+    """
     arr = np.asarray([v for v in values if not np.isnan(v)], dtype=float)
     if arr.size == 0:
         return {"min": float("nan"), "mean": float("nan"),
@@ -528,7 +618,7 @@ def main(argv=None) -> None:
     dropped = len(support) - len(scored)
     print(f"pooled rare codes: {len(support)}   scored (>= "
           f"{args.min_positives} {args.fold} positives): {len(scored)}   "
-          f"dropped: {dropped}")
+          f"dropped (< {args.min_positives} positives, unscoreable): {dropped}")
     print(f"  of the scored, globally rare (cohort prevalence <= "
           f"{manifest.get('global_rare_prevalence_max')}): "
           f"{len([c for c in scored if c in strict])}")
@@ -542,9 +632,25 @@ def main(argv=None) -> None:
     val_ids = sorted(p for pats in eval_traj.values() for p in pats)
     all_train = sorted(p for ids in train_by_hospital.values() for p in ids)
 
-    budget = args.train_budget or min(len(v) for v in train_by_hospital.values())
-    print(f"per-classifier training budget: {budget} records "
-          f"({'explicit' if args.train_budget else 'smallest real train split'})")
+    # budget 0 = UNCAPPED: every arm trains on everything it has. That is the
+    # comparison this test exists for -- whether a lot of synthetic data beats
+    # the little real data a small hospital actually holds. Capping every arm at
+    # the smallest real split (the old default) answers a different question,
+    # "is synthetic as good as real record-for-record", and makes the volume
+    # claim untestable by construction, because volume is the variable.
+    #
+    # The cost is that arm sizes now differ by ~50x, so a TSTR win is a win on
+    # DATA AVAILABLE, not on data quality. Say that when reporting it. Pass an
+    # explicit --train-budget N to get the matched-budget comparison back.
+    budget = args.train_budget
+    uncapped = budget <= 0
+    smallest_real = min(len(v) for v in train_by_hospital.values())
+    if uncapped:
+        print(f"per-classifier training budget: UNCAPPED -- every arm uses all "
+              f"the data it has (smallest real train split is {smallest_real})")
+    else:
+        print(f"per-classifier training budget: {budget} records (explicit; "
+              f"matched across every arm)")
 
     # --- assemble every arm's raw trajectories (masking happens per fold) ---
     arms: Dict[str, Dict[str, List[List[str]]]] = {}
@@ -562,9 +668,16 @@ def main(argv=None) -> None:
     # diversity, splitting the gap into
     #   real_local -> real_pooled_budgeted   what cross-site diversity buys
     #   real_pooled_budgeted -> real_pooled  what raw volume buys
-    arms["real_pooled_budgeted"] = budgeted(pooled_real, budget, seed=SEED + 99)
-    arm_meta["real_pooled_budgeted"] = {"family": "real_pooled_budgeted",
-                                        "hospital": None}
+    # Uncapped there is no record count to hold fixed, so the arm would be a
+    # duplicate of real_pooled; it is skipped rather than reported twice.
+    if uncapped:
+        print("  real_pooled_budgeted: skipped (uncapped -- it would duplicate "
+              "real_pooled)")
+    else:
+        arms["real_pooled_budgeted"] = budgeted(pooled_real, budget,
+                                                seed=SEED + 99)
+        arm_meta["real_pooled_budgeted"] = {"family": "real_pooled_budgeted",
+                                            "hospital": None}
 
     if not args.skip_real_local:
         for i, hid in enumerate(hospitals):
@@ -578,23 +691,48 @@ def main(argv=None) -> None:
         if "=" not in spec:
             raise ValueError(f"--run expects NAME=SAVE_DIR, got {spec!r}")
         regime, save_dir = spec.split("=", 1)
-        sliced, shared = slice_per_hospital(
-            load_synthetic(save_dir), hospitals, budget)
+        built, shared = synthetic_arms(
+            load_synthetic(save_dir), hospitals, budget,
+            load_shared_generator(save_dir))
         regime_shared[regime] = shared
-        note = "one global set, sliced disjointly" if shared else "per-hospital"
+        note = ("one global generator -> 1 classifier" if shared
+                else f"{len(built)} per-hospital generators -> "
+                     f"{len(built)} classifiers")
         print(f"loaded synthetic for {regime}: {note}")
-        for hid in hospitals:
-            name = f"tstr:{regime}:{hid}"
-            arms[name] = sliced[hid]
-            arm_meta[name] = {"family": f"tstr:{regime}", "hospital": hid,
+        for key, traj in built.items():
+            name = f"tstr:{regime}" if shared else f"tstr:{regime}:{key}"
+            arms[name] = traj
+            arm_meta[name] = {"family": f"tstr:{regime}",
+                              "hospital": None if shared else key,
                               "save_dir": save_dir}
 
+    # Uncapped, how much data each arm got IS the independent variable, so it
+    # travels with every result rather than living only in a log line.
+    for name in arms:
+        arm_meta[name]["n_train_records"] = len(arms[name])
+    print("\nrecords per classifier:")
+    for name in sorted(arms, key=lambda n: -len(arms[n])):
+        print(f"  {name:34s} {len(arms[name]):>7d}")
+
     folds = assign_folds(scored, args.mask_folds)
-    print(f"mask folds: {len(folds)} "
+    print(f"\nmask folds: {len(folds)} "
           f"({'strip-all' if len(folds) == 1 else 'fold-wise'}), "
           f"{[len(f) for f in folds]} codes each")
+    n_classifiers = len(arms) * len(folds)
     print(f"classifiers to train: {len(arms)} arms x {len(folds)} folds = "
-          f"{len(arms) * len(folds)}")
+          f"{n_classifiers}")
+
+    # test2 is the only stage measured in hours, so it is the only one where a
+    # wall-clock kill can lose real work. Every finished classifier is written
+    # to a sidecar immediately; --resume replays them instead of retraining.
+    partial_path = args.out + ".partial"
+    signature = run_signature(args, list(arms), budget, len(folds))
+    partial = load_partial(partial_path, signature) if args.resume else {}
+    if partial:
+        print(f"resuming: {len(partial)}/{n_classifiers} classifiers already "
+              f"done, from {partial_path}")
+    elif args.resume:
+        print(f"--resume set but no usable partial results at {partial_path}")
 
     # per-arm, per-code accumulators filled in across folds
     code_scores: Dict[str, Dict[str, dict]] = {a: {} for a in arms}
@@ -663,11 +801,31 @@ def main(argv=None) -> None:
                 print(f"  [{name}] fold {f_i}: no rare codes in training data, "
                       "skipped", flush=True)
                 continue
+
+            # One cache entry per trained classifier. Masking and the val
+            # dataset are rebuilt on resume (cheap and deterministic); only the
+            # training is skipped, which is the part measured in minutes.
+            cache_key = f"{name}||{f_i}"
+            cached = partial.get(cache_key)
+            if cached is not None:
+                code_scores[name].update(cached["code_scores"])
+                fold_recall[name].append(cached["recall"])
+                print(f"  [{name}] fold {f_i}: cached, training skipped",
+                      flush=True)
+                continue
+
             y_prob = train_and_score(
                 recs, val_dataset, input_proc, label_proc, args, name)
-            code_scores[name].update(per_code_scores(y_true, y_prob, order))
-            fold_recall[name].append(
-                {f"recall_at_{k}": recall_at_k(y_true, y_prob, k) for k in ks})
+            scores = per_code_scores(y_true, y_prob, order)
+            recall = {f"recall_at_{k}": recall_at_k(y_true, y_prob, k)
+                      for k in ks}
+            code_scores[name].update(scores)
+            fold_recall[name].append(recall)
+
+            partial[cache_key] = {"code_scores": scores, "recall": recall}
+            save_partial(partial_path, signature, partial)
+            print(f"  [{name}] fold {f_i}: {len(partial)}/{n_classifiers} "
+                  f"classifiers done", flush=True)
 
     # --- assemble results ---------------------------------------------------
     results = {
@@ -681,6 +839,8 @@ def main(argv=None) -> None:
         "n_dropped_low_support": dropped,
         "mask_folds": len(folds),
         "train_budget": budget,
+        "train_budget_uncapped": uncapped,
+        "smallest_real_train_split": smallest_real,
         "pooled_budget": pooled_budget,
         "regime_shared_generator": regime_shared,
         "arms": {},
@@ -716,6 +876,9 @@ def main(argv=None) -> None:
         entry = {
             "n_classifiers": len(names),
             "n_degenerate": len(names) - len(live),
+            # Uncapped this is the independent variable, not a footnote.
+            "n_train_records": spread(
+                [float(arm_meta[n]["n_train_records"]) for n in names]),
             "overall_ap_macro": spread(
                 [results["arms"][n]["overall"]["ap_macro"] for n in live]),
             "global_rare_ap_macro": spread(
@@ -732,16 +895,22 @@ def main(argv=None) -> None:
         json.dump(results, fh, indent=2)
     print(f"\nSaved -> {args.out}")
 
+    # The full results file supersedes the sidecar. Leaving it would invite a
+    # later --resume to replay a stale cache that merely happens to match.
+    if os.path.exists(partial_path):
+        os.remove(partial_path)
+        print(f"removed partial cache {partial_path}")
+
     # --- console table ------------------------------------------------------
     band_names = [b for b, _, _ in SUPPORT_BANDS]
-    header = (f"\n{'family':22s} {'n':>3s} {'AP overall':>18s} "
-              f"{'AP global-rare':>18s} " +
+    header = (f"\n{'family':22s} {'n':>3s} {'records':>15s} "
+              f"{'AP overall':>18s} {'AP global-rare':>18s} " +
               " ".join(f"{'AP ' + b:>12s}" for b in band_names))
     print(header)
     print("-" * len(header))
 
     p = results["arms"]["prior"]
-    print(f"{'prior (floor)':22s} {'-':>3s} "
+    print(f"{'prior (floor)':22s} {'-':>3s} {'-':>15s} "
           f"{p['overall']['ap_macro']:18.4f} "
           f"{p['global_rare']['ap_macro']:18.4f} " +
           " ".join(f"{p['bands'][b]['ap_macro']:12.4f}" for b in band_names))
@@ -760,12 +929,27 @@ def main(argv=None) -> None:
             continue
         e = results["families"][family]
         deg = f" ({e['n_degenerate']} degenerate)" if e["n_degenerate"] else ""
-        print(f"{family + deg:22s} {e['n_classifiers']:3d} "
+        rec = e["n_train_records"]
+        recs = (f"{int(rec['mean']):>15d}" if rec["min"] == rec["max"]
+                else f"{int(rec['min']):>6d}-{int(rec['max']):<8d}")
+        print(f"{family + deg:22s} {e['n_classifiers']:3d} {recs} "
               f"{fmt(e['overall_ap_macro'])} {fmt(e['global_rare_ap_macro'])} " +
               " ".join(f"{e['bands'][b]['mean']:12.4f}" for b in band_names))
 
-    print("\nPer-hospital classifiers show mean [min,max] across the cohort.")
-    print("The claim to check: real_local < fedavg <= centralized <= real_pooled.")
+    print("\nMulti-model families (local, fedavg_ft) show mean [min,max] across "
+          "their per-hospital\nclassifiers. Single-model families (centralized, "
+          "fedavg) are one generator -> one\nclassifier and show a bare number; "
+          "the two spreads are not comparable quantities.")
+    print("Low support bands (1_4, 5_9) are noisy per code -- read them with "
+          "n_scored in hand,\nfrom the JSON, rather than as point estimates.")
+    if uncapped:
+        print(f"\nUNCAPPED: arms differ in training-set size (see the records "
+              f"column), so a tstr\nwin over real_local is a win on DATA "
+              f"AVAILABLE, not on per-record quality. That is\nthe intended "
+              f"question -- whether a lot of synthetic data beats the "
+              f"{smallest_real} real\nrecords a small hospital actually holds. "
+              f"Report it as such.")
+    print("\nThe claim to check: real_local < fedavg <= centralized <= real_pooled.")
     if len(folds) == 1:
         print("NOTE: --mask-folds 1 strips every scored rare code at once, so "
               "no rare-rare co-occurrence is available to any arm. Expect "

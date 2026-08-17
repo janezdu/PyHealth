@@ -188,6 +188,22 @@ OUTCOME_RE = (
 )
 
 
+# Trouble a job can hit while still reporting RUNNING. A run that OOMs on one
+# client, or retries a NaN loss forever, keeps its SLURM state and burns the
+# rest of its wall clock producing nothing -- so "RUNNING" alone is not health.
+TROUBLE_RE = (
+    ("CUDA OOM",       re.compile(r"CUDA out of memory|"
+                                  r"torch\.cuda\.OutOfMemoryError")),
+    ("traceback",      re.compile(r"Traceback \(most recent call last\)")),
+    ("NaN loss",       re.compile(r"loss=nan|loss=inf", re.I)),
+    ("NCCL/GPU error", re.compile(r"NCCL error|CUDA error|device-side assert")),
+)
+
+# A pending job whose dependency can never be met will sit in the queue until
+# the wall clock runs out. SLURM does not clean these up; only you can.
+ZOMBIE_REASONS = ("DependencyNeverSatisfied", "JobHeldUser", "JobHeldAdmin")
+
+
 def _print_table(header: Sequence[str], rows: Sequence[Sequence]) -> None:
     """Left-aligned fixed-width table (no dependency on results.py)."""
     widths = [max(len(str(h)), *(len(str(r[i])) for r in rows)) if rows
@@ -269,6 +285,35 @@ def _hospital_progress(tail: str):
     return len(dict.fromkeys(seen)), int(total.group(1))
 
 
+def _trouble(tail: str) -> List[str]:
+    """Every trouble marker present in a running job's recent output."""
+    return [name for name, rx in TROUBLE_RE if rx.search(tail)]
+
+
+def _fmt_start(raw: str) -> str:
+    """SLURM's estimated start ('2026-08-13T02:52:02') as '~29h out'."""
+    if not raw or raw in ("N/A", "Unknown"):
+        return ""
+    try:
+        start = time.mktime(time.strptime(raw, "%Y-%m-%dT%H:%M:%S"))
+    except ValueError:
+        return ""
+    hours = (start - time.time()) / 3600
+    if hours < 0:
+        return "starting"
+    return f"~{hours:.0f}h out" if hours < 48 else f"~{hours / 24:.1f}d out"
+
+
+def _print_zombies(zombies: Sequence[Sequence[str]]) -> None:
+    """Pending jobs that will never run, with the command to clear them."""
+    if not zombies:
+        return
+    print("\nqueued but will NEVER run -- cancel these:")
+    for jid, name, reason in zombies:
+        print(f"  {jid}  {name}  ({reason})")
+    print(f"\n  scancel {' '.join(z[0] for z in zombies)}")
+
+
 def _print_finished(live: Sequence[str], limit: int = 8) -> None:
     """Show recently-ended jobs and how they ended.
 
@@ -305,7 +350,7 @@ def cmd_status() -> None:
     try:
         out = subprocess.run(
             ["squeue", "-u", os.environ.get("USER", ""), "-h",
-             "-o", "%i|%j|%T|%M|%R"],
+             "-o", "%i|%j|%T|%M|%R|%S"],
             capture_output=True, text=True, timeout=30, check=True).stdout
     except Exception as exc:  # noqa: BLE001
         sys.exit(f"could not run squeue: {exc}")
@@ -315,9 +360,11 @@ def cmd_status() -> None:
     if not jobs:
         print("nothing in the queue.")
     else:
-        rows = []
-        for jid, name, state, elapsed, reason in jobs:
+        rows, zombies, sick = [], [], []
+        for jid, name, state, elapsed, reason, start in jobs:
             phase, prog, eta = "", "", ""
+            if state != "RUNNING" and any(z in reason for z in ZOMBIE_REASONS):
+                zombies.append([jid, name, reason])
             if state == "RUNNING":
                 log_path = os.path.join(SLURM_DIR, f"{name}-{jid}.out")
                 big_tail = _tail(log_path, 2_000_000)
@@ -341,10 +388,23 @@ def cmd_status() -> None:
                         eta = "(uneven: big hospitals first)"
                 if not phase and not prog:
                     prog = "(no output yet)"
-            rows.append([jid, name[:26], state, elapsed, phase, prog,
-                         eta or (reason if state != "RUNNING" else "")])
+                hits = _trouble(big_tail)
+                if hits:
+                    sick.append([jid, name, ", ".join(hits)])
+                    eta = f"!! {hits[0]}"
+            note = eta
+            if state != "RUNNING":
+                note = " ".join(x for x in (reason, _fmt_start(start)) if x)
+            rows.append([jid, name[:26], state, elapsed, phase, prog, note])
         _print_table(["job", "name", "state", "elapsed", "phase", "progress",
                       "note"], rows)
+        if sick:
+            print("\ntrouble in a RUNNING job (state alone won't show this):")
+            for jid, name, hits in sick:
+                print(f"  {jid}  {name}: {hits}")
+                print(f"    grep -aE 'Error|Traceback|out of memory' "
+                      f"{SLURM_DIR}/{name}-{jid}.out | tail -20")
+        _print_zombies(zombies)
 
     _print_finished(live)
 

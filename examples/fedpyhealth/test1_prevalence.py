@@ -68,6 +68,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         "held out until the final numbers)")
     p.add_argument("--n-bootstraps", type=int, default=5,
                    help="bootstrap resamples over codes")
+    p.add_argument("--synth-cap", type=int, default=0,
+                   help="score only the first N synthetic patients per "
+                        "hospital (0 = all). Prevalence resolves only to "
+                        "1/N, so an arm holding more synthetic patients "
+                        "scores a better R^2 for reasons unrelated to its "
+                        "generator; cap every arm at the smallest to compare "
+                        "fidelity rather than sample size")
     p.add_argument("--out", default=DEFAULT_OUT)
     return p
 
@@ -189,6 +196,7 @@ def score_run(
     real: Dict[str, Dict[str, List[List[str]]]],
     rare_by_hospital: Dict[str, List[str]],
     n_bootstraps: int = 5,
+    synth_cap: int = 0,
 ) -> Dict[str, dict]:
     """Standalone entry point: score every hospital of one finished run.
 
@@ -198,6 +206,12 @@ def score_run(
             scoring fold, straight from the cohort cache.
         rare_by_hospital: Each hospital's rare codes.
         n_bootstraps: Bootstrap resamples over codes.
+        synth_cap: Score only the first N synthetic patients per hospital;
+            0 uses all of them. A synthetic set of size N can only express
+            prevalences in multiples of 1/N, so an arm with more synthetic
+            patients gets a less quantized estimate and a better R^2 for
+            reasons that have nothing to do with its generator. Capping every
+            arm at the smallest one makes the comparison about fidelity again.
 
     Returns:
         ``{hospital_id: {metric: [mean, std]}}``.
@@ -208,6 +222,14 @@ def score_run(
         if not synth:
             print(f"  [{hid}] no synthetic patients in this run; skipped")
             continue
+        if synth_cap > 0:
+            if len(synth) < synth_cap:
+                raise ValueError(
+                    f"hospital {hid} has {len(synth)} synthetic patients but "
+                    f"--synth-cap is {synth_cap}; lower the cap so every arm "
+                    "can meet it, or the comparison is not matched after all."
+                )
+            synth = synth[:synth_cap]
         val_df = pd.DataFrame(trajectories_to_records(val_traj)).astype(EVAL_SCHEMA)
         syn_df = pd.DataFrame(synthetic_to_records(synth)).astype(EVAL_SCHEMA)
         scores = prevalence_from_frames(
@@ -239,6 +261,7 @@ def main(argv=None) -> None:
         print(f"\n=== {name}  ({save_dir})", flush=True)
         results[name] = score_run(
             load_synthetic(save_dir), real, rare_by_hospital, args.n_bootstraps,
+            synth_cap=args.synth_cap,
         )
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
@@ -250,6 +273,7 @@ def main(argv=None) -> None:
             "cohort_name": manifest.get("cohort_name"),
             "fold": args.fold,
             "n_bootstraps": args.n_bootstraps,
+            "synth_cap": args.synth_cap,
             "runs": results,
         }, fh, indent=2)
     print(f"\nWrote {args.out}")

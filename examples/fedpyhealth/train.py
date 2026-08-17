@@ -29,30 +29,30 @@ are sized for a quick tiny run on one GPU.
 """
 
 import argparse
-import hashlib
 import json
 import os
-import statistics
 from typing import Callable, Dict, List, Tuple
 
 import numpy as np
-import pandas as pd
 import torch
 
-from pyhealth.metrics.generative import evaluate_synthetic_ehr
 from utils.cohort import (
     DEFAULT_CACHE_DIR,
-    FOLDS,
     load_clients,
     load_fold,
     load_manifest,
+    manifest_sha256,
 )
-from test1_prevalence import (
-    EVAL_SCHEMA,
-    evaluate_rare_prevalence,
-    real_subset_to_records,
-    synthetic_to_records,
-)
+# The three jobs of an experiment live in three modules, so a change to one
+# does not drag the others' cost with it:
+#   train.py     trains the generator(s) and checkpoints them   (~18h, GPU)
+#   generate.py  samples synthetic patients from a checkpoint    (~13m, GPU)
+#   eval.py      scores those patients against real data         (CPU)
+# This file still calls the other two at the end of a run so a single job
+# produces a complete result, but each is independently runnable against a
+# finished run's save_dir.
+from generate import proportional_pool, write_synthetic
+from eval import evaluate_and_save
 from pyhealth.models import HALO
 
 # --- configuration ----------------------------------------------------------
@@ -74,9 +74,15 @@ SEED = 0
 # its `--<knob>` flag (see _build_arg_parser).
 PROFILES: Dict[str, dict] = {
     "tiny": dict(
-        n_rounds=1,                # FedAvg communication rounds
+        # 2 rounds, not 1: fedavg_ft SPLITS the budget between FedAvg and
+        # per-hospital fine-tuning, so a 1-epoch total budget leaves nothing for
+        # the FedAvg half and the regime refuses to run. Two is the smallest
+        # budget under which all four regimes are exercisable -- which is the
+        # entire point of a smoke profile.
+        n_rounds=2,                # FedAvg communication rounds
         local_epochs=1,            # local training epochs per client per round
         num_synth=64,              # too few to measure prevalence -- see note above
+        synth_per_hospital=32,     # smoke-sized; the full profile is what matters
         metrics="privacy",         # "privacy" | "utility" | "all" (utility needs label_fn)
         # small HALO config: enough to prove the wiring, not to learn anything
         embed_dim=64, n_heads=2, n_layers=2, n_ctx=20, batch_size=16, lr=1e-4,
@@ -97,6 +103,24 @@ PROFILES: Dict[str, dict] = {
         # the deepest quartile quantization-limited. Report Test 1's rare R^2
         # banded by support, or raise this, before claiming the deep tail.
         num_synth=5000,
+        # Every hospital generates this many, regardless of its real size --
+        # the point of the comparison is whether a 79-patient site can still
+        # draw usable synthetic data from a collaboratively trained generator.
+        # At 2000, hospital 438 trains a downstream classifier on 25x the real
+        # data it holds, which is the claim being tested.
+        #
+        # Generation is not what makes this number expensive (~6 min across 8
+        # hospitals; ~5000 patients per 2 min including eval passes, against an
+        # ~18h train). The cost is downstream: test2 runs uncapped, so every
+        # extra synthetic patient is extra classifier training across 16
+        # per-hospital arms x 4 mask folds. 2000 holds per-fold training volume
+        # to ~53.6k records vs ~85.6k at 4000.
+        #
+        # Resolution caveat, unchanged in kind from 5000: 1/2000 = 5e-4 clears
+        # hospital 438's rarest code (0.0179) by a wide margin but leaves
+        # hospital 420's deepest tail (6.7e-4) quantization-limited. Band Test
+        # 1's rare metrics by support before claiming the deep tail.
+        synth_per_hospital=2000,
         # NOT "utility"/"all". That group is compute_mle, whose downstream task
         # is hard-coded to next-visit prediction -- degenerate here, because this
         # cohort's median patient has ONE unit stay (p50=1, p90=2), so most
@@ -157,13 +181,23 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     # per-knob overrides (default None -> keep the profile's value)
     p.add_argument("--n-rounds", type=int)
     p.add_argument("--local-epochs", type=int)
-    p.add_argument("--num-synth", type=int)
+    p.add_argument("--num-synth", type=int,
+                   help="size of the proportional pooled synthetic set (the "
+                        "one scored against the real pooled cohort)")
+    p.add_argument("--synth-per-hospital", type=int,
+                   help="synthetic patients generated PER HOSPITAL by the "
+                        "multi-model regimes (local, fedavg_ft), identical for "
+                        "every hospital regardless of its real size. Defaults "
+                        "to --num-synth")
     p.add_argument("--metrics", choices=["privacy", "utility", "all"])
     p.add_argument("--resume", action="store_true", default=None,
-                   help="resume FedAvg from the on-disk checkpoint if present")
+                   help="resume from the on-disk checkpoint if present (all "
+                        "four regimes checkpoint; local keeps one file per "
+                        "hospital and skips the ones already finished)")
     p.add_argument("--ckpt-every", type=int, default=None,
-                   help="checkpoint frequency in rounds (1=every round); the "
-                        "final round is always checkpointed (default: 1)")
+                   help="checkpoint frequency, in rounds for fedavg/fedavg_ft "
+                        "and in epochs for centralized/local (1=every one); the "
+                        "last is always checkpointed (default: 1)")
     p.add_argument("--tb-logdir",
                    help="TensorBoard log dir (default: <save_dir>/tb). "
                         "Logs per-hospital train-loss curves.")
@@ -260,6 +294,7 @@ def build_config(argv: List[str] = None) -> dict:
         "log_every_epochs": args.log_every_epochs,
         "n_rounds": args.n_rounds, "local_epochs": args.local_epochs,
         "num_synth": args.num_synth, "metrics": args.metrics,
+        "synth_per_hospital": args.synth_per_hospital,
         "ft_epochs": args.ft_epochs, "run_name": args.run_name,
     }
     for k, v in cli.items():
@@ -277,6 +312,9 @@ def build_config(argv: List[str] = None) -> dict:
     cfg.setdefault("log_every_epochs", 1)
     # ft_epochs defaults to track local_epochs (only meaningful for fedavg_ft).
     cfg.setdefault("ft_epochs", cfg["local_epochs"])
+    # Per-hospital synthetic count. Falls back to num_synth so an old YAML that
+    # never heard of this knob still produces a self-consistent run.
+    cfg.setdefault("synth_per_hospital", cfg["num_synth"])
 
     if cfg["weighting"] not in ("sample", "uniform"):
         raise ValueError(
@@ -291,18 +329,6 @@ def build_config(argv: List[str] = None) -> dict:
     if not cfg.get("run_name"):
         cfg["run_name"] = make_run_name(cfg)
     return cfg
-
-
-def _manifest_sha256(manifest: dict) -> str:
-    """Stable identity of the cohort cache, used in the resume fingerprint.
-
-    Client sizes alone would not do: two different splits of the same cohort
-    have identical sizes, so resuming across them would silently train on one
-    partition and score on another.
-    """
-    return hashlib.sha256(
-        json.dumps(manifest, sort_keys=True).encode()
-    ).hexdigest()
 
 
 # ----------------------------------------------------------------------------
@@ -353,7 +379,8 @@ def _fingerprint(sizes: Dict[str, int], split_sha: str = None) -> dict:
     }
 
 
-def _save_ckpt(path: str, completed_rounds: int, global_state, fingerprint: dict):
+def _save_ckpt(path: str, completed: int, global_state, fingerprint: dict,
+               key: str = "completed_rounds"):
     """Atomically write the FedAvg checkpoint (tmp file + rename).
 
     The tmp-then-rename keeps the checkpoint valid even if the job is killed
@@ -363,8 +390,7 @@ def _save_ckpt(path: str, completed_rounds: int, global_state, fingerprint: dict
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = path + ".tmp"
     torch.save(
-        {"completed_rounds": completed_rounds,
-         "global_state": global_state,
+        {key: completed, "global_state": global_state,
          "fingerprint": fingerprint},
         tmp,
     )
@@ -492,20 +518,68 @@ def run_fedavg(
 # each client's data, so the baseline models are built with epochs set to that
 # product before being handed to these helpers.
 # ----------------------------------------------------------------------------
+def _load_epoch_ckpt(path: str, fingerprint: dict, log) -> Tuple[dict, int]:
+    """Read an epoch-granular checkpoint, refusing one from a different setup.
+
+    Returns ``(state, completed_epochs)``, or ``(None, 0)`` when there is
+    nothing to resume from.
+    """
+    if not os.path.exists(path):
+        return None, 0
+    ckpt = torch.load(path, map_location="cpu")
+    if ckpt.get("fingerprint") != fingerprint:
+        raise ValueError(
+            f"Checkpoint {path} was written for a different partition or "
+            f"cohort; refusing to resume. Delete it, or point --cohort-cache at "
+            f"the cache it was trained against."
+        )
+    log(f"  resumed {path} at epoch {ckpt['completed_epochs']}")
+    return ckpt["global_state"], int(ckpt["completed_epochs"])
+
+
 def train_centralized(model, pooled_train, device: str = "cpu", writer=None,
-                      log: Callable[[str], None] = print) -> object:
+                      log: Callable[[str], None] = print,
+                      total_epochs: int = None, ckpt_path: str = None,
+                      ckpt_every: int = 1, resume: bool = False,
+                      fingerprint: dict = None) -> object:
     """Train ONE model on the pooled (all-hospital) train data. Returns it.
 
-    With ``writer`` set, the mean train loss is logged under ``loss_train/pooled``
-    each epoch (matching the FedAvg per-hospital curves' cumulative x-axis).
+    Checkpointing is epoch-granular rather than round-granular (there are no
+    rounds here): the weights are written every ``ckpt_every`` epochs, and
+    ``resume=True`` continues from the last completed one. Without it a job
+    killed at the wall clock loses the entire run, which is exactly what
+    happened at ~12h before this existed.
+
+    Only weights are saved -- ``train_model`` builds a fresh optimizer per call,
+    so a resumed run restarts Adam's moment estimates and is not bit-identical
+    to an uninterrupted one. The same caveat applies to the FedAvg checkpoints.
     """
-    log(f"Centralized: 1 model on pooled train (n={len(pooled_train)})")
+    total_epochs = total_epochs or int(getattr(model, "_epochs", 1))
+    start_epoch = 0
+    if resume and ckpt_path:
+        state, start_epoch = _load_epoch_ckpt(ckpt_path, fingerprint, log)
+        if state is not None:
+            model.load_state_dict(state)
+    if start_epoch >= total_epochs:
+        log(f"Centralized: checkpoint already has {start_epoch} >= "
+            f"{total_epochs} epochs; skipping training")
+        return model
+
+    log(f"Centralized: 1 model on pooled train (n={len(pooled_train)}), "
+        f"epochs {start_epoch}->{total_epochs}")
 
     def _on_epoch_end(epoch, mean_loss):
+        done = start_epoch + epoch + 1
         if writer is not None:
-            writer.add_scalar("loss_train/pooled", mean_loss, epoch)
-        log(f"  centralized  epoch {epoch + 1}  loss={mean_loss:.4f}")
+            writer.add_scalar("loss_train/pooled", mean_loss, done - 1)
+        log(f"  centralized  epoch {done}/{total_epochs}  loss={mean_loss:.4f}")
+        if ckpt_path and (done % ckpt_every == 0 or done == total_epochs):
+            _save_ckpt(ckpt_path, done, _snapshot(model), fingerprint,
+                       key="completed_epochs")
 
+    # Resuming means training only what is left, so the model is rebuilt with
+    # the remaining epoch count rather than the original budget.
+    model._epochs = total_epochs - start_epoch
     model.train_model(pooled_train, val_dataset=None, device=device,
                       on_epoch_end=_on_epoch_end)
     return model
@@ -517,23 +591,55 @@ def train_local(
     device: str = "cpu",
     writer=None,
     log: Callable[[str], None] = print,
+    total_epochs: int = None,
+    ckpt_dir: str = None,
+    ckpt_every: int = 1,
+    resume: bool = False,
+    fingerprint: dict = None,
 ) -> Dict[str, object]:
     """Train an INDEPENDENT model per hospital on its own data (no averaging).
 
     ``build_model`` is a zero-arg factory returning a fresh, untrained model, so
     each hospital gets its own weights. Returns ``{hospital_id: trained_model}``.
-    Per-hospital train loss is logged under ``loss_train/hospital_<id>`` so the
-    curves line up with the FedAvg run's in TensorBoard.
+
+    Checkpoints go to ONE FILE PER HOSPITAL (``local_<hid>.pt``) rather than one
+    growing blob holding all eight: a finished hospital is never rewritten, and
+    a corrupted file costs one hospital instead of the whole run. Resume skips
+    hospitals whose file is complete and continues the one that was in flight --
+    which matters most here, since this regime is 8 sequential trainings and has
+    the longest exposure to a wall-clock kill.
     """
     models: Dict[str, object] = {}
     for hid, train_subset in clients.items():
-        log(f"Local-only: training hospital {hid} (n={len(train_subset)})")
+        epochs = total_epochs or int(getattr(build_model(), "_epochs", 1))
+        path = os.path.join(ckpt_dir, f"local_{hid}.pt") if ckpt_dir else None
         m = build_model()
 
-        def _on_epoch_end(epoch, mean_loss, hid=hid):
-            if writer is not None:
-                writer.add_scalar(f"loss_train/hospital_{hid}", mean_loss, epoch)
+        start_epoch = 0
+        if resume and path:
+            state, start_epoch = _load_epoch_ckpt(path, fingerprint, log)
+            if state is not None:
+                m.load_state_dict(state)
+        if start_epoch >= epochs:
+            log(f"Local-only: hospital {hid} already complete "
+                f"({start_epoch}/{epochs} epochs); skipping")
+            models[hid] = m
+            continue
 
+        log(f"Local-only: training hospital {hid} (n={len(train_subset)}), "
+            f"epochs {start_epoch}->{epochs}")
+
+        def _on_epoch_end(epoch, mean_loss, hid=hid, path=path,
+                          start_epoch=start_epoch, epochs=epochs, m=m):
+            done = start_epoch + epoch + 1
+            if writer is not None:
+                writer.add_scalar(f"loss_train/hospital_{hid}", mean_loss,
+                                  done - 1)
+            if path and (done % ckpt_every == 0 or done == epochs):
+                _save_ckpt(path, done, _snapshot(m), fingerprint,
+                           key="completed_epochs")
+
+        m._epochs = epochs - start_epoch
         m.train_model(train_subset, val_dataset=None, device=device,
                       on_epoch_end=_on_epoch_end)
         models[hid] = m
@@ -547,6 +653,8 @@ def finetune_local(
     device: str = "cpu",
     writer=None,
     log: Callable[[str], None] = print,
+    ckpt_dir: str = None,
+    fingerprint: dict = None,
 ) -> Dict[str, object]:
     """FedAvg + fine-tuning: personalize the shared global model per hospital.
 
@@ -556,6 +664,25 @@ def finetune_local(
     it keeps the federated model's cross-hospital signal but lets each hospital
     specialize. ``build_model`` must return a fresh model whose epochs = the
     desired fine-tuning epochs. Returns ``{hospital_id: fine_tuned_model}``.
+
+    Each fine-tuned model is written to ``<ckpt_dir>/ft_<hospital>.pt``. Without
+    that, ``fedavg_ft`` is the one regime whose per-hospital generators exist
+    only in RAM, so re-generating its synthetic data at a different size means
+    re-running fine-tuning instead of loading a checkpoint -- see generate.py.
+
+    Args:
+        global_state: Final FedAvg weights, the warm start for every hospital.
+        build_model: Returns a fresh model with epochs = fine-tuning epochs.
+        clients: ``{hospital_id: train_subset}``.
+        device: Torch device.
+        writer: Optional TensorBoard writer.
+        log: Progress sink.
+        ckpt_dir: Where to persist each fine-tuned model. None skips saving.
+        fingerprint: Partition identity stamped into each checkpoint so one
+            written against a different cohort or split is refused on load.
+
+    Returns:
+        ``{hospital_id: fine_tuned_model}``.
     """
     models: Dict[str, object] = {}
     for hid, train_subset in clients.items():
@@ -571,6 +698,11 @@ def finetune_local(
         m.train_model(train_subset, val_dataset=None, device=device,
                       on_epoch_end=_on_epoch_end)
         models[hid] = m
+        if ckpt_dir:
+            path = os.path.join(ckpt_dir, f"ft_{hid}.pt")
+            _save_ckpt(path, 1, _snapshot(m), fingerprint,
+                       key="completed_finetune")
+            log(f"  fine-tuned hospital {hid} -> {path}")
     return models
 
 
@@ -578,199 +710,63 @@ def generate_local(
     models: Dict[str, object],
     sizes: Dict[str, int],
     num_synth: int,
+    per_hospital_n: int,
     device: str = "cpu",
     log: Callable[[str], None] = print,
 ) -> Tuple[List[Dict], Dict[str, List[Dict]]]:
     """Generate synthetic patients from each hospital's own local model.
 
-    Each hospital's share of ``num_synth`` is proportional to its train size, so
-    the pooled synthetic set mirrors the real hospital mix (matching how FedAvg
-    sample-count-weights its clients). Returns
-    ``(pooled_synthetic, {hospital_id: synthetic})`` -- the pooled set is scored
-    globally, each hospital's own set against its own data.
+    Every hospital generates the SAME ``per_hospital_n`` patients regardless of
+    how much real data it holds. Sizing a hospital's synthetic output by its own
+    train size would hard-code the assumption that a small site deserves less
+    synthetic data -- which is precisely the hypothesis federated generation is
+    supposed to test. A tiny hospital that benefits from collaboration should be
+    able to draw large amounts of usable synthetic data despite holding little
+    real data, and it can: generation is a sampling loop, not training.
+
+    Two pooled views come out of the same generated patients:
+
+    - **proportional** (returned as the pooled set): hospital ``h`` contributes
+      ``num_synth * sizes[h] / sum(sizes)`` patients, so the mix mirrors the real
+      cohort. This is the only view comparable against the real pooled cohort --
+      pooled prevalence is a hospital-weighted average, so scoring a differently
+      mixed set against real pooled data penalises even a perfect generator.
+    - **uniform**: every hospital contributes equally. Recover it downstream by
+      concatenating the per-hospital sets (see ``load_synthetic``); it is a
+      representation view, not a fidelity metric, and must not be scored against
+      the real pooled cohort.
+
+    Args:
+        models: ``{hospital_id: generator}``.
+        sizes: ``{hospital_id: n_train}``, used only for the proportional mix.
+        num_synth: Size of the proportional pooled set.
+        per_hospital_n: Patients generated per hospital, identical for all.
+        device: Torch device for generation.
+        log: Progress sink.
+
+    Returns:
+        ``(pooled_proportional, {hospital_id: synthetic})``.
+
+    Raises:
+        ValueError: If ``per_hospital_n`` is too small for the largest
+            hospital's proportional share, which would silently under-fill the
+            pooled set and skew its mix.
     """
     total = float(sum(sizes.values())) or 1.0
-    pooled: List[Dict] = []
     per_hosp: Dict[str, List[Dict]] = {}
     for hid, m in models.items():
-        share = max(1, int(round(num_synth * sizes[hid] / total)))
-        syn = m.generate(num_samples=share, device=device)
+        syn = m.generate(num_samples=per_hospital_n, device=device)
         per_hosp[hid] = syn
-        pooled.extend(syn)
         log(f"  [local] hospital {hid}: generated {len(syn)} synthetic")
+
+    # The proportional set is a prefix subsample of what we already generated --
+    # generation is i.i.d., so a prefix is a valid sample and no second pass is
+    # needed. The mixing rule itself lives in generate.py so the in-run path and
+    # the regenerate-from-checkpoint path cannot drift apart.
+    pooled = proportional_pool(per_hosp, sizes, num_synth)
+    log(f"  [local] pooled_proportional: {len(pooled)} patients "
+        f"(uniform view = {sum(len(v) for v in per_hosp.values())})")
     return pooled, per_hosp
-
-
-# ----------------------------------------------------------------------------
-# Evaluation helpers.
-#
-# evaluate_synthetic_ehr expects long-format dataframes -- ONE ROW PER
-# (patient, visit, code) event -- with columns id / time / visit_codes / labels.
-# These helpers build those frames and run the metric suite, so we can score the
-# global model once on the pooled cohort AND once per hospital (client) against
-# that hospital's own real data.
-# ----------------------------------------------------------------------------
-def evaluate_run(train_subset, test_subset, synthetic, index_to_code,
-                 metrics: str = METRICS, label: str = "global",
-                 eval_cfg: dict = None):
-    """Build the three frames and run evaluate_synthetic_ehr for one cohort.
-
-    Returns the metric dict, or None if the cohort is too small to score (small
-    hospitals can have an empty train/test slice). The same ``synthetic`` (from
-    the single aggregated global model) is scored against each cohort.
-
-    ``eval_cfg`` carries the metric-evaluator scale knobs (``sample_cap``,
-    ``lstm``, ``n_bootstraps``, ``n_runs``); when None, tiny-sized defaults are
-    used so the helper stays usable standalone.
-    """
-    cfg = eval_cfg or {}
-    sample_cap = cfg.get("sample_cap", 30)
-    lstm = cfg.get("lstm", {"embed_dim": 16, "hidden_dim": 16, "batch_size": 16, "epochs": 3})
-    n_bootstraps = cfg.get("n_bootstraps", 3)
-    n_runs = cfg.get("n_runs", 2)
-
-    train_df = pd.DataFrame(real_subset_to_records(train_subset, index_to_code)).astype(EVAL_SCHEMA)
-    test_df = pd.DataFrame(real_subset_to_records(test_subset, index_to_code)).astype(EVAL_SCHEMA)
-    syn_df = pd.DataFrame(synthetic_to_records(synthetic)).astype(EVAL_SCHEMA)
-    print(f"  [{label}] eval rows -- train: {len(train_df)}, "
-          f"test: {len(test_df)}, synthetic: {len(syn_df)}")
-    if train_df.empty or test_df.empty or syn_df.empty:
-        print(f"  [{label}] skipped: empty frame (too few patients to evaluate)")
-        return None
-    try:
-        return evaluate_synthetic_ehr(
-            train_ehr=train_df,
-            test_ehr=test_df,
-            syn_ehr=syn_df,
-            sample_size=min(sample_cap, len(train_df), len(test_df)),
-            mode="lstm",
-            metrics=metrics,
-            lstm_params=lstm,
-            n_bootstraps=n_bootstraps,
-            n_runs=n_runs,
-        )
-    except Exception as e:  # small/degenerate cohorts can trip the metric suite
-        print(f"  [{label}] eval failed: {type(e).__name__}: {e}")
-        return None
-
-
-def print_metrics(results: Dict[str, tuple], indent: str = "  "):
-    """Pretty-print a single cohort's metric dict."""
-    for name, (mean, std) in results.items():
-        print(f"{indent}{name:34s} {mean:.4f} +/- {std:.4f}")
-
-
-def print_client_table(per_client: Dict[str, Dict[str, tuple]]):
-    """Side-by-side table: one column per hospital, one row per metric."""
-    hospitals = [h for h, r in per_client.items() if r]
-    if not hospitals:
-        print("  (no hospital had enough data to evaluate)")
-        return
-    metric_names: List[str] = []
-    for h in hospitals:
-        for name in per_client[h]:
-            if name not in metric_names:
-                metric_names.append(name)
-    header = ["metric"] + [f"hosp {h}" for h in hospitals]
-    rows = [header]
-    for name in metric_names:
-        cells = [name]
-        for h in hospitals:
-            res = per_client[h]
-            if name in res:
-                mean, std = res[name]
-                cells.append(f"{mean:.4f}+/-{std:.4f}")
-            else:
-                cells.append("-")
-        rows.append(cells)
-    widths = [max(len(r[i]) for r in rows) for i in range(len(header))]
-    sep = "  " + "-" * (sum(widths) + 2 * len(widths))
-    for ri, row in enumerate(rows):
-        line = "  " + "  ".join(c.ljust(widths[i]) for i, c in enumerate(row))
-        print(line)
-        if ri == 0:
-            print(sep)
-
-
-def _metrics_to_json(results: Dict[str, tuple]) -> Dict[str, dict]:
-    """Turn a {name: (mean, std)} metric dict into JSON-friendly nested dicts."""
-    return {name: {"mean": float(mean), "std": float(std)}
-            for name, (mean, std) in results.items()}
-
-
-def _macro_average(per_client: Dict[str, Dict[str, tuple]]) -> Dict[str, dict]:
-    """Macro-average each metric across hospitals (unweighted mean of the
-    per-hospital means; ``between_hospital_std`` = spread across hospitals).
-    Mirrors how results.py collapses the per-hospital table to one number."""
-    names: List[str] = []
-    for res in per_client.values():
-        for name in res:
-            if name not in names:
-                names.append(name)
-    out: Dict[str, dict] = {}
-    for name in names:
-        vals = [res[name][0] for res in per_client.values() if name in res]
-        if not vals:
-            continue
-        out[name] = {
-            "mean": float(statistics.fmean(vals)),
-            "between_hospital_std": float(statistics.pstdev(vals)) if len(vals) > 1 else 0.0,
-            "n_hospitals": len(vals),
-        }
-    return out
-
-
-def save_results_json(path: str, cfg: dict, info: Dict[str, dict],
-                      num_params: int, global_results, per_client,
-                      split_sha: str = None, manifest: dict = None) -> str:
-    """Write one run's raw stats to ``path`` as JSON.
-
-    Captures the full config, the partition (per-hospital train/test sizes), the
-    model size, the global (pooled) metrics, every per-hospital metric, and a
-    macro-averaged summary -- enough to rebuild any comparison table offline and
-    to aggregate a whole sweep without re-parsing SLURM logs. Metric values are
-    stored as {"mean", "std"} pairs."""
-    # Promoted to the top level so a sweep leaderboard can read them cheaply.
-    knob_keys = ("profile", "regime", "weighting", "local_epochs", "n_rounds",
-                 "ft_epochs", "lr", "embed_dim", "n_heads", "n_layers", "n_ctx",
-                 "batch_size", "num_synth", "metrics", "cohort_cache")
-    payload = {
-        # Kind is stamped so a file pointed at directly still identifies itself;
-        # the runs/ vs tests/ split is what keeps the two shapes from mixing.
-        "kind": "run",
-        "run_name": cfg["run_name"],
-        "regime": cfg["regime"],
-        "weighting": cfg.get("weighting", "sample"),
-        "key_knobs": {k: cfg.get(k) for k in knob_keys},
-        "config": cfg,
-        "num_params": int(num_params),
-        "partition": info,
-        "global_metrics": _metrics_to_json(global_results) if global_results else None,
-        "per_hospital_metrics": {h: _metrics_to_json(r)
-                                 for h, r in per_client.items() if r},
-        "macro_avg_metrics": _macro_average(per_client),
-    }
-    if manifest is not None:
-        payload["split"] = {
-            "cohort_cache": cfg.get("cohort_cache"),
-            "sha256": split_sha,
-            "cohort_name": manifest.get("cohort_name"),
-            "fracs": manifest.get("fracs"),
-            "guaranteed_folds": manifest.get("guaranteed_folds"),
-            "rare_prevalence_max": manifest.get("rare_prevalence_max"),
-            "rare_min_patients": manifest.get("rare_min_patients"),
-            "n_pooled_rare_codes": manifest.get("n_pooled_rare_codes"),
-        }
-        payload["rare_code_stats"] = {
-            hid: {k: h.get(k) for k in
-                  ("n_rare_codes", "min_rare_prevalence", "size_band",
-                   *(f"n_{f}" for f in FOLDS))}
-            for hid, h in manifest.get("per_hospital", {}).items()
-        }
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(payload, f, indent=2)
-    return path
 
 
 if __name__ == "__main__":
@@ -793,7 +789,7 @@ if __name__ == "__main__":
     EVAL_FOLD = "val"
     cache = cfg["cohort_cache"]
     manifest = load_manifest(cache)
-    split_sha = _manifest_sha256(manifest)
+    split_sha = manifest_sha256(manifest)
     cohort = list(manifest["hospitals"])
     print(f"Cohort '{manifest.get('cohort_name')}' from {cache}: {cohort}")
     print(f"  split {manifest['fracs']}, guaranteed "
@@ -865,6 +861,14 @@ if __name__ == "__main__":
     total_epochs = cfg["n_rounds"] * cfg["local_epochs"]
     save_dir = f"_outputs/{cfg['run_name']}_save"
 
+    # Stamp the config NOW, not at the end. generate.py and eval.py both need to
+    # know the architecture and knobs a checkpoint was written for, and a run
+    # that times out mid-training still has usable checkpoints -- so the config
+    # has to survive a job that never reaches its final save.
+    os.makedirs(save_dir, exist_ok=True)
+    with open(os.path.join(save_dir, "config.json"), "w") as fh:
+        json.dump(cfg, fh, indent=2)
+
     # Apples-to-apples budget split for fedavg_ft: spend ft_epochs of the budget on
     # per-hospital fine-tuning and the REST on FedAvg, so total passes/hospital ==
     # total_epochs (same as every other regime). Plain fedavg spends all on FedAvg.
@@ -913,6 +917,10 @@ if __name__ == "__main__":
                   "(pip install tensorboard, or pass --no-tb)")
 
     sizes = {hid: len(clients[hid]) for hid in clients}
+    # One partition identity shared by every regime's checkpoints, so a
+    # checkpoint written against a different cohort or split is refused rather
+    # than silently resumed onto the wrong data.
+    fingerprint = _fingerprint(sizes, split_sha)
     # client_synth[hid] = the synthetic set scored against hospital `hid` in the
     # per-client eval (STEP 7). For fedavg/centralized that's the single global
     # model's output (shared by all); for local it's that hospital's OWN model.
@@ -922,13 +930,18 @@ if __name__ == "__main__":
             print(f"\nRegime: local-only -- {len(clients)} independent models, "
                   f"{total_epochs} epochs each")
             models = train_local(lambda: build_model(total_epochs), clients,
-                                 device=device, writer=writer)
+                                 device=device, writer=writer,
+                                 total_epochs=total_epochs, ckpt_dir=save_dir,
+                                 ckpt_every=cfg["ckpt_every"],
+                                 resume=cfg["resume"], fingerprint=fingerprint)
             num_params = sum(p.numel()
                              for p in next(iter(models.values())).parameters())
             print(f"Each model: {num_params} parameters")
-            # STEP 5: each local model generates its own (size-weighted) share.
+            # STEP 5: every local model generates the SAME number of patients;
+            # the pooled set is then a proportional subsample of those.
             synthetic, client_synth = generate_local(
-                models, sizes, cfg["num_synth"], device=device)
+                models, sizes, cfg["num_synth"], cfg["synth_per_hospital"],
+                device=device)
         else:
             # centralized trains the single model for the full budget; fedavg and
             # fedavg_ft use local_epochs per round (the FedAvg local step).
@@ -939,7 +952,12 @@ if __name__ == "__main__":
             if regime == "centralized":
                 print(f"Regime: centralized -- 1 model on pooled data, "
                       f"{total_epochs} epochs")
-                train_centralized(model, pooled_train, device=device, writer=writer)
+                train_centralized(
+                    model, pooled_train, device=device, writer=writer,
+                    total_epochs=total_epochs,
+                    ckpt_path=os.path.join(save_dir, "centralized_state.pt"),
+                    ckpt_every=cfg["ckpt_every"], resume=cfg["resume"],
+                    fingerprint=fingerprint)
             else:  # fedavg or fedavg_ft -- both start with a FedAvg run
                 print(f"Regime: {regime} -- {len(clients)} clients, "
                       f"{cfg['local_epochs']} local epochs x {fed_rounds} rounds"
@@ -958,17 +976,32 @@ if __name__ == "__main__":
             # STEP 5: generate synthetic patients from the single global/server
             # model. For fedavg_ft this stays the SHARED global model's output, so
             # the global eval (STEP 6) is directly comparable to plain fedavg.
-            synthetic = model.generate(num_samples=cfg["num_synth"], device=device)
-            client_synth = {hid: synthetic for hid in clients}
+            # A single generator serves every hospital, so its output has no
+            # natural per-site ceiling -- it can emit as much as asked. Size it
+            # as the FEDERATION TOTAL (8 x the per-hospital count) so
+            # "centralized's synthetic output" and "the federation's combined
+            # output" are the same magnitude, rather than comparing one site's
+            # share against a whole pooled system.
+            want = cfg["num_synth"]
+            if regime in ("centralized", "fedavg"):
+                want = max(want, len(clients) * cfg["synth_per_hospital"])
+            full = model.generate(num_samples=want, device=device)
+            client_synth = {hid: full for hid in clients}
+            # The POOLED set stays num_synth for every regime, so Test 1's
+            # prevalence resolution (1/num_synth) is identical across arms and
+            # its numbers stay comparable. Only the per-hospital sets scale.
+            synthetic = full[:cfg["num_synth"]]
             if regime == "fedavg_ft":
                 # Personalize: fine-tune the global model on each hospital, then
                 # score each hospital against its OWN fine-tuned model in STEP 7.
                 global_state = _snapshot(model)
                 ft_models = finetune_local(
                     global_state, lambda: build_model(cfg["ft_epochs"]),
-                    clients, device=device, writer=writer)
+                    clients, device=device, writer=writer,
+                    ckpt_dir=save_dir, fingerprint=fingerprint)
                 _, client_synth = generate_local(
-                    ft_models, sizes, cfg["num_synth"], device=device)
+                    ft_models, sizes, cfg["num_synth"],
+                    cfg["synth_per_hospital"], device=device)
     finally:
         if writer is not None:
             writer.close()
@@ -977,71 +1010,27 @@ if __name__ == "__main__":
     for patient in synthetic[:3]:
         print(f"  {patient['patient_id']}: {len(patient['visits'])} visits")
 
-    # STEP 6: GLOBAL evaluation -- score the aggregated model once against the
-    # pooled real cohort (the union of every hospital's train/test slices). We
-    # default to privacy metrics because this task is unconditional (no labels);
-    # to enable the utility metrics, set METRICS and pass a matching label_fn to
-    # the real and synthetic frames (see pyhealth/tasks/generate_ehr.py).
+    # STEP 6: persist the synthetic data. Written BEFORE scoring so a job that
+    # dies (or is killed) during evaluation still leaves something re-scorable
+    # by eval.py -- the expensive half is already paid for by this point.
+    # fedavg_ft's client_synth comes from its 8 fine-tuned models, so only
+    # centralized and fedavg genuinely share one generator.
+    synth_path = write_synthetic(
+        save_dir, synthetic, client_synth,
+        shared_generator=regime in ("centralized", "fedavg"))
+    print(f"Saved synthetic data -> {synth_path}")
+
+    # STEP 7: score it. The whole suite lives in eval.py and is runnable
+    # standalone against this save_dir, so a metric fix costs a CPU job rather
+    # than another ~18h of GPU. Deleting this call is all it takes to make
+    # train.py training-only.
     index_to_code = {
         v: k for k, v in sample_dataset.input_processors["visits"].code_vocab.items()
     }
-
-    eval_cfg = {
-        "sample_cap": cfg["eval_sample_cap"],
-        "lstm": cfg["eval_lstm"],
-        "n_bootstraps": cfg["eval_n_bootstraps"],
-        "n_runs": cfg["eval_n_runs"],
-    }
-
-    print("\n=== Global metrics (aggregated model vs pooled cohort) ===")
-    global_results = evaluate_run(
-        pooled_train, pooled_test, synthetic, index_to_code,
-        metrics=cfg["metrics"], label="global", eval_cfg=eval_cfg,
-    )
-    if global_results:
-        print("\nGlobal generative metrics (mean +/- std):")
-        print_metrics(global_results)
-
-    # STEP 7: PER-CLIENT evaluation -- score each hospital's synthetic data against
-    # its own real train/test slices. For fedavg/centralized that synthetic is the
-    # single global model's output (so this exposes how evenly one model serves
-    # heterogeneous, non-IID hospitals); for local it is that hospital's OWN
-    # model's output (so this is each local baseline scored on its home turf).
-    print("\n=== Per-client metrics (each hospital's synthetic vs its own data) ===")
-    rare_by_hospital = {hid: list(h["rare_codes"])
-                        for hid, h in manifest["per_hospital"].items()}
-    per_client: Dict[str, Dict[str, tuple]] = {}
-    for hid in clients:
-        res = evaluate_run(
-            clients[hid], client_tests[hid], client_synth[hid], index_to_code,
-            metrics=cfg["metrics"], label=f"hosp {hid}", eval_cfg=eval_cfg,
-        ) or {}
-        # TEST 1: prevalence against this hospital's OWN scoring fold, over its
-        # rare codes and over the full vocabulary.
-        res.update(evaluate_rare_prevalence(
-            client_tests[hid], client_synth[hid], index_to_code,
-            rare_codes=rare_by_hospital.get(hid),
-            n_bootstraps=cfg["eval_n_bootstraps"], label=f"hosp {hid}",
-        ))
-        if res:
-            per_client[hid] = res
-    print("\nPer-hospital generative metrics (mean +/- std):")
-    print_client_table(per_client)
-
-    # STEP 8: persist the raw stats (config + partition + per-hospital metrics +
-    # macro summary) so a sweep can be aggregated without re-parsing SLURM logs.
-    results_path = save_results_json(
-        os.path.join("_outputs", "results", "runs", f"{cfg['run_name']}.json"),
-        cfg, info, num_params, global_results, per_client,
-        split_sha=split_sha, manifest=manifest,
+    results_path = evaluate_and_save(
+        cfg, manifest, clients, client_tests, pooled_train, pooled_test,
+        synthetic, client_synth, index_to_code, info,
+        num_params=num_params, split_sha=split_sha,
     )
     print(f"\nSaved results -> {results_path}")
-
-    # STEP 9: persist the synthetic data itself. Test 2 (test2_rare_efficacy.py)
-    # consumes it, and any later metric fix can then be re-scored in minutes on
-    # CPU instead of repeating a 24h GPU run.
-    synth_path = os.path.join(save_dir, "synthetic.json")
-    with open(synth_path, "w") as fh:
-        json.dump({"pooled": synthetic, "per_hospital": client_synth}, fh)
-    print(f"Saved synthetic data -> {synth_path}")
  

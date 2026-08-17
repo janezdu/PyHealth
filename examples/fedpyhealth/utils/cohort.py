@@ -84,7 +84,11 @@ GLOBAL_RARE_PREVALENCE_MAX = 0.01
 
 DEFAULT_BANDS = "0-199,200-499,500-1999,2000-"
 DEFAULT_PER_BAND = 2
-DEFAULT_CACHE_DIR = os.path.join(CACHE_ROOT, "strat8")
+# Which cohort every job uses unless told otherwise. strat8_randsplit is the
+# plain 70/10/20 shuffle: same size-banded 8 hospitals, but the patient split
+# makes no rare-code coverage promise. See scripts/run_cohort.sh.
+DEFAULT_COHORT = os.environ.get("FEDCOHORT_NAME", "strat8_random")
+DEFAULT_CACHE_DIR = os.path.join(CACHE_ROOT, DEFAULT_COHORT)
 
 MANIFEST_FILE = "manifest.json"
 VOCAB_FILE = "vocab.json"
@@ -245,6 +249,113 @@ def load_synthetic(save_dir: str) -> Dict[str, List[dict]]:
     if "per_hospital" not in blob:
         raise ValueError(f"{path} has no 'per_hospital' block; re-run the regime.")
     return blob["per_hospital"]
+
+
+def load_shared_generator(save_dir: str) -> bool:
+    """Did ONE generator produce every hospital's synthetic set?
+
+    Reads the ``shared_generator`` flag written at generation time. Older files
+    predate the flag, so this falls back to comparing the *content* of each
+    hospital's set -- never the patient ids. Every generator numbers its output
+    ``synthetic_0..N`` independently, so eight genuinely different fine-tuned
+    models emit eight identical id lists over completely different patients;
+    comparing ids reports "shared" and collapses eight per-hospital classifiers
+    into one.
+
+    Args:
+        save_dir: The run's ``_outputs/<run_name>_save/`` folder.
+
+    Returns:
+        True when a single generator served every hospital.
+    """
+    with open(os.path.join(save_dir, "synthetic.json")) as fh:
+        blob = json.load(fh)
+    if "shared_generator" in blob:
+        return bool(blob["shared_generator"])
+
+    per_hospital = blob["per_hospital"]
+    if len(per_hospital) < 2:
+        return False
+    signatures = {
+        json.dumps([p["visits"] for p in patients], sort_keys=True)
+        for patients in per_hospital.values()
+    }
+    return len(signatures) == 1
+
+
+def manifest_sha256(manifest: dict) -> str:
+    """Stable identity of the cohort cache, used in the resume fingerprint.
+
+    Client sizes alone would not do: two different splits of the same cohort
+    have identical sizes, so resuming across them would silently train on one
+    partition and score on another. Lives here rather than in train.py so the
+    training, generation and evaluation modules all stamp the same identity.
+    """
+    return hashlib.sha256(
+        json.dumps(manifest, sort_keys=True).encode()
+    ).hexdigest()
+
+
+def load_pooled_synthetic(save_dir: str, mix: str = "proportional") -> List[dict]:
+    """Read a finished run's pooled synthetic patients under one mixing rule.
+
+    The two views answer different questions and are not interchangeable:
+
+    - ``"proportional"`` -- hospital ``h`` contributes in proportion to its real
+      train size, so the mix matches the real pooled cohort. This is the only
+      view that may be scored against real pooled data: pooled prevalence is a
+      hospital-weighted average, so a differently mixed set scores badly even
+      when the generator is perfect.
+    - ``"uniform"`` -- every hospital contributes equally (the concatenation of
+      the per-hospital sets). With this cohort that lifts hospital 438 from 1.4%
+      to 12.5% of the set, ~9x its real weight. Use it to describe how the
+      federation represents its smallest members; do NOT use it as a fidelity
+      metric against the real cohort.
+
+    Note that for the single-model regimes (``centralized``, ``fedavg``) the
+    distinction is vacuous -- one generator emits one distribution, and every
+    hospital key holds the same list. For ``fedavg_ft`` the two views come from
+    *different models*: the stored proportional set is the shared global model's
+    output, while the uniform view concatenates the eight fine-tuned models.
+    Do not read a difference between them as a mixing effect.
+
+    Args:
+        save_dir: The run's ``_outputs/<run_name>_save/`` folder.
+        mix: ``"proportional"`` or ``"uniform"``.
+
+    Returns:
+        A flat list of ``{"patient_id", "visits"}`` dicts.
+
+    Raises:
+        ValueError: If ``mix`` is not one of the two supported rules, or the
+            file predates this field and holds no pooled set at all.
+    """
+    if mix not in ("proportional", "uniform"):
+        raise ValueError(
+            f"mix must be 'proportional' or 'uniform', got {mix!r}")
+
+    if mix == "uniform":
+        per_hospital = load_synthetic(save_dir)
+        # Single-model regimes file one global set under every hospital key.
+        # Concatenating those would return the same patients eight times and
+        # report a 40k "uniform" set that is really 5k of distinct data.
+        ids = {h: tuple(str(p["patient_id"]) for p in v)
+               for h, v in per_hospital.items()}
+        if len(set(ids.values())) == 1 and len(per_hospital) > 1:
+            return list(next(iter(per_hospital.values())))
+        return [p for hid in sorted(per_hospital) for p in per_hospital[hid]]
+
+    with open(os.path.join(save_dir, "synthetic.json")) as fh:
+        blob = json.load(fh)
+    # "pooled" is the pre-rename alias, kept so the runs finished before this
+    # split stay readable.
+    for key in ("pooled_proportional", "pooled"):
+        if key in blob:
+            return blob[key]
+    raise ValueError(
+        f"{save_dir}/synthetic.json has neither 'pooled_proportional' nor the "
+        "legacy 'pooled' block; re-run the regime."
+    )
 
 
 def parse_run_specs(specs: Sequence[str]) -> Dict[str, str]:

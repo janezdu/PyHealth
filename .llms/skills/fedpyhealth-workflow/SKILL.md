@@ -22,6 +22,7 @@ Scoring runs on the **val** fold during development. Test is not read by any scr
 | [test1_prevalence.py](examples/fedpyhealth/test1_prevalence.py) | prevalence fidelity, standalone re-scoring |
 | [test2_rare_efficacy.py](examples/fedpyhealth/test2_rare_efficacy.py) | rare-code ML efficacy (TSTR) |
 | [exp_log.py](examples/fedpyhealth/exp_log.py), [results.py](examples/fedpyhealth/results.py) | run registry, leaderboard |
+| `scripts/status.sh` | "are my jobs healthy?" — queue + progress + health, safe on the login node |
 | `scripts/run_*.sh` | standalone sbatch wrappers, for when the user wants to submit without `main.py` |
 
 ## Command selection
@@ -29,7 +30,14 @@ Scoring runs on the **val** fold during development. Test is not read by any scr
 1. **Build the cache.** `utils/cohort.py` — one eICU pass that selects the hospitals, computes rare codes, splits 70/10/20, writes the Parquet files, and verifies they reproduce the eICU tensors. Run once. Use when the user says "make a cohort", "pick hospitals", or "choose 2 from each size band".
 2. **Train.** `main.py train --regime <regime> --profile tiny|full`, or `main.py all` for the four-regime table.
 3. **Score.** `main.py test1` and `main.py test2`, after training, since both read each run's saved `synthetic.json`.
-4. **Check on jobs.** `main.py status` — parses `squeue` plus the log tails.
+4. **Check on jobs.** `bash examples/fedpyhealth/scripts/status.sh` — the one command
+   for "are my jobs healthy?". Wraps `main.py status`: queue state, phase, round
+   progress and ETA per job, plus three things `squeue` alone will not tell you —
+   **trouble inside a RUNNING job** (OOM / traceback / NaN loss, which do not change
+   the SLURM state), **pending jobs that can never start** (dead dependency) with the
+   `scancel` line to clear them, and an **estimated start** for anything stuck behind
+   Priority. Add `--sweep` to also aggregate newly-finished runs into the leaderboard.
+   Login-node-safe; run it as often as you like.
 
 ## Default workflow
 
