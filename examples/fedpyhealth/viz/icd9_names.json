@@ -1,0 +1,2566 @@
+{
+"005.9": {
+"name": "Food poisoning, unspecified",
+"system": "ICD9CM"
+},
+"008.45": {
+"name": "Intestinal infection due to Clostridium difficile",
+"system": "ICD9CM"
+},
+"009.1": {
+"name": "Colitis, enteritis, and gastroenteritis of presumed infectious origin",
+"system": "ICD9CM"
+},
+"011.60": {
+"name": "Tuberculous pneumonia [any form], unspecified",
+"system": "ICD9CM"
+},
+"038.9": {
+"name": "Unspecified septicemia",
+"system": "ICD9CM"
+},
+"041.11": {
+"name": "Methicillin susceptible Staphylococcus aureus in conditions classified elsewhere and of unspecified site",
+"system": "ICD9CM"
+},
+"042": {
+"name": "Human immunodeficiency virus [HIV] disease",
+"system": "ICD9CM"
+},
+"053.9": {
+"name": "Herpes zoster without mention of complication",
+"system": "ICD9CM"
+},
+"054.2": {
+"name": "Herpetic gingivostomatitis",
+"system": "ICD9CM"
+},
+"054.3": {
+"name": "Herpetic meningoencephalitis",
+"system": "ICD9CM"
+},
+"070.30": {
+"name": "Viral hepatitis B without mention of hepatic coma, acute or unspecified, without mention of hepatitis delta",
+"system": "ICD9CM"
+},
+"070.51": {
+"name": "Acute hepatitis C without mention of hepatic coma",
+"system": "ICD9CM"
+},
+"079.6": {
+"name": "Respiratory syncytial virus (RSV)",
+"system": "ICD9CM"
+},
+"112.0": {
+"name": "Candidiasis of mouth",
+"system": "ICD9CM"
+},
+"112.3": {
+"name": "Candidiasis of skin and nails",
+"system": "ICD9CM"
+},
+"117.9": {
+"name": "Other and unspecified mycoses",
+"system": "ICD9CM"
+},
+"135": {
+"name": "Sarcoidosis",
+"system": "ICD9CM"
+},
+"136.3": {
+"name": "Pneumocystosis",
+"system": "ICD9CM"
+},
+"145.9": {
+"name": "Malignant neoplasm of mouth, unspecified",
+"system": "ICD9CM"
+},
+"148.9": {
+"name": "Malignant neoplasm of hypopharynx, unspecified site",
+"system": "ICD9CM"
+},
+"151.9": {
+"name": "Malignant neoplasm of stomach, unspecified site",
+"system": "ICD9CM"
+},
+"152.9": {
+"name": "Malignant neoplasm of small intestine, unspecified site",
+"system": "ICD9CM"
+},
+"153.0": {
+"name": "Malignant neoplasm of hepatic flexure",
+"system": "ICD9CM"
+},
+"153.3": {
+"name": "Malignant neoplasm of sigmoid colon",
+"system": "ICD9CM"
+},
+"153.9": {
+"name": "Malignant neoplasm of colon, unspecified site",
+"system": "ICD9CM"
+},
+"154.3": {
+"name": "Malignant neoplasm of anus, unspecified site",
+"system": "ICD9CM"
+},
+"155.0": {
+"name": "Malignant neoplasm of liver, primary",
+"system": "ICD9CM"
+},
+"156.9": {
+"name": "Malignant neoplasm of biliary tract, part unspecified site",
+"system": "ICD9CM"
+},
+"157.9": {
+"name": "Malignant neoplasm of pancreas, part unspecified",
+"system": "ICD9CM"
+},
+"161.9": {
+"name": "Malignant neoplasm of larynx, unspecified",
+"system": "ICD9CM"
+},
+"162.9": {
+"name": "Malignant neoplasm of bronchus and lung, unspecified",
+"system": "ICD9CM"
+},
+"172.9": {
+"name": "Melanoma of skin, site unspecified",
+"system": "ICD9CM"
+},
+"173.9": {
+"name": "Other and unspecified malignant neoplasm of skin, site unspecified",
+"system": "ICD9CM"
+},
+"174.9": {
+"name": "Malignant neoplasm of breast (female), unspecified",
+"system": "ICD9CM"
+},
+"179": {
+"name": "Malignant neoplasm of uterus, part unspecified",
+"system": "ICD9CM"
+},
+"180.9": {
+"name": "Malignant neoplasm of cervix uteri, unspecified site",
+"system": "ICD9CM"
+},
+"183.0": {
+"name": "Malignant neoplasm of ovary",
+"system": "ICD9CM"
+},
+"185": {
+"name": "Malignant neoplasm of prostate",
+"system": "ICD9CM"
+},
+"188.9": {
+"name": "Malignant neoplasm of bladder, part unspecified",
+"system": "ICD9CM"
+},
+"189.0": {
+"name": "Malignant neoplasm of kidney, except pelvis",
+"system": "ICD9CM"
+},
+"191.9": {
+"name": "Malignant neoplasm of brain, unspecified",
+"system": "ICD9CM"
+},
+"192.2": {
+"name": "Malignant neoplasm of spinal cord",
+"system": "ICD9CM"
+},
+"192.9": {
+"name": "Malignant neoplasm of nervous system, part unspecified",
+"system": "ICD9CM"
+},
+"193": {
+"name": "Malignant neoplasm of thyroid gland",
+"system": "ICD9CM"
+},
+"197.0": {
+"name": "Secondary malignant neoplasm of lung",
+"system": "ICD9CM"
+},
+"197.2": {
+"name": "Secondary malignant neoplasm of pleura",
+"system": "ICD9CM"
+},
+"197.6": {
+"name": "Secondary malignant neoplasm of retroperitoneum and peritoneum",
+"system": "ICD9CM"
+},
+"197.7": {
+"name": "Malignant neoplasm of liver, secondary",
+"system": "ICD9CM"
+},
+"198.3": {
+"name": "Secondary malignant neoplasm of brain and spinal cord",
+"system": "ICD9CM"
+},
+"198.5": {
+"name": "Secondary malignant neoplasm of bone and bone marrow",
+"system": "ICD9CM"
+},
+"199.0": {
+"name": "Disseminated malignant neoplasm without specification of site",
+"system": "ICD9CM"
+},
+"199.1": {
+"name": "Other malignant neoplasm without specification of site",
+"system": "ICD9CM"
+},
+"201.90": {
+"name": "Hodgkin's disease, unspecified type, unspecified site, extranodal and solid organ sites",
+"system": "ICD9CM"
+},
+"202.80": {
+"name": "Other malignant lymphomas, unspecified site, extranodal and solid organ sites",
+"system": "ICD9CM"
+},
+"202.82": {
+"name": "Other malignant lymphomas, intrathoracic lymph nodes",
+"system": "ICD9CM"
+},
+"203.00": {
+"name": "Multiple myeloma, without mention of having achieved remission",
+"system": "ICD9CM"
+},
+"204.00": {
+"name": "Acute lymphoid leukemia, without mention of having achieved remission",
+"system": "ICD9CM"
+},
+"204.10": {
+"name": "Chronic lymphoid leukemia, without mention of having achieved remission",
+"system": "ICD9CM"
+},
+"205.00": {
+"name": "Acute myeloid leukemia, without mention of having achieved remission",
+"system": "ICD9CM"
+},
+"205.01": {
+"name": "Acute myeloid leukemia, in remission",
+"system": "ICD9CM"
+},
+"205.10": {
+"name": "Chronic myeloid leukemia, without mention of having achieved remission",
+"system": "ICD9CM"
+},
+"205.11": {
+"name": "Chronic myeloid leukemia, in remission",
+"system": "ICD9CM"
+},
+"238.7": {
+"name": "Neoplasm of uncertain behavior of other lymphatic and hematopoietic tissues",
+"system": "ICD9CM"
+},
+"242.20": {
+"name": "Toxic multinodular goiter without mention of thyrotoxic crisis or storm",
+"system": "ICD9CM"
+},
+"242.90": {
+"name": "Thyrotoxicosis without mention of goiter or other cause, and without mention of thyrotoxic crisis or storm",
+"system": "ICD9CM"
+},
+"242.91": {
+"name": "Thyrotoxicosis without mention of goiter or other cause, with mention of thyrotoxic crisis or storm",
+"system": "ICD9CM"
+},
+"244.8": {
+"name": "Other specified acquired hypothyroidism",
+"system": "ICD9CM"
+},
+"244.9": {
+"name": "Unspecified acquired hypothyroidism",
+"system": "ICD9CM"
+},
+"250.00": {
+"name": "Diabetes mellitus without mention of complication, type II or unspecified type, not stated as uncontrolled",
+"system": "ICD9CM"
+},
+"250.01": {
+"name": "Diabetes mellitus without mention of complication, type I [juvenile type], not stated as uncontrolled",
+"system": "ICD9CM"
+},
+"250.02": {
+"name": "Diabetes mellitus without mention of complication, type II or unspecified type, uncontrolled",
+"system": "ICD9CM"
+},
+"250.03": {
+"name": "Diabetes mellitus without mention of complication, type I [juvenile type], uncontrolled",
+"system": "ICD9CM"
+},
+"250.13": {
+"name": "Diabetes with ketoacidosis, type I [juvenile type], uncontrolled",
+"system": "ICD9CM"
+},
+"250.23": {
+"name": "Diabetes with hyperosmolarity, type I [juvenile type], uncontrolled",
+"system": "ICD9CM"
+},
+"250.33": {
+"name": "Diabetes with other coma, type I [juvenile type], uncontrolled",
+"system": "ICD9CM"
+},
+"251.1": {
+"name": "Other specified hypoglycemia",
+"system": "ICD9CM"
+},
+"253.1": {
+"name": "Other and unspecified anterior pituitary hyperfunction",
+"system": "ICD9CM"
+},
+"253.2": {
+"name": "Panhypopituitarism",
+"system": "ICD9CM"
+},
+"253.4": {
+"name": "Other anterior pituitary disorders",
+"system": "ICD9CM"
+},
+"253.5": {
+"name": "Diabetes insipidus",
+"system": "ICD9CM"
+},
+"253.6": {
+"name": "Other disorders of neurohypophysis",
+"system": "ICD9CM"
+},
+"255.0": {
+"name": "Cushing's syndrome",
+"system": "ICD9CM"
+},
+"255.4": {
+"name": "Corticoadrenal insufficiency",
+"system": "ICD9CM"
+},
+"261": {
+"name": "Nutritional marasmus",
+"system": "ICD9CM"
+},
+"263.0": {
+"name": "Malnutrition of moderate degree",
+"system": "ICD9CM"
+},
+"263.9": {
+"name": "Unspecified protein-calorie malnutrition",
+"system": "ICD9CM"
+},
+"272.4": {
+"name": "Other and unspecified hyperlipidemia",
+"system": "ICD9CM"
+},
+"275.2": {
+"name": "Disorders of magnesium metabolism",
+"system": "ICD9CM"
+},
+"275.3": {
+"name": "Disorders of phosphorus metabolism",
+"system": "ICD9CM"
+},
+"275.41": {
+"name": "Hypocalcemia",
+"system": "ICD9CM"
+},
+"275.42": {
+"name": "Hypercalcemia",
+"system": "ICD9CM"
+},
+"276.0": {
+"name": "Hyperosmolality and/or hypernatremia",
+"system": "ICD9CM"
+},
+"276.1": {
+"name": "Hyposmolality and/or hyponatremia",
+"system": "ICD9CM"
+},
+"276.2": {
+"name": "Acidosis",
+"system": "ICD9CM"
+},
+"276.3": {
+"name": "Alkalosis",
+"system": "ICD9CM"
+},
+"276.4": {
+"name": "Mixed acid-base balance disorder",
+"system": "ICD9CM"
+},
+"276.50": {
+"name": "Volume depletion, unspecified",
+"system": "ICD9CM"
+},
+"276.51": {
+"name": "Dehydration",
+"system": "ICD9CM"
+},
+"276.52": {
+"name": "Hypovolemia",
+"system": "ICD9CM"
+},
+"276.6": {
+"name": "Fluid overload",
+"system": "ICD9CM"
+},
+"276.7": {
+"name": "Hyperpotassemia",
+"system": "ICD9CM"
+},
+"276.8": {
+"name": "Hypopotassemia",
+"system": "ICD9CM"
+},
+"278.00": {
+"name": "Obesity, unspecified",
+"system": "ICD9CM"
+},
+"278.01": {
+"name": "Morbid obesity",
+"system": "ICD9CM"
+},
+"280.0": {
+"name": "Iron deficiency anemia secondary to blood loss (chronic)",
+"system": "ICD9CM"
+},
+"281.1": {
+"name": "Other vitamin B12 deficiency anemia",
+"system": "ICD9CM"
+},
+"281.2": {
+"name": "Folate-deficiency anemia",
+"system": "ICD9CM"
+},
+"282.60": {
+"name": "Sickle-cell disease, unspecified",
+"system": "ICD9CM"
+},
+"284.8": {
+"name": "Other specified aplastic anemias",
+"system": "ICD9CM"
+},
+"284.9": {
+"name": "Aplastic anemia, unspecified",
+"system": "ICD9CM"
+},
+"285.1": {
+"name": "Acute posthemorrhagic anemia",
+"system": "ICD9CM"
+},
+"285.21": {
+"name": "Anemia in chronic kidney disease",
+"system": "ICD9CM"
+},
+"285.29": {
+"name": "Anemia of other chronic disease",
+"system": "ICD9CM"
+},
+"285.9": {
+"name": "Anemia, unspecified",
+"system": "ICD9CM"
+},
+"286.5": {
+"name": "Hemorrhagic disorder due to intrinsic circulating anticoagulants, antibodies, or inhibitors",
+"system": "ICD9CM"
+},
+"286.6": {
+"name": "Defibrination syndrome",
+"system": "ICD9CM"
+},
+"286.7": {
+"name": "Acquired coagulation factor deficiency",
+"system": "ICD9CM"
+},
+"286.9": {
+"name": "Other and unspecified coagulation defects",
+"system": "ICD9CM"
+},
+"287.1": {
+"name": "Qualitative platelet defects",
+"system": "ICD9CM"
+},
+"287.31": {
+"name": "Immune thrombocytopenic purpura",
+"system": "ICD9CM"
+},
+"287.5": {
+"name": "Thrombocytopenia, unspecified",
+"system": "ICD9CM"
+},
+"288.0": {
+"name": "Neutropenia",
+"system": "ICD9CM"
+},
+"288.3": {
+"name": "Eosinophilia",
+"system": "ICD9CM"
+},
+"288.8": {
+"name": "Other specified disease of white blood cells",
+"system": "ICD9CM"
+},
+"288.9": {
+"name": "Unspecified disease of white blood cells",
+"system": "ICD9CM"
+},
+"289.0": {
+"name": "Polycythemia, secondary",
+"system": "ICD9CM"
+},
+"289.9": {
+"name": "Unspecified diseases of blood and blood-forming organs",
+"system": "ICD9CM"
+},
+"290.40": {
+"name": "Vascular dementia, uncomplicated",
+"system": "ICD9CM"
+},
+"291.81": {
+"name": "Alcohol withdrawal",
+"system": "ICD9CM"
+},
+"292.0": {
+"name": "Drug withdrawal",
+"system": "ICD9CM"
+},
+"293.0": {
+"name": "Delirium due to conditions classified elsewhere",
+"system": "ICD9CM"
+},
+"294.10": {
+"name": "Dementia in conditions classified elsewhere without behavioral disturbance",
+"system": "ICD9CM"
+},
+"294.9": {
+"name": "Unspecified persistent mental disorders due to conditions classified elsewhere",
+"system": "ICD9CM"
+},
+"295.90": {
+"name": "Unspecified schizophrenia, unspecified",
+"system": "ICD9CM"
+},
+"296.80": {
+"name": "Bipolar disorder, unspecified",
+"system": "ICD9CM"
+},
+"300.00": {
+"name": "Anxiety state, unspecified",
+"system": "ICD9CM"
+},
+"308.2": {
+"name": "Predominant psychomotor disturbance",
+"system": "ICD9CM"
+},
+"31.1": {
+"name": "",
+"system": ""
+},
+"311": {
+"name": "Depressive disorder, not elsewhere classified",
+"system": "ICD9CM"
+},
+"320.7": {
+"name": "Meningitis in other bacterial diseases classified elsewhere",
+"system": "ICD9CM"
+},
+"322.2": {
+"name": "Chronic meningitis",
+"system": "ICD9CM"
+},
+"322.9": {
+"name": "Meningitis, unspecified",
+"system": "ICD9CM"
+},
+"323.0": {
+"name": "Encephalitis, myelitis, and encephalomyelitis in viral diseases classified elsewhere",
+"system": "ICD9CM"
+},
+"323.9": {
+"name": "Unspecified causes of encephalitis, myelitis, and encephalomyelitis",
+"system": "ICD9CM"
+},
+"324.0": {
+"name": "Intracranial abscess",
+"system": "ICD9CM"
+},
+"324.1": {
+"name": "Intraspinal abscess",
+"system": "ICD9CM"
+},
+"332.0": {
+"name": "Paralysis agitans",
+"system": "ICD9CM"
+},
+"333.2": {
+"name": "Myoclonus",
+"system": "ICD9CM"
+},
+"335.20": {
+"name": "Amyotrophic lateral sclerosis",
+"system": "ICD9CM"
+},
+"336.9": {
+"name": "Unspecified disease of spinal cord",
+"system": "ICD9CM"
+},
+"340": {
+"name": "Multiple sclerosis",
+"system": "ICD9CM"
+},
+"342.90": {
+"name": "Hemiplegia, unspecified, affecting unspecified side",
+"system": "ICD9CM"
+},
+"344.00": {
+"name": "Quadriplegia, unspecified",
+"system": "ICD9CM"
+},
+"344.1": {
+"name": "Paraplegia",
+"system": "ICD9CM"
+},
+"345.00": {
+"name": "Generalized nonconvulsive epilepsy, without mention of intractable epilepsy",
+"system": "ICD9CM"
+},
+"345.10": {
+"name": "Generalized convulsive epilepsy, without mention of intractable epilepsy",
+"system": "ICD9CM"
+},
+"345.3": {
+"name": "Grand mal status",
+"system": "ICD9CM"
+},
+"345.40": {
+"name": "Localization-related (focal) (partial) epilepsy and epileptic syndromes with complex partial seizures, without mention of intractable epilepsy",
+"system": "ICD9CM"
+},
+"345.50": {
+"name": "Localization-related (focal) (partial) epilepsy and epileptic syndromes with simple partial seizures, without mention of intractable epilepsy",
+"system": "ICD9CM"
+},
+"345.90": {
+"name": "Epilepsy, unspecified, without mention of intractable epilepsy",
+"system": "ICD9CM"
+},
+"346.00": {
+"name": "Migraine with aura, without mention of intractable migraine without mention of status migrainosus",
+"system": "ICD9CM"
+},
+"348.1": {
+"name": "Anoxic brain damage",
+"system": "ICD9CM"
+},
+"348.2": {
+"name": "Benign intracranial hypertension",
+"system": "ICD9CM"
+},
+"348.30": {
+"name": "Encephalopathy, unspecified",
+"system": "ICD9CM"
+},
+"348.31": {
+"name": "Metabolic encephalopathy",
+"system": "ICD9CM"
+},
+"348.4": {
+"name": "Compression of brain",
+"system": "ICD9CM"
+},
+"348.5": {
+"name": "Cerebral edema",
+"system": "ICD9CM"
+},
+"349.82": {
+"name": "Toxic encephalopathy",
+"system": "ICD9CM"
+},
+"357.0": {
+"name": "Acute infective polyneuritis",
+"system": "ICD9CM"
+},
+"357.2": {
+"name": "Polyneuropathy in diabetes",
+"system": "ICD9CM"
+},
+"357.82": {
+"name": "Critical illness polyneuropathy",
+"system": "ICD9CM"
+},
+"357.9": {
+"name": "Unspecified inflammatory and toxic neuropathy",
+"system": "ICD9CM"
+},
+"358.00": {
+"name": "Myasthenia gravis without (acute) exacerbation",
+"system": "ICD9CM"
+},
+"359.81": {
+"name": "Critical illness myopathy",
+"system": "ICD9CM"
+},
+"359.89": {
+"name": "Other myopathies",
+"system": "ICD9CM"
+},
+"360.00": {
+"name": "Purulent endophthalmitis, unspecified",
+"system": "ICD9CM"
+},
+"394.0": {
+"name": "Mitral stenosis",
+"system": "ICD9CM"
+},
+"394.2": {
+"name": "Mitral stenosis with insufficiency",
+"system": "ICD9CM"
+},
+"395.2": {
+"name": "Rheumatic aortic stenosis with insufficiency",
+"system": "ICD9CM"
+},
+"396.9": {
+"name": "Mitral and aortic valve diseases, unspecified",
+"system": "ICD9CM"
+},
+"401.0": {
+"name": "Malignant essential hypertension",
+"system": "ICD9CM"
+},
+"401.9": {
+"name": "Unspecified essential hypertension",
+"system": "ICD9CM"
+},
+"402.91": {
+"name": "Unspecified hypertensive heart disease with heart failure",
+"system": "ICD9CM"
+},
+"404.91": {
+"name": "Hypertensive heart and chronic kidney disease, unspecified, with heart failure and with chronic kidney disease stage I through stage IV, or unspecified",
+"system": "ICD9CM"
+},
+"404.93": {
+"name": "Hypertensive heart and chronic kidney disease, unspecified, with heart failure and chronic kidney disease stage V or end stage renal disease",
+"system": "ICD9CM"
+},
+"410.11": {
+"name": "Acute myocardial infarction of other anterior wall, initial episode of care",
+"system": "ICD9CM"
+},
+"410.21": {
+"name": "Acute myocardial infarction of inferolateral wall, initial episode of care",
+"system": "ICD9CM"
+},
+"410.31": {
+"name": "Acute myocardial infarction of inferoposterior wall, initial episode of care",
+"system": "ICD9CM"
+},
+"410.41": {
+"name": "Acute myocardial infarction of other inferior wall, initial episode of care",
+"system": "ICD9CM"
+},
+"410.51": {
+"name": "Acute myocardial infarction of other lateral wall, initial episode of care",
+"system": "ICD9CM"
+},
+"410.70": {
+"name": "Subendocardial infarction, episode of care unspecified",
+"system": "ICD9CM"
+},
+"410.71": {
+"name": "Subendocardial infarction, initial episode of care",
+"system": "ICD9CM"
+},
+"410.81": {
+"name": "Acute myocardial infarction of other specified sites, initial episode of care",
+"system": "ICD9CM"
+},
+"410.90": {
+"name": "Acute myocardial infarction of unspecified site, episode of care unspecified",
+"system": "ICD9CM"
+},
+"411.1": {
+"name": "Intermediate coronary syndrome",
+"system": "ICD9CM"
+},
+"411.89": {
+"name": "Other acute and subacute forms of ischemic heart disease, other",
+"system": "ICD9CM"
+},
+"414.00": {
+"name": "Coronary atherosclerosis of unspecified type of vessel, native or graft",
+"system": "ICD9CM"
+},
+"414.01": {
+"name": "Coronary atherosclerosis of native coronary artery",
+"system": "ICD9CM"
+},
+"414.02": {
+"name": "Coronary atherosclerosis of autologous vein bypass graft",
+"system": "ICD9CM"
+},
+"415.19": {
+"name": "Other pulmonary embolism and infarction",
+"system": "ICD9CM"
+},
+"416.0": {
+"name": "Primary pulmonary hypertension",
+"system": "ICD9CM"
+},
+"416.8": {
+"name": "Other chronic pulmonary heart diseases",
+"system": "ICD9CM"
+},
+"416.9": {
+"name": "Chronic pulmonary heart disease, unspecified",
+"system": "ICD9CM"
+},
+"420.90": {
+"name": "Acute pericarditis, unspecified",
+"system": "ICD9CM"
+},
+"421.0": {
+"name": "Acute and subacute bacterial endocarditis",
+"system": "ICD9CM"
+},
+"422.90": {
+"name": "Acute myocarditis, unspecified",
+"system": "ICD9CM"
+},
+"423.9": {
+"name": "Unspecified disease of pericardium",
+"system": "ICD9CM"
+},
+"424.0": {
+"name": "Mitral valve disorders",
+"system": "ICD9CM"
+},
+"424.1": {
+"name": "Aortic valve disorders",
+"system": "ICD9CM"
+},
+"424.2": {
+"name": "Tricuspid valve disorders, specified as nonrheumatic",
+"system": "ICD9CM"
+},
+"425.4": {
+"name": "Other primary cardiomyopathies",
+"system": "ICD9CM"
+},
+"425.5": {
+"name": "Alcoholic cardiomyopathy",
+"system": "ICD9CM"
+},
+"425.8": {
+"name": "Cardiomyopathy in other diseases classified elsewhere",
+"system": "ICD9CM"
+},
+"426.0": {
+"name": "Atrioventricular block, complete",
+"system": "ICD9CM"
+},
+"426.10": {
+"name": "Atrioventricular block, unspecified",
+"system": "ICD9CM"
+},
+"426.11": {
+"name": "First degree atrioventricular block",
+"system": "ICD9CM"
+},
+"426.12": {
+"name": "Mobitz (type) II atrioventricular block",
+"system": "ICD9CM"
+},
+"426.13": {
+"name": "Other second degree atrioventricular block",
+"system": "ICD9CM"
+},
+"426.2": {
+"name": "Left bundle branch hemiblock",
+"system": "ICD9CM"
+},
+"426.3": {
+"name": "Other left bundle branch block",
+"system": "ICD9CM"
+},
+"426.4": {
+"name": "Right bundle branch block",
+"system": "ICD9CM"
+},
+"427.0": {
+"name": "Paroxysmal supraventricular tachycardia",
+"system": "ICD9CM"
+},
+"427.1": {
+"name": "Paroxysmal ventricular tachycardia",
+"system": "ICD9CM"
+},
+"427.31": {
+"name": "Atrial fibrillation",
+"system": "ICD9CM"
+},
+"427.32": {
+"name": "Atrial flutter",
+"system": "ICD9CM"
+},
+"427.41": {
+"name": "Ventricular fibrillation",
+"system": "ICD9CM"
+},
+"427.5": {
+"name": "Cardiac arrest",
+"system": "ICD9CM"
+},
+"427.61": {
+"name": "Supraventricular premature beats",
+"system": "ICD9CM"
+},
+"427.69": {
+"name": "Other premature beats",
+"system": "ICD9CM"
+},
+"427.81": {
+"name": "Sinoatrial node dysfunction",
+"system": "ICD9CM"
+},
+"427.89": {
+"name": "Other specified cardiac dysrhythmias",
+"system": "ICD9CM"
+},
+"427.9": {
+"name": "Cardiac dysrhythmia, unspecified",
+"system": "ICD9CM"
+},
+"428.0": {
+"name": "Congestive heart failure, unspecified",
+"system": "ICD9CM"
+},
+"428.1": {
+"name": "Left heart failure",
+"system": "ICD9CM"
+},
+"428.20": {
+"name": "Systolic heart failure, unspecified",
+"system": "ICD9CM"
+},
+"428.21": {
+"name": "Acute systolic heart failure",
+"system": "ICD9CM"
+},
+"428.22": {
+"name": "Chronic systolic heart failure",
+"system": "ICD9CM"
+},
+"428.23": {
+"name": "Acute on chronic systolic heart failure",
+"system": "ICD9CM"
+},
+"428.30": {
+"name": "Diastolic heart failure, unspecified",
+"system": "ICD9CM"
+},
+"428.31": {
+"name": "Acute diastolic heart failure",
+"system": "ICD9CM"
+},
+"428.32": {
+"name": "Chronic diastolic heart failure",
+"system": "ICD9CM"
+},
+"428.33": {
+"name": "Acute on chronic diastolic heart failure",
+"system": "ICD9CM"
+},
+"428.40": {
+"name": "Combined systolic and diastolic heart failure, unspecified",
+"system": "ICD9CM"
+},
+"428.41": {
+"name": "Acute combined systolic and diastolic heart failure",
+"system": "ICD9CM"
+},
+"428.42": {
+"name": "Chronic combined systolic and diastolic heart failure",
+"system": "ICD9CM"
+},
+"428.43": {
+"name": "Acute on chronic combined systolic and diastolic heart failure",
+"system": "ICD9CM"
+},
+"428.9": {
+"name": "Heart failure, unspecified",
+"system": "ICD9CM"
+},
+"430": {
+"name": "Subarachnoid hemorrhage",
+"system": "ICD9CM"
+},
+"431": {
+"name": "Intracerebral hemorrhage",
+"system": "ICD9CM"
+},
+"432.1": {
+"name": "Subdural hemorrhage",
+"system": "ICD9CM"
+},
+"432.9": {
+"name": "Unspecified intracranial hemorrhage",
+"system": "ICD9CM"
+},
+"434.11": {
+"name": "Cerebral embolism with cerebral infarction",
+"system": "ICD9CM"
+},
+"434.91": {
+"name": "Cerebral artery occlusion, unspecified with cerebral infarction",
+"system": "ICD9CM"
+},
+"435.9": {
+"name": "Unspecified transient cerebral ischemia",
+"system": "ICD9CM"
+},
+"436": {
+"name": "Acute, but ill-defined, cerebrovascular disease",
+"system": "ICD9CM"
+},
+"437.3": {
+"name": "Cerebral aneurysm, nonruptured",
+"system": "ICD9CM"
+},
+"437.6": {
+"name": "Nonpyogenic thrombosis of intracranial venous sinus",
+"system": "ICD9CM"
+},
+"440.1": {
+"name": "Atherosclerosis of renal artery",
+"system": "ICD9CM"
+},
+"440.20": {
+"name": "Atherosclerosis of native arteries of the extremities, unspecified",
+"system": "ICD9CM"
+},
+"440.21": {
+"name": "Atherosclerosis of native arteries of the extremities with intermittent claudication",
+"system": "ICD9CM"
+},
+"441.00": {
+"name": "Dissection of aorta, unspecified site",
+"system": "ICD9CM"
+},
+"441.01": {
+"name": "Dissection of aorta, thoracic",
+"system": "ICD9CM"
+},
+"441.02": {
+"name": "Dissection of aorta, abdominal",
+"system": "ICD9CM"
+},
+"441.2": {
+"name": "Thoracic aneurysm without mention of rupture",
+"system": "ICD9CM"
+},
+"441.3": {
+"name": "Abdominal aneurysm, ruptured",
+"system": "ICD9CM"
+},
+"441.4": {
+"name": "Abdominal aneurysm without mention of rupture",
+"system": "ICD9CM"
+},
+"441.7": {
+"name": "Thoracoabdominal aneurysm, without mention of rupture",
+"system": "ICD9CM"
+},
+"441.9": {
+"name": "Aortic aneurysm of unspecified site without mention of rupture",
+"system": "ICD9CM"
+},
+"443.24": {
+"name": "Dissection of vertebral artery",
+"system": "ICD9CM"
+},
+"443.9": {
+"name": "Peripheral vascular disease, unspecified",
+"system": "ICD9CM"
+},
+"444.21": {
+"name": "Arterial embolism and thrombosis of upper extremity",
+"system": "ICD9CM"
+},
+"444.22": {
+"name": "Arterial embolism and thrombosis of lower extremity",
+"system": "ICD9CM"
+},
+"444.9": {
+"name": "Embolism and thrombosis of unspecified artery",
+"system": "ICD9CM"
+},
+"445.89": {
+"name": "Atheroembolism of other site",
+"system": "ICD9CM"
+},
+"446.5": {
+"name": "Giant cell arteritis",
+"system": "ICD9CM"
+},
+"446.6": {
+"name": "Thrombotic microangiopathy",
+"system": "ICD9CM"
+},
+"447.6": {
+"name": "Arteritis, unspecified",
+"system": "ICD9CM"
+},
+"451.2": {
+"name": "Phlebitis and thrombophlebitis of lower extremities, unspecified",
+"system": "ICD9CM"
+},
+"451.82": {
+"name": "Phlebitis and thrombophlebitis of superficial veins of upper extremities",
+"system": "ICD9CM"
+},
+"451.84": {
+"name": "Phlebitis and thrombophlebitis of upper extremities, unspecified",
+"system": "ICD9CM"
+},
+"451.9": {
+"name": "Phlebitis and thrombophlebitis of unspecified site",
+"system": "ICD9CM"
+},
+"453.1": {
+"name": "Thrombophlebitis migrans",
+"system": "ICD9CM"
+},
+"456.0": {
+"name": "Esophageal varices with bleeding",
+"system": "ICD9CM"
+},
+"458.9": {
+"name": "Hypotension, unspecified",
+"system": "ICD9CM"
+},
+"461.0": {
+"name": "Acute maxillary sinusitis",
+"system": "ICD9CM"
+},
+"461.9": {
+"name": "Acute sinusitis, unspecified",
+"system": "ICD9CM"
+},
+"464.30": {
+"name": "Acute epiglottitis without mention of obstruction",
+"system": "ICD9CM"
+},
+"464.31": {
+"name": "Acute epiglottitis with obstruction",
+"system": "ICD9CM"
+},
+"466.0": {
+"name": "Acute bronchitis",
+"system": "ICD9CM"
+},
+"478.22": {
+"name": "Parapharyngeal abscess",
+"system": "ICD9CM"
+},
+"478.24": {
+"name": "Retropharyngeal abscess",
+"system": "ICD9CM"
+},
+"478.29": {
+"name": "Other diseases of pharynx, not elsewhere classified",
+"system": "ICD9CM"
+},
+"478.30": {
+"name": "Paralysis of vocal cords or larynx, unspecified",
+"system": "ICD9CM"
+},
+"478.8": {
+"name": "Upper respiratory tract hypersensitivity reaction, site unspecified",
+"system": "ICD9CM"
+},
+"480.8": {
+"name": "Pneumonia due to other virus not elsewhere classified",
+"system": "ICD9CM"
+},
+"480.9": {
+"name": "Viral pneumonia, unspecified",
+"system": "ICD9CM"
+},
+"481": {
+"name": "Pneumococcal pneumonia [Streptococcus pneumoniae pneumonia]",
+"system": "ICD9CM"
+},
+"482.2": {
+"name": "Pneumonia due to Hemophilus influenzae [H. influenzae]",
+"system": "ICD9CM"
+},
+"482.31": {
+"name": "Pneumonia due to Streptococcus, group A",
+"system": "ICD9CM"
+},
+"482.41": {
+"name": "Methicillin susceptible pneumonia due to Staphylococcus aureus",
+"system": "ICD9CM"
+},
+"482.83": {
+"name": "Pneumonia due to other gram-negative bacteria",
+"system": "ICD9CM"
+},
+"482.84": {
+"name": "Pneumonia due to Legionnaires' disease",
+"system": "ICD9CM"
+},
+"484.6": {
+"name": "Pneumonia in aspergillosis",
+"system": "ICD9CM"
+},
+"484.7": {
+"name": "Pneumonia in other systemic mycoses",
+"system": "ICD9CM"
+},
+"490": {
+"name": "Bronchitis, not specified as acute or chronic",
+"system": "ICD9CM"
+},
+"491.20": {
+"name": "Obstructive chronic bronchitis without exacerbation",
+"system": "ICD9CM"
+},
+"491.21": {
+"name": "Obstructive chronic bronchitis with (acute) exacerbation",
+"system": "ICD9CM"
+},
+"491.9": {
+"name": "Unspecified chronic bronchitis",
+"system": "ICD9CM"
+},
+"493.90": {
+"name": "Asthma, unspecified type, unspecified",
+"system": "ICD9CM"
+},
+"493.91": {
+"name": "Asthma, unspecified type, with status asthmaticus",
+"system": "ICD9CM"
+},
+"494.1": {
+"name": "Bronchiectasis with acute exacerbation",
+"system": "ICD9CM"
+},
+"501": {
+"name": "Asbestosis",
+"system": "ICD9CM"
+},
+"507.0": {
+"name": "Pneumonitis due to inhalation of food or vomitus",
+"system": "ICD9CM"
+},
+"510.9": {
+"name": "Empyema without mention of fistula",
+"system": "ICD9CM"
+},
+"511.9": {
+"name": "Unspecified pleural effusion",
+"system": "ICD9CM"
+},
+"512.1": {
+"name": "Iatrogenic pneumothorax",
+"system": "ICD9CM"
+},
+"512.8": {
+"name": "Other pneumothorax and air leak",
+"system": "ICD9CM"
+},
+"513.0": {
+"name": "Abscess of lung",
+"system": "ICD9CM"
+},
+"516.3": {
+"name": "Idiopathic interstitial pneumonia",
+"system": "ICD9CM"
+},
+"516.9": {
+"name": "Unspecified alveolar and parietoalveolar pneumonopathy",
+"system": "ICD9CM"
+},
+"517.8": {
+"name": "Lung involvement in other diseases classified elsewhere",
+"system": "ICD9CM"
+},
+"518.0": {
+"name": "Pulmonary collapse",
+"system": "ICD9CM"
+},
+"518.1": {
+"name": "Interstitial emphysema",
+"system": "ICD9CM"
+},
+"518.4": {
+"name": "Acute edema of lung, unspecified",
+"system": "ICD9CM"
+},
+"518.5": {
+"name": "Pulmonary insufficiency following trauma and surgery",
+"system": "ICD9CM"
+},
+"518.82": {
+"name": "Other pulmonary insufficiency, not elsewhere classified",
+"system": "ICD9CM"
+},
+"518.83": {
+"name": "Chronic respiratory failure",
+"system": "ICD9CM"
+},
+"518.84": {
+"name": "Acute and chronic respiratory failure",
+"system": "ICD9CM"
+},
+"519.02": {
+"name": "Mechanical complication of tracheostomy",
+"system": "ICD9CM"
+},
+"519.09": {
+"name": "Other tracheostomy complications",
+"system": "ICD9CM"
+},
+"519.2": {
+"name": "Mediastinitis",
+"system": "ICD9CM"
+},
+"523.3": {
+"name": "Aggressive and acute periodontitis",
+"system": "ICD9CM"
+},
+"530.10": {
+"name": "Esophagitis, unspecified",
+"system": "ICD9CM"
+},
+"530.11": {
+"name": "Reflux esophagitis",
+"system": "ICD9CM"
+},
+"530.4": {
+"name": "Perforation of esophagus",
+"system": "ICD9CM"
+},
+"530.7": {
+"name": "Gastroesophageal laceration-hemorrhage syndrome",
+"system": "ICD9CM"
+},
+"530.82": {
+"name": "Esophageal hemorrhage",
+"system": "ICD9CM"
+},
+"531.50": {
+"name": "Chronic or unspecified gastric ulcer with perforation, without mention of obstruction",
+"system": "ICD9CM"
+},
+"531.90": {
+"name": "Gastric ulcer, unspecified as acute or chronic, without mention of hemorrhage or perforation, without mention of obstruction",
+"system": "ICD9CM"
+},
+"532.90": {
+"name": "Duodenal ulcer, unspecified as acute or chronic, without hemorrhage or perforation, without mention of obstruction",
+"system": "ICD9CM"
+},
+"533.00": {
+"name": "Acute peptic ulcer of unspecified site with hemorrhage, without mention of obstruction",
+"system": "ICD9CM"
+},
+"533.90": {
+"name": "Peptic ulcer of unspecified site, unspecified as acute or chronic, without mention of hemorrhage or perforation, without mention of obstruction",
+"system": "ICD9CM"
+},
+"535.01": {
+"name": "Acute gastritis, with hemorrhage",
+"system": "ICD9CM"
+},
+"537.9": {
+"name": "Unspecified disorder of stomach and duodenum",
+"system": "ICD9CM"
+},
+"540.0": {
+"name": "Acute appendicitis with generalized peritonitis",
+"system": "ICD9CM"
+},
+"541": {
+"name": "Appendicitis, unqualified",
+"system": "ICD9CM"
+},
+"555.9": {
+"name": "Regional enteritis of unspecified site",
+"system": "ICD9CM"
+},
+"556.9": {
+"name": "Ulcerative colitis, unspecified",
+"system": "ICD9CM"
+},
+"557.0": {
+"name": "Acute vascular insufficiency of intestine",
+"system": "ICD9CM"
+},
+"557.9": {
+"name": "Unspecified vascular insufficiency of intestine",
+"system": "ICD9CM"
+},
+"560.1": {
+"name": "Paralytic ileus",
+"system": "ICD9CM"
+},
+"560.2": {
+"name": "Volvulus",
+"system": "ICD9CM"
+},
+"560.39": {
+"name": "Other impaction of intestine",
+"system": "ICD9CM"
+},
+"560.81": {
+"name": "Intestinal or peritoneal adhesions with obstruction (postoperative) (postinfection)",
+"system": "ICD9CM"
+},
+"560.9": {
+"name": "Unspecified intestinal obstruction",
+"system": "ICD9CM"
+},
+"562.11": {
+"name": "Diverticulitis of colon (without mention of hemorrhage)",
+"system": "ICD9CM"
+},
+"564.00": {
+"name": "Constipation, unspecified",
+"system": "ICD9CM"
+},
+"567.21": {
+"name": "Peritonitis (acute) generalized",
+"system": "ICD9CM"
+},
+"567.22": {
+"name": "Peritoneal abscess",
+"system": "ICD9CM"
+},
+"567.23": {
+"name": "Spontaneous bacterial peritonitis",
+"system": "ICD9CM"
+},
+"567.9": {
+"name": "Unspecified peritonitis",
+"system": "ICD9CM"
+},
+"569.5": {
+"name": "Abscess of intestine",
+"system": "ICD9CM"
+},
+"569.83": {
+"name": "Perforation of intestine",
+"system": "ICD9CM"
+},
+"570": {
+"name": "Acute and subacute necrosis of liver",
+"system": "ICD9CM"
+},
+"571.1": {
+"name": "Acute alcoholic hepatitis",
+"system": "ICD9CM"
+},
+"571.2": {
+"name": "Alcoholic cirrhosis of liver",
+"system": "ICD9CM"
+},
+"571.5": {
+"name": "Cirrhosis of liver without mention of alcohol",
+"system": "ICD9CM"
+},
+"571.6": {
+"name": "Biliary cirrhosis",
+"system": "ICD9CM"
+},
+"572.0": {
+"name": "Abscess of liver",
+"system": "ICD9CM"
+},
+"572.2": {
+"name": "Hepatic encephalopathy",
+"system": "ICD9CM"
+},
+"572.4": {
+"name": "Hepatorenal syndrome",
+"system": "ICD9CM"
+},
+"573.1": {
+"name": "Hepatitis in viral diseases classified elsewhere",
+"system": "ICD9CM"
+},
+"573.3": {
+"name": "Hepatitis, unspecified",
+"system": "ICD9CM"
+},
+"573.4": {
+"name": "Hepatic infarction",
+"system": "ICD9CM"
+},
+"573.9": {
+"name": "Unspecified disorder of liver",
+"system": "ICD9CM"
+},
+"574.00": {
+"name": "Calculus of gallbladder with acute cholecystitis, without mention of obstruction",
+"system": "ICD9CM"
+},
+"574.01": {
+"name": "Calculus of gallbladder with acute cholecystitis, with obstruction",
+"system": "ICD9CM"
+},
+"575.0": {
+"name": "Acute cholecystitis",
+"system": "ICD9CM"
+},
+"575.2": {
+"name": "Obstruction of gallbladder",
+"system": "ICD9CM"
+},
+"576.1": {
+"name": "Cholangitis",
+"system": "ICD9CM"
+},
+"577.0": {
+"name": "Acute pancreatitis",
+"system": "ICD9CM"
+},
+"577.1": {
+"name": "Chronic pancreatitis",
+"system": "ICD9CM"
+},
+"577.2": {
+"name": "Cyst and pseudocyst of pancreas",
+"system": "ICD9CM"
+},
+"577.8": {
+"name": "Other specified diseases of pancreas",
+"system": "ICD9CM"
+},
+"578.9": {
+"name": "Hemorrhage of gastrointestinal tract, unspecified",
+"system": "ICD9CM"
+},
+"584.5": {
+"name": "Acute kidney failure with lesion of tubular necrosis",
+"system": "ICD9CM"
+},
+"584.9": {
+"name": "Acute kidney failure, unspecified",
+"system": "ICD9CM"
+},
+"585.1": {
+"name": "Chronic kidney disease, Stage I",
+"system": "ICD9CM"
+},
+"585.2": {
+"name": "Chronic kidney disease, Stage II (mild)",
+"system": "ICD9CM"
+},
+"585.3": {
+"name": "Chronic kidney disease, Stage III (moderate)",
+"system": "ICD9CM"
+},
+"585.4": {
+"name": "Chronic kidney disease, Stage IV (severe)",
+"system": "ICD9CM"
+},
+"585.5": {
+"name": "Chronic kidney disease, Stage V",
+"system": "ICD9CM"
+},
+"585.6": {
+"name": "End stage renal disease",
+"system": "ICD9CM"
+},
+"585.9": {
+"name": "Chronic kidney disease, unspecified",
+"system": "ICD9CM"
+},
+"586": {
+"name": "Renal failure, unspecified",
+"system": "ICD9CM"
+},
+"590.10": {
+"name": "Acute pyelonephritis without lesion of renal medullary necrosis",
+"system": "ICD9CM"
+},
+"592.0": {
+"name": "Calculus of kidney",
+"system": "ICD9CM"
+},
+"595.9": {
+"name": "Cystitis, unspecified",
+"system": "ICD9CM"
+},
+"599.0": {
+"name": "Urinary tract infection, site not specified",
+"system": "ICD9CM"
+},
+"599.60": {
+"name": "Urinary obstruction, unspecified",
+"system": "ICD9CM"
+},
+"599.7": {
+"name": "Hematuria",
+"system": "ICD9CM"
+},
+"619.1": {
+"name": "Digestive-genital tract fistula, female",
+"system": "ICD9CM"
+},
+"642.50": {
+"name": "Severe pre-eclampsia, unspecified as to episode of care or not applicable",
+"system": "ICD9CM"
+},
+"674.50": {
+"name": "Peripartum cardiomyopathy, unspecified as to episode of care or not applicable",
+"system": "ICD9CM"
+},
+"682.2": {
+"name": "Cellulitis and abscess of trunk",
+"system": "ICD9CM"
+},
+"682.9": {
+"name": "Cellulitis and abscess of unspecified sites",
+"system": "ICD9CM"
+},
+"686.9": {
+"name": "Unspecified local infection of skin and subcutaneous tissue",
+"system": "ICD9CM"
+},
+"692.9": {
+"name": "Contact dermatitis and other eczema, unspecified cause",
+"system": "ICD9CM"
+},
+"693.0": {
+"name": "Dermatitis due to drugs and medicines taken internally",
+"system": "ICD9CM"
+},
+"694.4": {
+"name": "Pemphigus",
+"system": "ICD9CM"
+},
+"707.00": {
+"name": "Pressure ulcer, unspecified site",
+"system": "ICD9CM"
+},
+"708.9": {
+"name": "Urticaria, unspecified",
+"system": "ICD9CM"
+},
+"710.0": {
+"name": "Systemic lupus erythematosus",
+"system": "ICD9CM"
+},
+"710.1": {
+"name": "Systemic sclerosis",
+"system": "ICD9CM"
+},
+"710.8": {
+"name": "Other specified diffuse diseases of connective tissue",
+"system": "ICD9CM"
+},
+"711.00": {
+"name": "Pyogenic arthritis, site unspecified",
+"system": "ICD9CM"
+},
+"714.0": {
+"name": "Rheumatoid arthritis",
+"system": "ICD9CM"
+},
+"728.86": {
+"name": "Necrotizing fasciitis",
+"system": "ICD9CM"
+},
+"728.89": {
+"name": "Other disorders of muscle, ligament, and fascia",
+"system": "ICD9CM"
+},
+"729.81": {
+"name": "Swelling of limb",
+"system": "ICD9CM"
+},
+"730.20": {
+"name": "Unspecified osteomyelitis, site unspecified",
+"system": "ICD9CM"
+},
+"730.28": {
+"name": "Unspecified osteomyelitis, other specified sites",
+"system": "ICD9CM"
+},
+"746.9": {
+"name": "Unspecified congenital anomaly of heart",
+"system": "ICD9CM"
+},
+"767.6": {
+"name": "Injury to brachial plexus due to birth trauma",
+"system": "ICD9CM"
+},
+"780.01": {
+"name": "Coma",
+"system": "ICD9CM"
+},
+"780.03": {
+"name": "Persistent vegetative state",
+"system": "ICD9CM"
+},
+"780.09": {
+"name": "Other alteration of consciousness",
+"system": "ICD9CM"
+},
+"780.2": {
+"name": "Syncope and collapse",
+"system": "ICD9CM"
+},
+"780.57": {
+"name": "Unspecified sleep apnea",
+"system": "ICD9CM"
+},
+"780.6": {
+"name": "Fever and other physiologic disturbances of temperature regulation",
+"system": "ICD9CM"
+},
+"780.99": {
+"name": "Other general symptoms",
+"system": "ICD9CM"
+},
+"781.99": {
+"name": "Other symptoms involving nervous and musculoskeletal systems",
+"system": "ICD9CM"
+},
+"784.2": {
+"name": "Swelling, mass, or lump in head and neck",
+"system": "ICD9CM"
+},
+"784.7": {
+"name": "Epistaxis",
+"system": "ICD9CM"
+},
+"785.0": {
+"name": "Tachycardia, unspecified",
+"system": "ICD9CM"
+},
+"785.50": {
+"name": "Shock, unspecified",
+"system": "ICD9CM"
+},
+"785.51": {
+"name": "Cardiogenic shock",
+"system": "ICD9CM"
+},
+"785.52": {
+"name": "Septic shock",
+"system": "ICD9CM"
+},
+"785.59": {
+"name": "Other shock without mention of trauma",
+"system": "ICD9CM"
+},
+"786.00": {
+"name": "Respiratory abnormality, unspecified",
+"system": "ICD9CM"
+},
+"786.09": {
+"name": "Other respiratory abnormalities",
+"system": "ICD9CM"
+},
+"786.1": {
+"name": "Stridor",
+"system": "ICD9CM"
+},
+"786.3": {
+"name": "Hemoptysis",
+"system": "ICD9CM"
+},
+"786.50": {
+"name": "Chest pain, unspecified",
+"system": "ICD9CM"
+},
+"787.01": {
+"name": "Nausea with vomiting",
+"system": "ICD9CM"
+},
+"787.02": {
+"name": "Nausea alone",
+"system": "ICD9CM"
+},
+"787.03": {
+"name": "Vomiting alone",
+"system": "ICD9CM"
+},
+"787.2": {
+"name": "Dysphagia",
+"system": "ICD9CM"
+},
+"787.91": {
+"name": "Diarrhea",
+"system": "ICD9CM"
+},
+"788.42": {
+"name": "Polyuria",
+"system": "ICD9CM"
+},
+"788.5": {
+"name": "Oliguria and anuria",
+"system": "ICD9CM"
+},
+"789.00": {
+"name": "Abdominal pain, unspecified site",
+"system": "ICD9CM"
+},
+"789.01": {
+"name": "Abdominal pain, right upper quadrant",
+"system": "ICD9CM"
+},
+"789.02": {
+"name": "Abdominal pain, left upper quadrant",
+"system": "ICD9CM"
+},
+"789.03": {
+"name": "Abdominal pain, right lower quadrant",
+"system": "ICD9CM"
+},
+"789.04": {
+"name": "Abdominal pain, left lower quadrant",
+"system": "ICD9CM"
+},
+"789.06": {
+"name": "Abdominal pain, epigastric",
+"system": "ICD9CM"
+},
+"789.07": {
+"name": "Abdominal pain, generalized",
+"system": "ICD9CM"
+},
+"789.5": {
+"name": "Ascites",
+"system": "ICD9CM"
+},
+"789.60": {
+"name": "Abdominal tenderness, unspecified site",
+"system": "ICD9CM"
+},
+"790.5": {
+"name": "Other nonspecific abnormal serum enzyme levels",
+"system": "ICD9CM"
+},
+"790.6": {
+"name": "Other abnormal blood chemistry",
+"system": "ICD9CM"
+},
+"790.7": {
+"name": "Bacteremia",
+"system": "ICD9CM"
+},
+"790.94": {
+"name": "Euthyroid sick syndrome",
+"system": "ICD9CM"
+},
+"790.99": {
+"name": "Other nonspecific findings on examination of blood",
+"system": "ICD9CM"
+},
+"791.3": {
+"name": "Myoglobinuria",
+"system": "ICD9CM"
+},
+"791.7": {
+"name": "Other cells and casts in urine",
+"system": "ICD9CM"
+},
+"799.02": {
+"name": "Hypoxemia",
+"system": "ICD9CM"
+},
+"799.1": {
+"name": "Respiratory arrest",
+"system": "ICD9CM"
+},
+"800.00": {
+"name": "Closed fracture of vault of skull without mention of intracranial injury, unspecified state of consciousness",
+"system": "ICD9CM"
+},
+"800.10": {
+"name": "Closed fracture of vault of skull with cerebral laceration and contusion, unspecified state of consciousness",
+"system": "ICD9CM"
+},
+"800.20": {
+"name": "Closed fracture of vault of skull with subarachnoid, subdural, and extradural hemorrhage, unspecified state of consciousness",
+"system": "ICD9CM"
+},
+"800.50": {
+"name": "Open fracture of vault of skull without mention of intracranial injury, unspecified state of consciousness",
+"system": "ICD9CM"
+},
+"801.00": {
+"name": "Closed fracture of base of skull without mention of intra cranial injury, unspecified state of consciousness",
+"system": "ICD9CM"
+},
+"801.20": {
+"name": "Closed fracture of base of skull with subarachnoid, subdural, and extradural hemorrhage, unspecified state of consciousness",
+"system": "ICD9CM"
+},
+"802.0": {
+"name": "Closed fracture of nasal bones",
+"system": "ICD9CM"
+},
+"802.20": {
+"name": "Closed fracture of mandible, unspecified site",
+"system": "ICD9CM"
+},
+"802.4": {
+"name": "Closed fracture of malar and maxillary bones",
+"system": "ICD9CM"
+},
+"802.8": {
+"name": "Closed fracture of other facial bones",
+"system": "ICD9CM"
+},
+"805.00": {
+"name": "Closed fracture of cervical vertebra, unspecified level",
+"system": "ICD9CM"
+},
+"805.2": {
+"name": "Closed fracture of dorsal [thoracic] vertebra without mention of spinal cord injury",
+"system": "ICD9CM"
+},
+"805.4": {
+"name": "Closed fracture of lumbar vertebra without mention of spinal cord injury",
+"system": "ICD9CM"
+},
+"805.6": {
+"name": "Closed fracture of sacrum and coccyx without mention of spinal cord injury",
+"system": "ICD9CM"
+},
+"807.00": {
+"name": "Closed fracture of rib(s), unspecified",
+"system": "ICD9CM"
+},
+"807.2": {
+"name": "Closed fracture of sternum",
+"system": "ICD9CM"
+},
+"807.4": {
+"name": "Flail chest",
+"system": "ICD9CM"
+},
+"808.0": {
+"name": "Closed fracture of acetabulum",
+"system": "ICD9CM"
+},
+"808.2": {
+"name": "Closed fracture of pubis",
+"system": "ICD9CM"
+},
+"808.8": {
+"name": "Closed unspecified fracture of pelvis",
+"system": "ICD9CM"
+},
+"808.9": {
+"name": "Open unspecified fracture of pelvis",
+"system": "ICD9CM"
+},
+"810.00": {
+"name": "Closed fracture of clavicle, unspecified part",
+"system": "ICD9CM"
+},
+"811.00": {
+"name": "Closed fracture of scapula, unspecified part",
+"system": "ICD9CM"
+},
+"812.00": {
+"name": "Closed fracture of unspecified part of upper end of humerus",
+"system": "ICD9CM"
+},
+"813.00": {
+"name": "Closed fracture of upper end of forearm, unspecified",
+"system": "ICD9CM"
+},
+"813.80": {
+"name": "Closed fracture of unspecified part of forearm",
+"system": "ICD9CM"
+},
+"813.90": {
+"name": "Open fracture of unspecified part of forearm",
+"system": "ICD9CM"
+},
+"815.00": {
+"name": "Closed fracture of metacarpal bone(s), site unspecified",
+"system": "ICD9CM"
+},
+"821.00": {
+"name": "Closed fracture of unspecified part of femur",
+"system": "ICD9CM"
+},
+"821.10": {
+"name": "Open fracture of unspecified part of femur",
+"system": "ICD9CM"
+},
+"823.00": {
+"name": "Closed fracture of upper end of tibia alone",
+"system": "ICD9CM"
+},
+"823.80": {
+"name": "Closed fracture of unspecified part of tibia alone",
+"system": "ICD9CM"
+},
+"823.90": {
+"name": "Open fracture of unspecified part of tibia alone",
+"system": "ICD9CM"
+},
+"825.0": {
+"name": "Fracture of calcaneus, closed",
+"system": "ICD9CM"
+},
+"825.25": {
+"name": "Closed fracture of metatarsal bone(s)",
+"system": "ICD9CM"
+},
+"826.0": {
+"name": "Closed fracture of one or more phalanges of foot",
+"system": "ICD9CM"
+},
+"831.00": {
+"name": "Closed dislocation of shoulder, unspecified",
+"system": "ICD9CM"
+},
+"851.00": {
+"name": "Cortex (cerebral) contusion without mention of open intracranial wound, unspecified state of consciousness",
+"system": "ICD9CM"
+},
+"851.80": {
+"name": "Other and unspecified cerebral laceration and contusion, without mention of open intracranial wound, unspecified state of consciousness",
+"system": "ICD9CM"
+},
+"852.00": {
+"name": "Subarachnoid hemorrhage following injury without mention of open intracranial wound, unspecified state of consciousness",
+"system": "ICD9CM"
+},
+"852.20": {
+"name": "Subdural hemorrhage following injury without mention of open intracranial wound, unspecified state of consciousness",
+"system": "ICD9CM"
+},
+"852.40": {
+"name": "Extradural hemorrhage following injury without mention of open intracranial wound, unspecified state of consciousness",
+"system": "ICD9CM"
+},
+"853.00": {
+"name": "Other and unspecified intracranial hemorrhage following injury without mention of open intracranial wound, unspecified state of consciousness",
+"system": "ICD9CM"
+},
+"854.00": {
+"name": "Intracranial injury of other and unspecified nature without mention of open intracranial wound, unspecified state of consciousness",
+"system": "ICD9CM"
+},
+"854.01": {
+"name": "Intracranial injury of other and unspecified nature without mention of open intracranial wound, with no loss of consciousness",
+"system": "ICD9CM"
+},
+"854.02": {
+"name": "Intracranial injury of other and unspecified nature without mention of open intracranial wound, with brief [less than one hour] loss of consciousness",
+"system": "ICD9CM"
+},
+"854.03": {
+"name": "Intracranial injury of other and unspecified nature without mention of open intracranial wound, with moderate [1-24 hours] loss of consciousness",
+"system": "ICD9CM"
+},
+"854.05": {
+"name": "Intracranial injury of other and unspecified nature without mention of open intracranial wound, with prolonged [more than 24 hours] loss of consciousness without return to pre-existing conscious level",
+"system": "ICD9CM"
+},
+"854.06": {
+"name": "Intracranial injury of other and unspecified nature without mention of open intracranial wound, with loss of consciousness of unspecified duration",
+"system": "ICD9CM"
+},
+"854.09": {
+"name": "Intracranial injury of other and unspecified nature without mention of open intracranial wound, with concussion, unspecified",
+"system": "ICD9CM"
+},
+"860.0": {
+"name": "Traumatic pneumothorax without mention of open wound into thorax",
+"system": "ICD9CM"
+},
+"860.2": {
+"name": "Traumatic hemothorax without mention of open wound into thorax",
+"system": "ICD9CM"
+},
+"861.00": {
+"name": "Unspecified injury of heart without mention of open wound into thorax",
+"system": "ICD9CM"
+},
+"861.20": {
+"name": "Unspecified injury of lung without mention of open wound into thorax",
+"system": "ICD9CM"
+},
+"861.21": {
+"name": "Contusion of lung without mention of open wound into thorax",
+"system": "ICD9CM"
+},
+"861.32": {
+"name": "Laceration of lung with open wound into thorax",
+"system": "ICD9CM"
+},
+"862.0": {
+"name": "Injury to diaphragm, without mention of open wound into cavity",
+"system": "ICD9CM"
+},
+"863.59": {
+"name": "Other injury to colon or rectum, with open wound into cavity",
+"system": "ICD9CM"
+},
+"863.80": {
+"name": "Injury to gastrointestinal tract, unspecified site, without mention of open wound into cavity",
+"system": "ICD9CM"
+},
+"863.84": {
+"name": "Injury to pancreas, multiple and unspecified sites, without mention of open wound into cavity",
+"system": "ICD9CM"
+},
+"863.89": {
+"name": "Injury to other gastrointestinal sites, without mention of open wound into cavity",
+"system": "ICD9CM"
+},
+"863.90": {
+"name": "Injury to gastrointestinal tract, unspecified site, with open wound into cavity",
+"system": "ICD9CM"
+},
+"864.00": {
+"name": "Injury to liver without mention of open wound into cavity, unspecified injury",
+"system": "ICD9CM"
+},
+"864.05": {
+"name": "Injury to liver without mention of open wound into cavity laceration, unspecified",
+"system": "ICD9CM"
+},
+"865.00": {
+"name": "Injury to spleen without mention of open wound into cavity, unspecified injury",
+"system": "ICD9CM"
+},
+"865.01": {
+"name": "Injury to spleen without mention of open wound into cavity, hematoma without rupture of capsule",
+"system": "ICD9CM"
+},
+"865.04": {
+"name": "Injury to spleen without mention of open wound into cavity, massive parenchymal disruption",
+"system": "ICD9CM"
+},
+"866.00": {
+"name": "Injury to kidney without mention of open wound into cavity, unspecified injury",
+"system": "ICD9CM"
+},
+"867.0": {
+"name": "Injury to bladder and urethra, without mention of open wound into cavity",
+"system": "ICD9CM"
+},
+"868.01": {
+"name": "Injury to other intra-abdominal organs without mention of open wound into cavity, adrenal gland",
+"system": "ICD9CM"
+},
+"868.04": {
+"name": "Injury to other intra-abdominal organs without mention of open wound into cavity, retroperitoneum",
+"system": "ICD9CM"
+},
+"870.9": {
+"name": "Unspecified open wound of ocular adnexa",
+"system": "ICD9CM"
+},
+"872.00": {
+"name": "Open wound of external ear, unspecified site, without mention of complication",
+"system": "ICD9CM"
+},
+"873.70": {
+"name": "Open wound of mouth, unspecified site, complicated",
+"system": "ICD9CM"
+},
+"874.9": {
+"name": "Open wound of other and unspecified parts of neck, complicated",
+"system": "ICD9CM"
+},
+"900.00": {
+"name": "Injury to carotid artery, unspecified",
+"system": "ICD9CM"
+},
+"901.0": {
+"name": "Injury to thoracic aorta",
+"system": "ICD9CM"
+},
+"902.0": {
+"name": "Injury to abdominal aorta",
+"system": "ICD9CM"
+},
+"902.20": {
+"name": "Injury to celiac and mesenteric arteries, unspecified",
+"system": "ICD9CM"
+},
+"935.1": {
+"name": "Foreign body in esophagus",
+"system": "ICD9CM"
+},
+"946.0": {
+"name": "Burns of multiple specified sites, unspecified degree",
+"system": "ICD9CM"
+},
+"946.3": {
+"name": "Full-thickness skin loss [third degree NOS] of multiple specified sites",
+"system": "ICD9CM"
+},
+"947.1": {
+"name": "Burn of larynx, trachea, and lung",
+"system": "ICD9CM"
+},
+"952.00": {
+"name": "C1-C4 level with unspecified spinal cord injury",
+"system": "ICD9CM"
+},
+"952.05": {
+"name": "C5-C7 level with unspecified spinal cord injury",
+"system": "ICD9CM"
+},
+"952.10": {
+"name": "T1-T6 level with unspecified spinal cord injury",
+"system": "ICD9CM"
+},
+"952.15": {
+"name": "T7-T12 level with unspecified spinal cord injury",
+"system": "ICD9CM"
+},
+"952.2": {
+"name": "Lumbar spinal cord injury without evidence of spinal bone injury",
+"system": "ICD9CM"
+},
+"959.11": {
+"name": "Other injury of chest wall",
+"system": "ICD9CM"
+},
+"965.1": {
+"name": "Poisoning by salicylates",
+"system": "ICD9CM"
+},
+"965.4": {
+"name": "Poisoning by aromatic analgesics, not elsewhere classified",
+"system": "ICD9CM"
+},
+"968.5": {
+"name": "Surface (topical) and infiltration anesthetics",
+"system": "ICD9CM"
+},
+"969.0": {
+"name": "Poisoning by antidepressants",
+"system": "ICD9CM"
+},
+"969.4": {
+"name": "Poisoning by benzodiazepine-based tranquilizers",
+"system": "ICD9CM"
+},
+"977.9": {
+"name": "Poisoning by unspecified drug or medicinal substance",
+"system": "ICD9CM"
+},
+"980.0": {
+"name": "Toxic effect of ethyl alcohol",
+"system": "ICD9CM"
+},
+"986": {
+"name": "Toxic effect of carbon monoxide",
+"system": "ICD9CM"
+},
+"991.6": {
+"name": "Hypothermia",
+"system": "ICD9CM"
+},
+"995.0": {
+"name": "Other anaphylactic reaction",
+"system": "ICD9CM"
+},
+"995.90": {
+"name": "Systemic inflammatory response syndrome, unspecified",
+"system": "ICD9CM"
+},
+"995.91": {
+"name": "Sepsis",
+"system": "ICD9CM"
+},
+"995.92": {
+"name": "Severe sepsis",
+"system": "ICD9CM"
+},
+"995.93": {
+"name": "Systemic inflammatory response syndrome due to noninfectious process without acute organ dysfunction",
+"system": "ICD9CM"
+},
+"995.94": {
+"name": "Systemic inflammatory response syndrome due to noninfectious process with acute organ dysfunction",
+"system": "ICD9CM"
+},
+"996.61": {
+"name": "Infection and inflammatory reaction due to cardiac device, implant, and graft",
+"system": "ICD9CM"
+},
+"996.62": {
+"name": "Infection and inflammatory reaction due to other vascular device, implant, and graft",
+"system": "ICD9CM"
+},
+"996.81": {
+"name": "Complications of transplanted kidney",
+"system": "ICD9CM"
+},
+"996.82": {
+"name": "Complications of transplanted liver",
+"system": "ICD9CM"
+},
+"996.85": {
+"name": "Complications of transplanted bone marrow",
+"system": "ICD9CM"
+},
+"996.86": {
+"name": "Complications of transplanted pancreas",
+"system": "ICD9CM"
+},
+"997.09": {
+"name": "Other nervous system complications",
+"system": "ICD9CM"
+},
+"997.1": {
+"name": "Cardiac complications, not elsewhere classified",
+"system": "ICD9CM"
+},
+"997.79": {
+"name": "Vascular complications of other vessels",
+"system": "ICD9CM"
+},
+"998.11": {
+"name": "Hemorrhage complicating a procedure",
+"system": "ICD9CM"
+},
+"998.32": {
+"name": "Disruption of external operation (surgical) wound",
+"system": "ICD9CM"
+},
+"998.59": {
+"name": "Other postoperative infection",
+"system": "ICD9CM"
+},
+"998.9": {
+"name": "Unspecified complication of procedure, not elsewhere classified",
+"system": "ICD9CM"
+},
+"999.8": {
+"name": "Other infusion and transfusion reaction, not elsewhere classified",
+"system": "ICD9CM"
+},
+"C71.9": {
+"name": "Malignant neoplasm of brain, unspecified",
+"system": "ICD10CM"
+},
+"E87.1": {
+"name": "Hypo-osmolality and hyponatremia",
+"system": "ICD10CM"
+},
+"E980.0": {
+"name": "Poisoning by analgesics, antipyretics, and antirheumatics, undetermined whether accidentally or purposely inflicted",
+"system": "ICD9CM"
+},
+"E980.1": {
+"name": "Poisoning by barbiturates, undetermined whether accidentally or purposely inflicted",
+"system": "ICD9CM"
+},
+"E980.2": {
+"name": "Poisoning by other sedatives and hypnotics, undetermined whether accidentally or purposely inflicted",
+"system": "ICD9CM"
+},
+"E980.3": {
+"name": "Poisoning by tranquilizers and other psychotropic agents, undetermined whether accidentally or purposely inflicted",
+"system": "ICD9CM"
+},
+"E980.4": {
+"name": "Poisoning by other specified drugs and medicinal substances, undetermined whether accidentally or purposely inflicted",
+"system": "ICD9CM"
+},
+"E980.5": {
+"name": "Poisoning by unspecified drug or medicinal substance, undetermined whether accidentally or purposely inflicted",
+"system": "ICD9CM"
+},
+"F17.20": {
+"name": "Nicotine dependence, unspecified",
+"system": "ICD10CM"
+},
+"F19.939": {
+"name": "Other psychoactive substance use, unspecified with withdrawal, unspecified",
+"system": "ICD10CM"
+},
+"G40.1": {
+"name": "Localization-related (focal) (partial) symptomatic epilepsy and epileptic syndromes with simple partial seizures",
+"system": "ICD10CM"
+},
+"G91.2": {
+"name": "(Idiopathic) normal pressure hydrocephalus",
+"system": "ICD10CM"
+},
+"G91.9": {
+"name": "Hydrocephalus, unspecified",
+"system": "ICD10CM"
+},
+"G93.5": {
+"name": "Compression of brain",
+"system": "ICD10CM"
+},
+"G93.6": {
+"name": "Cerebral edema",
+"system": "ICD10CM"
+},
+"I35.0": {
+"name": "Nonrheumatic aortic (valve) stenosis",
+"system": "ICD10CM"
+},
+"I37.1": {
+"name": "Nonrheumatic pulmonary valve insufficiency",
+"system": "ICD10CM"
+},
+"I42.0": {
+"name": "Dilated cardiomyopathy",
+"system": "ICD10CM"
+},
+"I44.1": {
+"name": "Atrioventricular block, second degree",
+"system": "ICD10CM"
+},
+"I50.9": {
+"name": "Heart failure, unspecified",
+"system": "ICD10CM"
+},
+"I68.0": {
+"name": "Cerebral amyloid angiopathy",
+"system": "ICD10CM"
+},
+"J80": {
+"name": "Acute respiratory distress syndrome",
+"system": "ICD10CM"
+},
+"K61.1": {
+"name": "Rectal abscess",
+"system": "ICD10CM"
+},
+"K65.1": {
+"name": "Peritoneal abscess",
+"system": "ICD10CM"
+},
+"L03.90": {
+"name": "Cellulitis, unspecified",
+"system": "ICD10CM"
+},
+"M79.A3": {
+"name": "Nontraumatic compartment syndrome of abdomen",
+"system": "ICD10CM"
+},
+"R51": {
+"name": "Headache",
+"system": "ICD10CM"
+},
+"R56.9": {
+"name": "Unspecified convulsions",
+"system": "ICD10CM"
+},
+"S02": {
+"name": "Fracture of skull and facial bones",
+"system": "ICD10CM"
+},
+"S02.1": {
+"name": "Fracture of base of skull",
+"system": "ICD10CM"
+},
+"S10.8": {
+"name": "Superficial injury of other specified parts of neck",
+"system": "ICD10CM"
+},
+"S12": {
+"name": "Fracture of cervical vertebra and other parts of neck",
+"system": "ICD10CM"
+},
+"S14.1": {
+"name": "Other and unspecified injuries of cervical spinal cord",
+"system": "ICD10CM"
+},
+"S22.00": {
+"name": "Fracture of unspecified thoracic vertebra",
+"system": "ICD10CM"
+},
+"S22.2": {
+"name": "Fracture of sternum",
+"system": "ICD10CM"
+},
+"S22.4": {
+"name": "Multiple fractures of ribs",
+"system": "ICD10CM"
+},
+"S24.1": {
+"name": "Other and unspecified injuries of thoracic spinal cord",
+"system": "ICD10CM"
+},
+"S32.00": {
+"name": "Fracture of unspecified lumbar vertebra",
+"system": "ICD10CM"
+},
+"S32.1": {
+"name": "Fracture of sacrum",
+"system": "ICD10CM"
+},
+"S32.30": {
+"name": "Unspecified fracture of ilium",
+"system": "ICD10CM"
+},
+"S32.40": {
+"name": "Unspecified fracture of acetabulum",
+"system": "ICD10CM"
+},
+"S32.59": {
+"name": "Other specified fracture of pubis",
+"system": "ICD10CM"
+},
+"S36.50": {
+"name": "Unspecified injury of colon",
+"system": "ICD10CM"
+},
+"S36.89": {
+"name": "Injury of other intra-abdominal organs",
+"system": "ICD10CM"
+},
+"S42.00": {
+"name": "Fracture of unspecified part of clavicle",
+"system": "ICD10CM"
+},
+"S42.10": {
+"name": "Fracture of unspecified part of scapula",
+"system": "ICD10CM"
+},
+"T40.60": {
+"name": "Poisoning by, adverse effect of and underdosing of unspecified narcotics",
+"system": "ICD10CM"
+},
+"T43.01": {
+"name": "Poisoning by, adverse effect of and underdosing of tricyclic antidepressants",
+"system": "ICD10CM"
+},
+"T51.0": {
+"name": "Toxic effect of ethanol",
+"system": "ICD10CM"
+},
+"T81.7": {
+"name": "Vascular complications following a procedure, not elsewhere classified",
+"system": "ICD10CM"
+},
+"V08": {
+"name": "Asymptomatic human immunodeficiency virus [HIV] infection status",
+"system": "ICD9CM"
+},
+"V42.7": {
+"name": "Liver replaced by transplant",
+"system": "ICD9CM"
+},
+"V42.83": {
+"name": "Pancreas replaced by transplant",
+"system": "ICD9CM"
+},
+"V62.84": {
+"name": "Suicidal ideation",
+"system": "ICD9CM"
+}
+}

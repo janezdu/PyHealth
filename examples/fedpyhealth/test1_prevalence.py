@@ -83,12 +83,19 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 # Record building                                                              #
 # --------------------------------------------------------------------------- #
 def real_subset_to_records(subset, index_to_code: Dict[int, str]):
-    """Decode a real SampleDataset subset (index tensors) into long-format rows."""
+    """Decode a real SampleDataset subset (multi-hot rows) into long-format rows.
+
+    ``visits`` is ``(n_visits, vocab_size)`` and a code's identity is its COLUMN,
+    not the stored value -- every stored value is 0.0 or 1.0. Reading the values
+    as vocabulary indices (which is what the index-tensor form required) decodes
+    every visit to ``<pad>``/``<unk>``, yields nothing, and leaves the caller
+    with an empty frame rather than an error.
+    """
     for sample in subset:
         pid = str(sample["patient_id"])
-        for t, visit in enumerate(sample["visits"].tolist()):
-            for idx in visit:
-                code = index_to_code.get(int(idx))
+        for t, visit in enumerate(sample["visits"]):
+            for col in visit.nonzero().flatten().tolist():
+                code = index_to_code.get(int(col))
                 if code in (None, "<pad>", "<unk>"):
                     continue
                 yield {"id": pid, "time": t, "visit_codes": code, "labels": 0}

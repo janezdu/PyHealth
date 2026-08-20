@@ -7,12 +7,13 @@ ever touches eICU.
     export EICU_ROOT=/path/to/eicu-crd/2.0
     python cohort.py --hospitals 420,199,345,79,259,253,438,201 --out $CACHE
     python cohort.py --bands 0-199,200-499,500-1999,2000- --per-band 2 --out $CACHE
+    python cohort.py --list-sizes        # exact post-task size of every hospital
 
 What it writes
 --------------
 ::
 
-    <out>/vocab.json            the fitted NestedSequenceProcessor state
+    <out>/vocab.json            the fitted NestedMultiHotProcessor state
     <out>/<hospital>.<fold>.parquet    8 hospitals x 3 folds = 24 files
     <out>/manifest.json         hospitals, rare codes, fold sizes, provenance
 
@@ -121,22 +122,26 @@ def rare_codes(cache_dir: str) -> Dict[str, List[str]]:
 
 
 def load_processor(cache_dir: str):
-    """Rebuild the fitted ``NestedSequenceProcessor`` exactly as it was.
+    """Rebuild the fitted ``NestedMultiHotProcessor`` exactly as it was.
 
-    ``_max_inner_len`` and ``_padding`` are as load-bearing as the vocabulary:
-    they set the width of every emitted tensor, so restoring only ``code_vocab``
-    would give correctly-labelled samples of the wrong shape.
+    Only the vocabulary matters now. The old index processor also had to
+    restore ``_max_inner_len`` -- the padded width of a visit -- because it set
+    the shape of every emitted tensor; the multi-hot form is sized by the
+    vocabulary instead, so that field is read from older caches and ignored.
+
+    This is why no cohort rebuild is needed: the Parquet holds code *strings*,
+    and ``code_vocab`` maps identically between the two processors (``<pad>``
+    is 0 and ``<unk>`` is 1 in both).
     """
-    from pyhealth.processors.nested_sequence_processor import (
-        NestedSequenceProcessor,
+    from pyhealth.processors.nested_multihot_processor import (
+        NestedMultiHotProcessor,
     )
 
     with open(os.path.join(cache_dir, VOCAB_FILE)) as fh:
         state = json.load(fh)
-    proc = NestedSequenceProcessor(padding=state["padding"])
+    proc = NestedMultiHotProcessor()
     proc.code_vocab = state["code_vocab"]
     proc._next_index = max(state["code_vocab"].values()) + 1
-    proc._max_inner_len = state["max_inner_len"]
     if proc.vocab_size() != state["vocab_size"]:
         raise ValueError(
             f"restored vocab size {proc.vocab_size()} != cached "
@@ -192,7 +197,7 @@ def _to_sample_dataset(patients_by_hospital: Dict[str, Dict[str, list]],
     ]
     return create_sample_dataset(
         samples=samples,
-        input_schema={"visits": "nested_sequence"},
+        input_schema={"visits": "nested_multihot"},
         output_schema={},
         input_processors={"visits": processor},   # pinned, never refitted
         dataset_name=name,
@@ -367,6 +372,120 @@ def parse_run_specs(specs: Sequence[str]) -> Dict[str, str]:
         name, save_dir = spec.split("=", 1)
         runs[name.strip()] = save_dir.strip()
     return runs
+
+
+# --------------------------------------------------------------------------- #
+# How the rare tail gets sliced                                                #
+# --------------------------------------------------------------------------- #
+# These live here, not in test2_rare_efficacy.py, because utils/eda/lengths.py needs
+# the SAME fold assignment to say which codes a given patient loses to masking.
+# Importing them from test2 would drag torch into a pure-polars analysis script,
+# and copying them would let the two definitions drift -- at which point every
+# post-mask length the EDA reports is silently attributed to the wrong fold.
+
+# Validation-support bands for stratified reporting. A single macro mean over
+# the whole scored pool is separated mostly by its head, which is why the
+# headline table reports these instead.
+# Banded, not filtered. A code with 1-4 validation positives gives a noisy
+# average_precision, but noisy is not the same as uninformative -- across ~200
+# such codes the band mean still carries signal, and dropping them silently
+# discards exactly the deep tail this test exists to measure. Read the low bands
+# with their n_scored counts in hand rather than pretending they do not exist.
+SUPPORT_BANDS: Tuple[Tuple[str, int, float], ...] = (
+    ("1_4", 1, 5),
+    ("5_9", 5, 10),
+    ("10_19", 10, 20),
+    ("20_49", 20, 50),
+    ("50_plus", 50, float("inf")),
+)
+
+
+def assign_folds(codes: Sequence[str], n_folds: int) -> List[List[str]]:
+    """Round-robin the scored codes into ``n_folds`` disjoint, sorted folds.
+
+    Round-robin over the *sorted* code list is deterministic and spreads
+    prevalence evenly, so no fold ends up holding only the head or only the
+    2-positive tail.
+    """
+    folds: List[List[str]] = [[] for _ in range(max(1, n_folds))]
+    for i, code in enumerate(sorted(codes)):
+        folds[i % len(folds)].append(code)
+    return [f for f in folds if f]
+
+
+def sample_eval_codes(codes: Sequence[str], n: int, seed: int = 0
+                      ) -> List[str]:
+    """Draw ``n`` codes to mask and score, uniformly and reproducibly.
+
+    The alternative to ``assign_folds``: instead of partitioning all scored
+    codes into K folds and training K classifiers per arm, mask ONE fixed random
+    subset and train a single classifier per arm. Cost drops by a factor of K,
+    and the subset keeps far more rare-to-rare co-occurrence intact than any
+    fold does -- masking 30 of 476 codes leaves 94% of the tail in the input,
+    against 75% at K=4.
+
+    What it costs: the score is now an estimate over 30 codes rather than all
+    476, so it carries sampling error that a full sweep does not. Codes are
+    drawn uniformly over the scored pool, NOT stratified by support, so a draw
+    is representative of the pool in expectation but any single draw can lean
+    head-heavy or tail-heavy. Report the drawn codes' support distribution
+    alongside the score, and vary ``seed`` to see how much the answer moves.
+
+    Uniform draw over the *sorted* pool, so the same (codes, n, seed) always
+    yields the same subset regardless of dict ordering upstream.
+
+    Args:
+        codes: The scored rare codes to draw from.
+        n: How many to draw. Capped at ``len(codes)``.
+        seed: Draw seed. Changing it changes the evaluation set.
+
+    Returns:
+        Sorted code strings.
+    """
+    import numpy as np
+
+    pool = sorted(codes)
+    if n >= len(pool):
+        return pool
+    rng = np.random.default_rng(seed)
+    picked = rng.choice(len(pool), size=n, replace=False)
+    return sorted(pool[int(i)] for i in picked)
+
+
+def code_prevalence(manifest: dict, folds: Sequence[str] = FOLDS
+                    ) -> Dict[str, float]:
+    """Cohort-wide prevalence of every pooled rare code.
+
+    Summed support over ``folds`` divided by the cohort patient count -- the
+    same quantity ``global_rare_codes`` was thresholded on at build time, so
+    re-deriving it here and comparing is a free correctness check.
+    """
+    support = manifest["pooled_rare_support"]
+    n_cohort = sum(manifest["per_hospital"][h]["n_total"]
+                   for h in manifest["hospitals"])
+    return {c: sum(support[f].get(c, 0) for f in folds) / max(1, n_cohort)
+            for c in manifest["pooled_rare_codes"]}
+
+
+def scored_codes(manifest: dict, fold: str, min_positives: int = 1
+                 ) -> List[str]:
+    """Rare codes with enough positives in ``fold`` to be scoreable.
+
+    The same filter Test 2 applies before it scores anything, factored out so
+    the EDA reports on exactly the code list Test 2 reports on. A code with no
+    positives in the evaluation fold cannot be measured however good the
+    generator is, so it is excluded from both.
+
+    Args:
+        manifest: Loaded cohort manifest.
+        fold: Which fold's support to threshold on, e.g. ``"val"``.
+        min_positives: Minimum patients carrying the code in ``fold``.
+
+    Returns:
+        Sorted code strings.
+    """
+    support = manifest["pooled_rare_support"][fold]
+    return sorted(c for c, n in support.items() if n >= min_positives)
 
 
 # --------------------------------------------------------------------------- #
@@ -764,12 +883,21 @@ def write_fold(patients: Dict[str, list], path: str) -> None:
 
 
 def write_processor(processor, path: str) -> None:
-    """Persist the fitted processor's full state (vocab + tensor geometry)."""
+    """Persist the fitted processor's state.
+
+    For the multi-hot processor the vocabulary *is* the geometry -- it sets the
+    row width -- so there is nothing else to record. ``max_inner_len`` and
+    ``padding`` are still written when the processor has them, so a cache built
+    here stays readable by anything that still expects the index form.
+    """
+    state = {"code_vocab": processor.code_vocab,
+             "vocab_size": processor.vocab_size()}
+    for attr, key in (("_max_inner_len", "max_inner_len"),
+                      ("_padding", "padding")):
+        if hasattr(processor, attr):
+            state[key] = getattr(processor, attr)
     with open(path, "w") as fh:
-        json.dump({"code_vocab": processor.code_vocab,
-                   "max_inner_len": processor._max_inner_len,
-                   "padding": processor._padding,
-                   "vocab_size": processor.vocab_size()}, fh)
+        json.dump(state, fh)
 
 
 def _sha256_list(items: Sequence[str]) -> str:
@@ -858,8 +986,10 @@ def build(args) -> None:
             n_dropped += 1
             continue
         visits = []
-        for visit in sample["visits"].tolist():
-            codes = [index_to_code.get(int(c)) for c in visit]
+        # Column index, not stored value: EHRGenerationEICU emits multi-hot.
+        for visit in sample["visits"]:
+            codes = [index_to_code.get(int(c))
+                     for c in visit.nonzero().flatten().tolist()]
             codes = [c for c in codes if c not in (None, "<pad>", "<unk>")]
             if codes:
                 visits.append(codes)
@@ -876,6 +1006,25 @@ def build(args) -> None:
     sizes = {hid: len(p) for hid, p in traj.items()}
     print(f"{len(sizes)} hospitals seen; {n_dropped} cross-hospital patients "
           f"dropped")
+
+    if args.list_sizes:
+        # The walk is the only place exact post-task sizes exist: patient.csv
+        # counts run 1.2-1.7x higher and the ratio varies per hospital (the
+        # task drops single-visit patients, and cross-hospital patients go
+        # too), so a size floor cannot be picked from the CSV. Print and stop.
+        min_rare = int(np.ceil(args.rare_min_patients
+                               / args.rare_prevalence_max))
+        print(f"\n{len(sizes)} hospitals by post-task patient count. A "
+              f"hospital needs >= {min_rare} patients for a non-empty rare "
+              f"set\n(a code must hold >= {args.rare_min_patients} patients "
+              f"yet <= {args.rare_prevalence_max:.0%} of them).\n")
+        print("  hospital  patients  rare-set possible")
+        print("  " + "-" * 36)
+        for hid, n in sorted(sizes.items(), key=lambda kv: (-kv[1], kv[0])):
+            print(f"  {hid:>8}  {n:>8,}  {'yes' if n >= min_rare else 'NO'}")
+        eligible = sum(1 for n in sizes.values() if n >= min_rare)
+        print(f"\n{eligible} of {len(sizes)} hospitals can carry a rare set.")
+        return
 
     # --- select the cohort ---
     bands = parse_bands(args.bands)
@@ -1155,6 +1304,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--report", action="store_true",
                    help="do not build: read the cache at --out and print fold "
                         "coverage for codes and patients, then exit")
+    p.add_argument("--list-sizes", action="store_true",
+                   help="do not build: walk the samples and print every "
+                        "hospital's exact post-task patient count, then exit. "
+                        "This is the only source of those numbers -- "
+                        "patient.csv counts are 1.2-1.7x higher, by a ratio "
+                        "that varies per hospital")
     p.add_argument("--name", default="strat8", help="cohort name, for the record")
     p.add_argument("--eicu-root", default=EICU_ROOT,
                    help="eICU CRD root (default: $EICU_ROOT)")

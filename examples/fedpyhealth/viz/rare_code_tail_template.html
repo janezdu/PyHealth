@@ -1,0 +1,646 @@
+<!--
+  Template for eda_prevalence_curve.py. The literal string "__DATA__" below is
+  replaced with the payload at render time, so this file is not viewable on its
+  own -- open the generated rare_code_tail.html instead.
+-->
+<title>[ehr] Rare-code long tail</title>
+<style>
+  :root {
+    --ground:      #fcfcfd;
+    --panel:       #ffffff;
+    --ink:         #14171a;
+    --ink-soft:    #4a535e;
+    --ink-faint:   #7b8695;
+    --rule:        #e2e6ea;
+    --rule-soft:   #eef1f4;
+    --curve:       #8d99a6;
+    --curve-fill:  #8d99a614;
+    --limit:       #b5462f;
+    --draw:        #0d6e66;
+    --draw-halo:   #0d6e6622;
+    --shadow:      0 1px 2px #14171a0f, 0 8px 24px #14171a0a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:     #101316;
+      --panel:      #171b1f;
+      --ink:        #e9edf1;
+      --ink-soft:   #a4b0bd;
+      --ink-faint:  #6f7b88;
+      --rule:       #262c33;
+      --rule-soft:  #1e242a;
+      --curve:      #6e7a88;
+      --curve-fill: #6e7a8818;
+      --limit:      #e07a5f;
+      --draw:       #3fb9aa;
+      --draw-halo:  #3fb9aa26;
+      --shadow:     0 1px 2px #00000040, 0 8px 24px #00000030;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:     #101316;
+    --panel:      #171b1f;
+    --ink:        #e9edf1;
+    --ink-soft:   #a4b0bd;
+    --ink-faint:  #6f7b88;
+    --rule:       #262c33;
+    --rule-soft:  #1e242a;
+    --curve:      #6e7a88;
+    --curve-fill: #6e7a8818;
+    --limit:      #e07a5f;
+    --draw:       #3fb9aa;
+    --draw-halo:  #3fb9aa26;
+    --shadow:     0 1px 2px #00000040, 0 8px 24px #00000030;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font: 400 15px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+          Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 48px 28px 80px;
+    display: flex;
+    flex-direction: column;
+    gap: 30px;
+  }
+
+  h1 {
+    font: 400 34px/1.15 "Iowan Old Style", "Palatino Linotype", Palatino,
+          Georgia, serif;
+    letter-spacing: -0.01em;
+    margin: 0;
+    text-wrap: balance;
+  }
+  .lede {
+    margin: 0;
+    max-width: 62ch;
+    color: var(--ink-soft);
+    font-size: 16px;
+  }
+  h2 {
+    font: 600 12px/1 ui-sans-serif, system-ui, sans-serif;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 0;
+  }
+
+  .mono, .num {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+                 monospace;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ---- summary strip ---- */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .stat { background: var(--panel); padding: 14px 16px; }
+  .stat .k {
+    font-size: 11px; letter-spacing: 0.07em; text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  .stat .v {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-variant-numeric: tabular-nums;
+    font-size: 22px; margin-top: 3px;
+  }
+  .stat .v.limit { color: var(--limit); }
+  .stat .v.draw  { color: var(--draw); }
+
+  /* ---- controls ---- */
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 22px; align-items: flex-end;
+  }
+  .ctl { display: flex; flex-direction: column; gap: 6px; }
+  .ctl label {
+    font-size: 11px; letter-spacing: 0.07em; text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  select, .seg {
+    font: inherit; font-size: 14px;
+    background: var(--panel); color: var(--ink);
+    border: 1px solid var(--rule); border-radius: 7px;
+  }
+  select { padding: 7px 10px; }
+  .seg { display: flex; padding: 2px; gap: 2px; }
+  .seg button {
+    font: inherit; font-size: 13px;
+    border: 0; border-radius: 5px; padding: 5px 13px;
+    background: transparent; color: var(--ink-soft); cursor: pointer;
+  }
+  .seg button[aria-pressed="true"] {
+    background: var(--draw); color: var(--panel);
+  }
+  select:focus-visible, .seg button:focus-visible, tr:focus-visible {
+    outline: 2px solid var(--draw); outline-offset: 2px;
+  }
+
+  /* ---- chart ---- */
+  .chart {
+    position: relative;
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-radius: 12px;
+    padding: 18px 20px 8px;
+    box-shadow: var(--shadow);
+  }
+  svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .axis-line { stroke: var(--rule); stroke-width: 1; }
+  .grid      { stroke: var(--rule-soft); stroke-width: 1; }
+  .tick {
+    fill: var(--ink-faint); font-size: 11px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .axis-title { fill: var(--ink-soft); font-size: 12px; }
+  .curve-fill { fill: var(--curve-fill); }
+  .curve-line { fill: none; stroke: var(--curve); stroke-width: 1.5; }
+  .dot        { fill: var(--curve); opacity: 0.5; }
+  .dot.gr     { opacity: 0.32; }
+  .pick       { fill: var(--draw); stroke: var(--panel); stroke-width: 1.5; }
+  .pick-halo  { fill: var(--draw-halo); }
+  .limit-line {
+    stroke: var(--limit); stroke-width: 1.5; stroke-dasharray: 6 4;
+  }
+  .limit-label { fill: var(--limit); font-size: 11.5px; font-weight: 600; }
+  .hover-rule { stroke: var(--ink-faint); stroke-width: 1; opacity: 0.45; }
+
+  .tip {
+    position: absolute; pointer-events: none; z-index: 5;
+    min-width: 210px; max-width: 320px;
+    background: var(--panel); color: var(--ink);
+    border: 1px solid var(--rule); border-radius: 9px;
+    padding: 11px 13px; box-shadow: var(--shadow);
+    opacity: 0; transition: opacity .1s;
+  }
+  .tip.on { opacity: 1; }
+  .tip .code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 16px; font-weight: 600;
+  }
+  .tip .name {
+    color: var(--ink-soft); font-size: 13px; line-height: 1.4;
+    margin: 3px 0 9px;
+  }
+  .tip dl {
+    margin: 0; display: grid; grid-template-columns: auto 1fr;
+    gap: 3px 14px; font-size: 12.5px;
+  }
+  .tip dt { color: var(--ink-faint); }
+  .tip dd {
+    margin: 0; text-align: right;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+  .tag {
+    display: inline-block; margin-top: 9px; padding: 2px 8px;
+    border-radius: 999px; font-size: 11px; letter-spacing: .04em;
+    background: var(--draw-halo); color: var(--draw);
+  }
+  .tag.out { background: var(--rule-soft); color: var(--ink-faint); }
+  .tip .warn {
+    margin-top: 9px; padding-top: 8px; border-top: 1px solid var(--rule);
+    font-size: 12px; line-height: 1.45; color: var(--limit);
+  }
+  .sys {
+    font-size: 11px; letter-spacing: .03em; color: var(--ink-faint);
+  }
+  .sys.i10 { color: var(--limit); font-weight: 600; }
+
+  /* ---- table ---- */
+  .tablewrap { overflow-x: auto; border-radius: 12px; border: 1px solid var(--rule); }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; background: var(--panel); }
+  th, td { padding: 8px 13px; text-align: right; white-space: nowrap; }
+  th {
+    position: sticky; top: 0;
+    background: var(--panel);
+    font: 600 11px/1 ui-sans-serif, system-ui, sans-serif;
+    letter-spacing: .06em; text-transform: uppercase; color: var(--ink-faint);
+    border-bottom: 1px solid var(--rule); cursor: pointer; user-select: none;
+  }
+  th:first-child, td:first-child { text-align: left; }
+  th.name-col, td.name-col {
+    text-align: left; white-space: normal; min-width: 240px;
+    color: var(--ink-soft);
+  }
+  tbody tr { border-top: 1px solid var(--rule-soft); cursor: pointer; }
+  tbody tr:hover, tbody tr.lit { background: var(--draw-halo); }
+  td.c { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  td.n {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .note {
+    color: var(--ink-soft); font-size: 13.5px; max-width: 76ch;
+    margin: 0; padding-left: 13px; border-left: 2px solid var(--rule);
+  }
+  .note b { color: var(--ink); font-weight: 600; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+  @media (max-width: 620px) {
+    .wrap { padding: 30px 16px 60px; }
+    h1 { font-size: 27px; }
+  }
+</style>
+
+<div class="wrap">
+  <header style="display:flex;flex-direction:column;gap:10px">
+    <h1>The rare-code long tail</h1>
+    <p class="lede" id="lede"></p>
+  </header>
+
+  <div class="stats" id="stats"></div>
+
+  <div class="controls">
+    <div class="ctl">
+      <label for="scale">Prevalence scale</label>
+      <div class="seg" role="group" id="scale">
+        <button data-scale="log" aria-pressed="true">Log</button>
+        <button data-scale="linear" aria-pressed="false">Linear</button>
+      </div>
+    </div>
+    <div class="ctl" id="seedwrap" hidden>
+      <label for="seed">Draw seed</label>
+      <select id="seed"></select>
+    </div>
+    <div class="ctl">
+      <label for="showall">Show</label>
+      <div class="seg" role="group" id="showall">
+        <button data-all="1" aria-pressed="true">All codes</button>
+        <button data-all="0" aria-pressed="false">Draw only</button>
+      </div>
+    </div>
+    <div class="ctl">
+      <label for="hover">Tooltip on</label>
+      <div class="seg" role="group" id="hover">
+        <button data-hover="0" aria-pressed="true">Drawn codes</button>
+        <button data-hover="1" aria-pressed="false">Every code</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="chart" id="chart">
+    <svg id="svg" role="img" aria-label="Rare code prevalence against
+      prevalence rank, with the sampled evaluation codes marked"></svg>
+    <div class="tip" id="tip" aria-hidden="true"></div>
+  </div>
+
+  <p class="note" id="note"></p>
+
+  <h2>The drawn evaluation codes</h2>
+  <div class="tablewrap">
+    <table id="tbl">
+      <thead><tr id="thead"></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+const DATA = "__DATA__";
+
+const M    = DATA.meta;
+const PTS  = DATA.points;
+const byCode = new Map(PTS.map(p => [p.code, p]));
+
+let scale = "log";
+let seed  = String(M.seeds[0]);
+let showAll = true;
+let hoverAll = false;   // default: only the drawn codes answer the pointer
+let lit = null;
+
+// How close the pointer must get to a marker before its tooltip opens, in
+// viewBox units. Only applies when hovering the draw: 30 markers spread over
+// 641 ranks leave wide gaps, and nearest-point-wins would otherwise pop a
+// tooltip for a code the cursor is nowhere near. The full curve is dense
+// enough that nearest-by-x always lands on something under the pointer.
+const HOVER_RADIUS = 34;
+
+const $ = id => document.getElementById(id);
+const fmtPct = v => (v * 100).toFixed(v < 0.01 ? 3 : 2) + "%";
+const picked = () => DATA.draws[seed] || [];
+const sysLabel = s =>
+  s === "ICD9CM" ? "ICD-9-CM" : s === "ICD10CM" ? "ICD-10-CM" : "unresolved";
+
+/* ---------- header ---------- */
+$("lede").textContent =
+  `Every one of the ${M.n_pooled_rare} pooled rare codes in the ` +
+  `${M.cohort} cohort, ranked by how many of the ${M.n_cohort_patients} ` +
+  `patients carry it. The ${M.n_eval} highlighted codes are one ` +
+  `evaluation draw — hover one for its name, prevalence and rank. Every code ` +
+  `plotted is rare at at least one hospital; those above the 1% line are the ` +
+  `ones that are nonetheless common across the cohort as a whole.`;
+
+function renderStats() {
+  const p = picked();
+  const ranks = p.map(c => byCode.get(c).rank).sort((a, b) => a - b);
+  const gr = p.filter(c => byCode.get(c).global_rare).length;
+  const above = PTS.filter(x => !x.global_rare).length;
+  const cells = [
+    ["Pooled rare codes", M.n_pooled_rare, ""],
+    ["Above the 1% line", above, "limit"],
+    ["Globally rare", M.n_global_rare, ""],
+    ["Scoreable on " + M.code_fold, M.n_scoreable, ""],
+    ["Drawn", p.length, "draw"],
+    ["Drawn rank span",
+     ranks.length ? `${ranks[0]}–${ranks[ranks.length - 1]}` : "—", "draw"],
+    ["Drawn globally rare", `${gr}/${p.length}`, "draw"],
+  ];
+  $("stats").innerHTML = cells.map(([k, v, cls]) =>
+    `<div class="stat"><div class="k">${k}</div>` +
+    `<div class="v ${cls}">${v}</div></div>`).join("");
+}
+
+/* ---------- chart ---------- */
+const PAD = { t: 18, r: 26, b: 46, l: 62 };
+const W = 1000, H = 430;
+
+function yScale() {
+  const vals = PTS.map(p => p.prevalence);
+  const hi = Math.max(...vals), lo = Math.min(...vals);
+  const plot = H - PAD.t - PAD.b;
+  if (scale === "log") {
+    const l0 = Math.log10(lo), l1 = Math.log10(hi);
+    return v => PAD.t + plot - (Math.log10(v) - l0) / (l1 - l0) * plot;
+  }
+  return v => PAD.t + plot - (v / hi) * plot;
+}
+
+function xScale() {
+  const plot = W - PAD.l - PAD.r;
+  const n = PTS.length;
+  return r => PAD.l + (n === 1 ? plot / 2 : (r - 1) / (n - 1) * plot);
+}
+
+function ticks() {
+  const vals = PTS.map(p => p.prevalence);
+  const hi = Math.max(...vals), lo = Math.min(...vals);
+  if (scale === "log") {
+    const out = [];
+    for (let e = Math.floor(Math.log10(lo)); e <= Math.ceil(Math.log10(hi)); e++) {
+      const v = Math.pow(10, e);
+      if (v >= lo * 0.95 && v <= hi * 1.05) out.push(v);
+    }
+    return out;
+  }
+  return [0, hi * 0.25, hi * 0.5, hi * 0.75, hi];
+}
+
+function draw() {
+  const x = xScale(), y = yScale();
+  const pickSet = new Set(picked());
+  const plotB = H - PAD.b;
+  let s = "";
+
+  for (const t of ticks()) {
+    const yy = y(t);
+    s += `<line class="grid" x1="${PAD.l}" x2="${W - PAD.r}" y1="${yy}" y2="${yy}"/>`;
+    s += `<text class="tick" x="${PAD.l - 9}" y="${yy + 4}" text-anchor="end">${fmtPct(t)}</text>`;
+  }
+
+  const path = PTS.map((p, i) =>
+    `${i ? "L" : "M"}${x(p.rank).toFixed(1)},${y(p.prevalence).toFixed(1)}`).join("");
+  if (showAll) {
+    s += `<path class="curve-fill" d="${path}L${x(PTS.length)},${plotB}L${PAD.l},${plotB}Z"/>`;
+    s += `<path class="curve-line" d="${path}"/>`;
+  }
+
+  const thr = M.global_rare_threshold;
+  const yThr = y(thr);
+  s += `<line class="limit-line" x1="${PAD.l}" x2="${W - PAD.r}" y1="${yThr}" y2="${yThr}"/>`;
+  s += `<text class="limit-label" x="${W - PAD.r}" y="${yThr - 8}" text-anchor="end">` +
+       `global-rare threshold · ${fmtPct(thr)}</text>`;
+
+  if (showAll) {
+    for (const p of PTS) {
+      if (pickSet.has(p.code)) continue;
+      s += `<circle class="dot${p.global_rare ? " gr" : ""}" cx="${x(p.rank).toFixed(1)}"` +
+           ` cy="${y(p.prevalence).toFixed(1)}" r="1.6"/>`;
+    }
+  }
+  for (const c of picked()) {
+    const p = byCode.get(c);
+    if (!p) continue;
+    const cx = x(p.rank).toFixed(1), cy = y(p.prevalence).toFixed(1);
+    const on = lit === c;
+    s += `<circle class="pick-halo" cx="${cx}" cy="${cy}" r="${on ? 13 : 8}"/>`;
+    s += `<circle class="pick" cx="${cx}" cy="${cy}" r="${on ? 6 : 4}" data-code="${c}"/>`;
+  }
+
+  s += `<line class="axis-line" x1="${PAD.l}" x2="${W - PAD.r}" y1="${plotB}" y2="${plotB}"/>`;
+  s += `<line class="axis-line" x1="${PAD.l}" x2="${PAD.l}" y1="${PAD.t}" y2="${plotB}"/>`;
+  const n = PTS.length;
+  for (const r of [1, Math.round(n / 4), Math.round(n / 2), Math.round(3 * n / 4), n]) {
+    s += `<text class="tick" x="${x(r).toFixed(1)}" y="${plotB + 18}" text-anchor="middle">${r}</text>`;
+  }
+  s += `<text class="axis-title" x="${(PAD.l + W - PAD.r) / 2}" y="${H - 8}" ` +
+       `text-anchor="middle">prevalence rank — most to least common</text>`;
+  s += `<text class="axis-title" transform="translate(15,${(PAD.t + plotB) / 2}) rotate(-90)" ` +
+       `text-anchor="middle">share of cohort patients carrying the code</text>`;
+  s += `<rect id="hit" x="${PAD.l}" y="${PAD.t}" width="${W - PAD.l - PAD.r}" ` +
+       `height="${plotB - PAD.t}" fill="transparent"/>`;
+
+  const svg = $("svg");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.innerHTML = s;
+  svg.querySelector("#hit").addEventListener("mousemove", onMove);
+  svg.querySelector("#hit").addEventListener("mouseleave", hideTip);
+}
+
+/* ---------- hover ---------- */
+function onMove(ev) {
+  const svg = $("svg"), box = svg.getBoundingClientRect();
+  const vx = (ev.clientX - box.left) / box.width * W;
+  const vy = (ev.clientY - box.top) / box.height * H;
+
+  // Hovering every code only makes sense when every code is on screen; in
+  // "draw only" view the rest are not drawn, so there is nothing to point at.
+  const wide = hoverAll && showAll;
+  const pool = wide ? PTS : picked().map(c => byCode.get(c)).filter(Boolean);
+  if (!pool.length) return hideTip();
+
+  const x = xScale(), y = yScale();
+  let best = null, bd = Infinity;
+  for (const p of pool) {
+    const dx = x(p.rank) - vx;
+    // Nearest by x across the dense curve; true 2D distance against the
+    // sparse draw, so an empty patch of chart opens nothing.
+    const d = wide ? Math.abs(dx) : Math.hypot(dx, y(p.prevalence) - vy);
+    if (d < bd) { bd = d; best = p; }
+  }
+  if (!best || (!wide && bd > HOVER_RADIUS)) return hideTip();
+  showTip(best, box);
+}
+
+function showTip(p, box) {
+  const tip = $("tip"), chart = $("chart").getBoundingClientRect();
+  const x = xScale(), y = yScale();
+  const px = x(p.rank) / W * box.width + (box.left - chart.left);
+  const py = y(p.prevalence) / H * box.height + (box.top - chart.top);
+  const drawn = new Set(picked()).has(p.code);
+  tip.innerHTML =
+    `<div class="code">${p.code}</div>` +
+    `<div class="name">${p.name || "<i>no ICD-9 name resolved</i>"}</div>` +
+    `<dl>` +
+      `<dt>prevalence</dt><dd>${fmtPct(p.prevalence)}</dd>` +
+      `<dt>patients</dt><dd>${p.n_patients} / ${M.n_cohort_patients}</dd>` +
+      `<dt>rank</dt><dd>${p.rank} of ${PTS.length}</dd>` +
+      `<dt>${M.code_fold} support</dt><dd>${p.support}</dd>` +
+      `<dt>coding system</dt><dd>${sysLabel(p.system)}</dd>` +
+    `</dl>` +
+    `<span class="tag${drawn ? "" : " out"}">` +
+      (drawn ? "in the draw" : p.scoreable ? "scoreable, not drawn"
+                                           : "not scoreable on " + M.code_fold) +
+    `</span>` +
+    (p.system === "ICD10CM"
+      ? `<div class="warn">ICD-10 in a mostly ICD-9 cohort — this may be a ` +
+        `minority spelling of a condition that is common under its ICD-9 ` +
+        `code, making its rarity notational rather than clinical.</div>`
+      : "");
+  tip.classList.add("on");
+  tip.setAttribute("aria-hidden", "false");
+  const w = tip.offsetWidth, h = tip.offsetHeight;
+  let left = px + 16;
+  if (left + w > chart.width - 8) left = px - w - 16;
+  tip.style.left = Math.max(8, left) + "px";
+  tip.style.top = Math.max(8, Math.min(py - h / 2, chart.height - h - 8)) + "px";
+  if (lit !== p.code && new Set(picked()).has(p.code)) { lit = p.code; sync(); }
+}
+
+function hideTip() {
+  $("tip").classList.remove("on");
+  $("tip").setAttribute("aria-hidden", "true");
+  if (lit) { lit = null; sync(); }
+}
+
+/* ---------- table ---------- */
+const COLS = [
+  ["code", "Code", "c"],
+  ["name", "ICD-9 name", "name-col"],
+  ["rank", "Rank", "n"],
+  ["prevalence", "Prevalence", "n"],
+  ["n_patients", "Patients", "n"],
+  ["support", M.code_fold + " support", "n"],
+  ["band", "Band", "n"],
+  ["global_rare", "Global rare", "n"],
+  ["system", "Coding", "n"],
+];
+let sortKey = "rank", sortDir = 1;
+
+function renderTable() {
+  $("thead").innerHTML = COLS.map(([k, label, cls]) =>
+    `<th class="${cls === "name-col" ? "name-col" : ""}" data-k="${k}">` +
+    `${label}${sortKey === k ? (sortDir > 0 ? " ▲" : " ▼") : ""}</th>`).join("");
+  $("thead").querySelectorAll("th").forEach(th =>
+    th.addEventListener("click", () => {
+      const k = th.dataset.k;
+      if (sortKey === k) sortDir *= -1; else { sortKey = k; sortDir = 1; }
+      renderTable();
+    }));
+
+  const rows = picked().map(c => byCode.get(c)).filter(Boolean).sort((a, b) => {
+    const va = a[sortKey], vb = b[sortKey];
+    if (typeof va === "string") return sortDir * va.localeCompare(vb);
+    return sortDir * ((va === true ? 1 : va === false ? 0 : va) -
+                      (vb === true ? 1 : vb === false ? 0 : vb));
+  });
+
+  $("tbody").innerHTML = rows.map(p =>
+    `<tr data-code="${p.code}" class="${lit === p.code ? "lit" : ""}" tabindex="0">` +
+    `<td class="c">${p.code}</td>` +
+    `<td class="name-col">${p.name || "—"}</td>` +
+    `<td class="n">${p.rank}</td>` +
+    `<td class="n">${fmtPct(p.prevalence)}</td>` +
+    `<td class="n">${p.n_patients}</td>` +
+    `<td class="n">${p.support}</td>` +
+    `<td class="n">${p.band}</td>` +
+    `<td class="n">${p.global_rare ? "yes" : "no"}</td>` +
+    `<td class="n"><span class="sys${p.system === "ICD10CM" ? " i10" : ""}">` +
+      `${sysLabel(p.system)}</span></td>` +
+    `</tr>`).join("");
+
+  $("tbody").querySelectorAll("tr").forEach(tr => {
+    const hit = () => { lit = tr.dataset.code; sync(); };
+    tr.addEventListener("mouseenter", hit);
+    tr.addEventListener("focus", hit);
+    tr.addEventListener("mouseleave", () => { lit = null; sync(); });
+  });
+}
+
+function renderNote() {
+  const p = picked().map(c => byCode.get(c)).filter(Boolean);
+  const gr = p.filter(d => d.global_rare).length;
+  const thin = p.filter(d => d.support < 5).length;
+  const med = p.map(d => d.rank).sort((a, b) => a - b)[Math.floor(p.length / 2)];
+  $("note").innerHTML =
+    `<b>Read the draw, not just the curve.</b> This subset spans ranks ` +
+    `${Math.min(...p.map(d => d.rank))}–${Math.max(...p.map(d => d.rank))} ` +
+    `with a median of ${med}, holds ${gr} globally rare codes, and ` +
+    `${thin} of its ${p.length} codes have fewer than 5 ${M.code_fold} ` +
+    `positives. Codes are drawn uniformly over the scoreable pool, not ` +
+    `stratified by support, so a single draw can lean head- or tail-heavy — ` +
+    `switch seeds to see how far the composition moves before reading any ` +
+    `score built on it as a property of the generators.`;
+}
+
+function sync() { draw(); renderTable(); }
+
+/* ---------- controls ---------- */
+$("scale").querySelectorAll("button").forEach(b =>
+  b.addEventListener("click", () => {
+    scale = b.dataset.scale;
+    $("scale").querySelectorAll("button").forEach(o =>
+      o.setAttribute("aria-pressed", String(o === b)));
+    draw();
+  }));
+
+$("showall").querySelectorAll("button").forEach(b =>
+  b.addEventListener("click", () => {
+    showAll = b.dataset.all === "1";
+    $("showall").querySelectorAll("button").forEach(o =>
+      o.setAttribute("aria-pressed", String(o === b)));
+    hideTip();
+    draw();
+  }));
+
+$("hover").querySelectorAll("button").forEach(b =>
+  b.addEventListener("click", () => {
+    hoverAll = b.dataset.hover === "1";
+    $("hover").querySelectorAll("button").forEach(o =>
+      o.setAttribute("aria-pressed", String(o === b)));
+    hideTip();
+  }));
+
+if (M.seeds.length > 1) {
+  $("seedwrap").hidden = false;
+  $("seed").innerHTML = M.seeds.map(s =>
+    `<option value="${s}">seed ${s}</option>`).join("");
+  $("seed").addEventListener("change", e => {
+    seed = e.target.value;
+    renderStats(); renderNote(); sync();
+  });
+}
+
+addEventListener("resize", draw);
+renderStats();
+renderNote();
+sync();
+</script>

@@ -1,0 +1,16 @@
+# Pin batch_size for RESUMING the hilo8_random runs started 2026-08-19.
+#
+# Those three jobs recorded batch_size=128 in their config.json. PROFILES["full"]
+# has since been changed to 256, so a plain `--profile full --resume` would pick
+# up the new default and switch batch size two-thirds of the way through a run --
+# changing gradient steps per epoch mid-flight, silently, with no error.
+#
+# 128 also keeps more optimizer steps at the small sites: at 256, hospitals 358
+# (194 train) and 429 (142 train) get ONE step per epoch. And the encode rewrite
+# removed the reason 256 was attractive -- measured steady state per patient is
+# 0.195 ms at 128 vs 0.187 ms at 256, i.e. the same. There is no longer anything
+# to buy by raising it.
+#
+# Delete this file once these three runs are finished; it is not a general config.
+profile: full
+batch_size: 128

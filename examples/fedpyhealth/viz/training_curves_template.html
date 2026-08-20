@@ -1,0 +1,266 @@
+<title>[ehr] Training curves</title>
+<style>
+  :root{--ground:#fbfbfa;--panel:#fff;--ink:#15181b;--ink2:#4d565f;--ink3:#828d98;
+    --rule:#e3e7ea;--soft:#eff2f4;--grid:#eaedf0;--stop:#b5462f;
+    /* Colour encodes the cohort's own structure: one hue for the four large
+       sites, another for the four small, shaded by size within each group. Eight
+       arbitrary categorical colours would not survive an all-pairs contrast
+       check, and would say nothing about the high/low split that is the point. */
+    --hi1:#0f4c81;--hi2:#1d6fa5;--hi3:#3f93c4;--hi4:#74b6dc;
+    --lo1:#8a3418;--lo2:#b5552c;--lo3:#d1804f;--lo4:#e3a97c;
+    --shadow:0 1px 2px #15181b0f,0 6px 18px #15181b0a}
+  @media(prefers-color-scheme:dark){:root:not([data-theme="light"]){
+    --ground:#0f1214;--panel:#171b1e;--ink:#e9eef2;--ink2:#a6b2bc;--ink3:#6d7883;
+    --rule:#262c31;--soft:#1d2226;--grid:#232930;--stop:#e08163;
+    --hi1:#8ec8ea;--hi2:#5aa8dc;--hi3:#3b87bd;--hi4:#2a6a99;
+    --lo1:#f0b892;--lo2:#e0906280;--lo3:#cf7345;--lo4:#b05a30}}
+  :root[data-theme="dark"]{--ground:#0f1214;--panel:#171b1e;--ink:#e9eef2;
+    --ink2:#a6b2bc;--ink3:#6d7883;--rule:#262c31;--soft:#1d2226;--grid:#232930;
+    --stop:#e08163;--hi1:#8ec8ea;--hi2:#5aa8dc;--hi3:#3b87bd;--hi4:#2a6a99;
+    --lo1:#f0b892;--lo2:#e09062;--lo3:#cf7345;--lo4:#b05a30}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--ground);color:var(--ink);
+    font:400 15px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    -webkit-font-smoothing:antialiased}
+  .wrap{max-width:1180px;margin:0 auto;padding:42px 24px 70px;display:flex;
+    flex-direction:column;gap:20px}
+  h1{font:400 32px/1.15 "Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+    margin:0;letter-spacing:-.01em}
+  .lede{margin:0;max-width:72ch;color:var(--ink2);font-size:15.5px}
+  .ctl{display:flex;gap:18px;align-items:flex-end;flex-wrap:wrap}
+  .ctl label{display:block;font-size:11px;letter-spacing:.07em;
+    text-transform:uppercase;color:var(--ink3);margin-bottom:5px}
+  select{font:inherit;font-size:14px;padding:7px 10px;background:var(--panel);
+    color:var(--ink);border:1px solid var(--rule);border-radius:7px;min-width:300px}
+  .seg{display:flex;padding:2px;gap:2px;background:var(--panel);
+    border:1px solid var(--rule);border-radius:7px}
+  .seg button{font:inherit;font-size:13px;border:0;border-radius:5px;
+    padding:5px 12px;background:transparent;color:var(--ink2);cursor:pointer}
+  .seg button[aria-pressed="true"]{background:var(--hi2);color:var(--panel)}
+  select:focus-visible,.seg button:focus-visible,.chip:focus-visible{
+    outline:2px solid var(--hi2);outline-offset:2px}
+  .chart{background:var(--panel);border:1px solid var(--rule);border-radius:12px;
+    padding:16px 18px 10px;box-shadow:var(--shadow);position:relative}
+  svg{display:block;width:100%;height:auto;overflow:visible}
+  .grid{stroke:var(--grid);stroke-width:1}
+  .axis{stroke:var(--rule);stroke-width:1.2}
+  .tick{fill:var(--ink3);font-size:11px;font-family:ui-monospace,Menlo,monospace}
+  .lab{fill:var(--ink2);font-size:12px}
+  .legend{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  .legend .grp{font-size:11px;letter-spacing:.07em;text-transform:uppercase;
+    color:var(--ink3);margin:0 2px 0 8px}
+  .chip{display:inline-flex;align-items:center;gap:7px;padding:4px 11px 4px 9px;
+    border:1px solid var(--rule);border-radius:999px;background:var(--panel);
+    font:inherit;font-size:13px;color:var(--ink);cursor:pointer;
+    font-family:ui-monospace,Menlo,monospace}
+  .chip .sw{width:11px;height:11px;border-radius:50%;flex:none}
+  .chip[aria-pressed="false"]{opacity:.4}
+  .chip[aria-pressed="false"] .sw{background:var(--ink3)!important}
+  .chip .n{color:var(--ink3);font-size:11.5px}
+  .note{color:var(--ink2);font-size:13.5px;max-width:84ch;margin:0;
+    padding-left:12px;border-left:2px solid var(--rule)}
+  .note b{color:var(--ink)}
+  .tip{position:absolute;pointer-events:none;opacity:0;transition:opacity .1s;
+    background:var(--panel);border:1px solid var(--rule);border-radius:8px;
+    padding:9px 11px;font-size:12.5px;box-shadow:var(--shadow);z-index:5;
+    font-family:ui-monospace,Menlo,monospace;white-space:nowrap}
+  .tip.on{opacity:1}
+  @media(prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+<div class="wrap">
+  <header style="display:flex;flex-direction:column;gap:8px">
+    <h1>Training curves</h1>
+    <p class="lede">Every hospital on one axis, read straight from the
+      TensorBoard event files each run writes. Click a hospital to hide it.
+      Where train and validation separate is the point past which the model is
+      fitting its own training data rather than learning.</p>
+  </header>
+
+  <div class="ctl">
+    <div><label for="run">Run</label><select id="run"></select></div>
+    <div><label for="show">Curves</label>
+      <div class="seg" role="group" id="show">
+        <button data-show="both" aria-pressed="true">Train + val</button>
+        <button data-show="train" aria-pressed="false">Train</button>
+        <button data-show="val" aria-pressed="false">Val</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="legend" id="legend"></div>
+
+  <div class="chart" id="chart">
+    <svg id="plot" role="img" aria-label="Training and validation loss per hospital"></svg>
+    <div class="tip" id="tip"></div>
+  </div>
+
+  <p class="note" id="note"></p>
+</div>
+<script>
+const DATA = "__DATA__";
+const R = DATA.runs, SIZES = DATA.meta.sizes || {};
+const $ = i => document.getElementById(i);
+const SVGNS = "http://www.w3.org/2000/svg";
+const cssv = n => getComputedStyle(document.documentElement)
+                    .getPropertyValue(n).trim() || "#888";
+
+let show = "both";
+const hidden = new Set();
+
+const names = Object.keys(R).sort();
+names.forEach(n => $("run").insertAdjacentHTML("beforeend",
+  `<option value="${n}">${n}${R[n].complete ? "" : "  (running)"}</option>`));
+// Open on a run that actually has multiple hospitals. centralized sorts first
+// alphabetically but trains ONE pooled model, so it would show a single line on
+// a page whose whole point is comparing sites.
+$("run").value = names.find(n => Object.keys(R[n].series).length > 1) || names[0];
+
+// Rank hospitals by training size so colour carries the high/low split.
+function ordered(keys) {
+  return keys.slice().sort((a, b) =>
+    (SIZES[b] || 0) - (SIZES[a] || 0) || a.localeCompare(b, undefined, {numeric: true}));
+}
+const HI = ["--hi1", "--hi2", "--hi3", "--hi4"];
+const LO = ["--lo1", "--lo2", "--lo3", "--lo4"];
+function colourOf(keys) {
+  const ord = ordered(keys), out = {}, half = Math.ceil(ord.length / 2);
+  ord.forEach((k, i) => {
+    out[k] = i < half ? HI[Math.min(i, 3)] : LO[Math.min(i - half, 3)];
+  });
+  return out;
+}
+
+const W = 1000, H = 430, P = {t: 16, r: 22, b: 46, l: 68};
+let LAST = null;
+
+function draw() {
+  const r = R[$("run").value], s = r.series;
+  const keys = ordered(Object.keys(s)).filter(k => !hidden.has(k));
+  const col = colourOf(Object.keys(s));
+
+  const lines = [];
+  for (const k of keys) {
+    if (show !== "val" && s[k].train) lines.push({k, kind: "train", v: s[k].train, css: col[k]});
+    if (show !== "train" && s[k].val) lines.push({k, kind: "val", v: s[k].val, css: col[k]});
+  }
+  const all = lines.flatMap(l => l.v).filter(v => v > 0);
+  const svg = $("plot");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  if (!all.length) { svg.innerHTML = ""; LAST = null; return; }
+
+  const lo = Math.min(...all), hi = Math.max(...all);
+  const l0 = Math.log10(lo), l1 = Math.log10(hi);
+  const iw = W - P.l - P.r, ih = H - P.t - P.b;
+  // Each series is normalised to its own length: train logs once per local
+  // epoch, a pooled val once per round, so a shared x would squash the shorter.
+  const X = (i, n) => P.l + (n < 2 ? iw / 2 : (i / (n - 1)) * iw);
+  const Y = v => P.t + ih - ((Math.log10(Math.max(v, lo)) - l0) / ((l1 - l0) || 1)) * ih;
+
+  let g = "";
+  for (let e = Math.floor(l0); e <= Math.ceil(l1); e++) {
+    const val = Math.pow(10, e);
+    if (val < lo * 0.9 || val > hi * 1.1) continue;
+    g += `<line class="grid" x1="${P.l}" x2="${P.l + iw}" y1="${Y(val)}" y2="${Y(val)}"/>`;
+    g += `<text class="tick" x="${P.l - 9}" y="${Y(val) + 4}" text-anchor="end">`
+       + `${val < 0.001 ? val.toExponential(0) : val}</text>`;
+  }
+  for (const l of lines) {
+    const d = l.v.map((v, i) => `${i ? "L" : "M"}${X(i, l.v.length).toFixed(1)},${Y(v).toFixed(1)}`).join("");
+    // Validation is the line you read; train is context behind it.
+    g += `<path d="${d}" fill="none" stroke="${cssv(l.css)}" `
+       + `stroke-width="${l.kind === "val" ? 2.2 : 1.3}" `
+       + `stroke-opacity="${l.kind === "val" ? 1 : 0.45}" `
+       + `${l.kind === "train" ? 'stroke-dasharray="none"' : ""} `
+       + `stroke-linejoin="round" stroke-linecap="round"/>`;
+  }
+  for (const k of keys) {
+    const d = s[k];
+    if (show === "train" || d.best_idx == null || !d.val) continue;
+    g += `<circle cx="${X(d.best_idx, d.val.length).toFixed(1)}" `
+       + `cy="${Y(d.val[d.best_idx]).toFixed(1)}" r="3.8" fill="${cssv(col[k])}" `
+       + `stroke="${cssv('--panel')}" stroke-width="1.6"/>`;
+  }
+  g += `<line class="axis" x1="${P.l}" x2="${P.l + iw}" y1="${P.t + ih}" y2="${P.t + ih}"/>`;
+  g += `<line class="axis" x1="${P.l}" x2="${P.l}" y1="${P.t}" y2="${P.t + ih}"/>`;
+  const maxN = Math.max(...lines.map(l => l.v.length));
+  for (const f of [0, .25, .5, .75, 1]) {
+    const i = Math.round(f * (maxN - 1));
+    g += `<text class="tick" x="${P.l + f * iw}" y="${P.t + ih + 18}" text-anchor="middle">${i}</text>`;
+  }
+  g += `<text class="lab" x="${P.l + iw / 2}" y="${H - 8}" text-anchor="middle">`
+     + `progress through training (each series over its own length)</text>`;
+  g += `<text class="lab" transform="translate(18,${P.t + ih / 2}) rotate(-90)" `
+     + `text-anchor="middle">loss (log)</text>`;
+  g += `<rect id="hit" x="${P.l}" y="${P.t}" width="${iw}" height="${ih}" fill="transparent"/>`;
+  svg.innerHTML = g;
+  LAST = {lines, X, Y, iw, col};
+  svg.querySelector("#hit").addEventListener("mousemove", onMove);
+  svg.querySelector("#hit").addEventListener("mouseleave", () => $("tip").classList.remove("on"));
+
+  renderLegend(s, col);
+  renderNote(r, s, Object.keys(s));
+}
+
+function onMove(ev) {
+  if (!LAST) return;
+  const svg = $("plot"), box = svg.getBoundingClientRect(), ch = $("chart").getBoundingClientRect();
+  const frac = Math.max(0, Math.min(1, ((ev.clientX - box.left) / box.width * W - P.l) / LAST.iw));
+  const rows = LAST.lines.filter(l => l.kind === "val").map(l => {
+    const i = Math.round(frac * (l.v.length - 1));
+    return `${l.k}: ${l.v[i].toExponential(2)}`;
+  });
+  if (!rows.length) return;
+  const tip = $("tip");
+  tip.innerHTML = rows.join("<br>");
+  tip.classList.add("on");
+  const px = ev.clientX - ch.left + 14;
+  tip.style.left = Math.min(px, ch.width - tip.offsetWidth - 8) + "px";
+  tip.style.top = (ev.clientY - ch.top + 10) + "px";
+}
+
+function renderLegend(s, col) {
+  const ord = ordered(Object.keys(s)), half = Math.ceil(ord.length / 2);
+  let h = "";
+  ord.forEach((k, i) => {
+    if (i === 0) h += `<span class="grp">larger sites</span>`;
+    if (i === half) h += `<span class="grp">smaller sites</span>`;
+    const on = !hidden.has(k);
+    h += `<button class="chip" data-h="${k}" aria-pressed="${on}">`
+       + `<span class="sw" style="background:${cssv(col[k])}"></span>${k}`
+       + (SIZES[k] ? `<span class="n">${SIZES[k]}</span>` : "") + `</button>`;
+  });
+  $("legend").innerHTML = h;
+  $("legend").querySelectorAll(".chip").forEach(b =>
+    b.addEventListener("click", () => {
+      const k = b.dataset.h;
+      hidden.has(k) ? hidden.delete(k) : hidden.add(k);
+      draw();
+    }));
+}
+
+function renderNote(r, s, keys) {
+  const pooled = r.val_scope === "pooled";
+  const noVal = keys.filter(k => s[k].best_idx == null);
+  const clean = keys.filter(k => s[k].stopped_after_best > 0);
+  $("note").innerHTML = `<b>${$("run").value}</b> — ${keys.length} hospitals. `
+    + (pooled
+      ? `This regime trains one global model, so validation is a single <b>cohort-wide</b> curve over all val patients — the same line is drawn for every hospital, and only the train curves differ. `
+      : "")
+    + (clean.length && !pooled
+      ? `${clean.length} early-stopped, training past their best before giving up. ` : "")
+    + (noVal.length && !pooled
+      ? `${noVal.length} (${noVal.join(", ")}) have no validation curve — their val fold is under the 30-patient threshold, so they run the full budget instead of stopping. `
+      : "");
+}
+
+$("show").querySelectorAll("button").forEach(b =>
+  b.addEventListener("click", () => {
+    show = b.dataset.show;
+    $("show").querySelectorAll("button").forEach(o =>
+      o.setAttribute("aria-pressed", String(o === b)));
+    draw();
+  }));
+$("run").addEventListener("change", () => { hidden.clear(); draw(); });
+addEventListener("resize", draw);
+draw();
+</script>

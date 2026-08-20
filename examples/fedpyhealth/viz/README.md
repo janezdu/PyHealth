@@ -61,6 +61,22 @@ Source files:
 - `_outputs/results/tests/test1_4arm_cap2000.json`
 - `_outputs/results/tests/test2_4arm_uncapped.json`
 
+## The other two pages
+
+`index.html` is the fidelity-vs-utility scatter above. Two more pages live here,
+both rendered by `eda.py` from a template plus a payload:
+
+| page | what it shows | rebuild |
+|---|---|---|
+| `cohort_eda.html` | per-rare-code trajectory lengths and the test2 masking diagnostic | `python eda.py lengths` |
+| `rare_code_tail.html` | the rare-code prevalence tail and which codes an eval draw lands on | `python eda.py prevalence_curve` |
+
+Each writes its payload next to the page (`cohort_eda.json`,
+`rare_code_tail.json`) and inlines the same object into the HTML, so the page
+stays self-contained. `--no-html` skips the render; `--viz-dir` points it
+somewhere else. Cohort-level aggregates only — no hospital identifiers, no
+patient rows.
+
 ## Design notes
 
 Colour is an **ordinal** blue ramp, not categorical hues — the regimes have a

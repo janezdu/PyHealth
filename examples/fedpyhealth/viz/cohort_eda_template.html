@@ -1,0 +1,347 @@
+<!--
+  Template for eda_lengths.py. The literal string "__DATA__" is replaced with
+  the payload at render time, so this file is not viewable on its own -- open
+  the generated cohort_eda.html instead.
+-->
+<title>[ehr] Record length and the rare tail</title>
+<style>
+  :root {
+    --ground:#fcfcfd; --panel:#ffffff; --ink:#14171a; --ink-soft:#4a535e;
+    --ink-faint:#7b8695; --rule:#e2e6ea; --rule-soft:#eef1f4;
+    --carrier:#0d6e66; --carrier-soft:#0d6e6622;
+    --noncarrier:#8d99a6; --noncarrier-soft:#8d99a622;
+    --limit:#b5462f; --good:#1f7a4d;
+    --shadow:0 1px 2px #14171a0f, 0 8px 24px #14171a0a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:#101316; --panel:#171b1f; --ink:#e9edf1; --ink-soft:#a4b0bd;
+      --ink-faint:#6f7b88; --rule:#262c33; --rule-soft:#1e242a;
+      --carrier:#3fb9aa; --carrier-soft:#3fb9aa26;
+      --noncarrier:#6e7a88; --noncarrier-soft:#6e7a8826;
+      --limit:#e07a5f; --good:#4fbe86;
+      --shadow:0 1px 2px #00000040, 0 8px 24px #00000030;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:#101316; --panel:#171b1f; --ink:#e9edf1; --ink-soft:#a4b0bd;
+    --ink-faint:#6f7b88; --rule:#262c33; --rule-soft:#1e242a;
+    --carrier:#3fb9aa; --carrier-soft:#3fb9aa26;
+    --noncarrier:#6e7a88; --noncarrier-soft:#6e7a8826;
+    --limit:#e07a5f; --good:#4fbe86;
+    --shadow:0 1px 2px #00000040, 0 8px 24px #00000030;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--ground); color:var(--ink);
+    font:400 15px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap { max-width:1180px; margin:0 auto; padding:48px 28px 80px;
+          display:flex; flex-direction:column; gap:34px; }
+  h1 { font:400 34px/1.15 "Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+       letter-spacing:-.01em; margin:0; text-wrap:balance; }
+  h2 { font:600 12px/1 ui-sans-serif,system-ui,sans-serif; letter-spacing:.09em;
+       text-transform:uppercase; color:var(--ink-faint); margin:0 0 14px; }
+  .lede { margin:0; max-width:64ch; color:var(--ink-soft); font-size:16px; }
+  section { display:flex; flex-direction:column; }
+  .mono,.num { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+               font-variant-numeric:tabular-nums; }
+
+  .verdict { background:var(--panel); border:1px solid var(--rule);
+             border-left:3px solid var(--limit); border-radius:10px;
+             padding:20px 22px; box-shadow:var(--shadow); }
+  .verdict h3 { margin:0 0 8px; font:600 17px/1.3 ui-sans-serif,system-ui,sans-serif; }
+  .verdict p { margin:0 0 14px; color:var(--ink-soft); max-width:74ch; font-size:14.5px; }
+  .corr { display:flex; flex-wrap:wrap; gap:26px; }
+  .corr div { display:flex; flex-direction:column; gap:2px; }
+  .corr .k { font-size:11px; letter-spacing:.07em; text-transform:uppercase; color:var(--ink-faint); }
+  .corr .v { font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+             font-variant-numeric:tabular-nums; font-size:26px; }
+
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+           gap:1px; background:var(--rule); border:1px solid var(--rule);
+           border-radius:10px; overflow:hidden; }
+  .stat { background:var(--panel); padding:14px 16px; }
+  .stat .k { font-size:11px; letter-spacing:.07em; text-transform:uppercase; color:var(--ink-faint); }
+  .stat .v { font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+             font-variant-numeric:tabular-nums; font-size:22px; margin-top:3px; }
+
+  .ctl { display:flex; gap:18px; align-items:flex-end; flex-wrap:wrap; margin-bottom:14px; }
+  .ctl label { font-size:11px; letter-spacing:.07em; text-transform:uppercase;
+               color:var(--ink-faint); display:block; margin-bottom:5px; }
+  select { font:inherit; font-size:14px; padding:7px 10px; background:var(--panel);
+           color:var(--ink); border:1px solid var(--rule); border-radius:7px; }
+  select:focus-visible, th:focus-visible { outline:2px solid var(--carrier); outline-offset:2px; }
+
+  .card { background:var(--panel); border:1px solid var(--rule); border-radius:12px;
+          padding:20px; box-shadow:var(--shadow); }
+  svg { display:block; width:100%; height:auto; overflow:visible; }
+  .bar-c { fill:var(--carrier); } .bar-n { fill:var(--noncarrier); }
+  .axis { stroke:var(--rule); } .grid { stroke:var(--rule-soft); }
+  .tick { fill:var(--ink-faint); font-size:11px;
+          font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .lab  { fill:var(--ink-soft); font-size:12px; }
+  .legend { display:flex; gap:20px; font-size:13px; color:var(--ink-soft); margin-top:12px; }
+  .swatch { display:inline-block; width:11px; height:11px; border-radius:3px;
+            margin-right:7px; vertical-align:-1px; }
+
+  .tablewrap { overflow-x:auto; border:1px solid var(--rule); border-radius:12px; max-height:560px; }
+  table { border-collapse:collapse; width:100%; font-size:13.5px; background:var(--panel); }
+  th,td { padding:8px 13px; text-align:right; white-space:nowrap; }
+  th { position:sticky; top:0; background:var(--panel); z-index:1;
+       font:600 11px/1 ui-sans-serif,system-ui,sans-serif; letter-spacing:.06em;
+       text-transform:uppercase; color:var(--ink-faint);
+       border-bottom:1px solid var(--rule); cursor:pointer; user-select:none; }
+  th:first-child, td:first-child { text-align:left; }
+  tbody tr { border-top:1px solid var(--rule-soft); }
+  tbody tr:hover { background:var(--carrier-soft); }
+  td.c { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  td.n { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-variant-numeric:tabular-nums; }
+  .pos { color:var(--good); } .neg { color:var(--limit); }
+  .note { color:var(--ink-soft); font-size:13.5px; max-width:76ch; margin:14px 0 0;
+          padding-left:13px; border-left:2px solid var(--rule); }
+  .note b { color:var(--ink); font-weight:600; }
+  @media (prefers-reduced-motion:reduce) { * { transition:none!important; animation:none!important; } }
+  @media (max-width:620px){ .wrap{padding:30px 16px 60px} h1{font-size:27px} }
+</style>
+
+<div class="wrap">
+  <header style="display:flex;flex-direction:column;gap:10px">
+    <h1>Record length and the rare tail</h1>
+    <p class="lede" id="lede"></p>
+  </header>
+
+  <section><div class="verdict" id="verdict"></div></section>
+
+  <section>
+    <h2>Cohort</h2>
+    <div class="stats" id="stats"></div>
+  </section>
+
+  <section>
+    <h2>Record density by hospital</h2>
+    <div class="card">
+      <div class="ctl">
+        <div><label for="hfold">Data fold</label><select id="hfold"></select></div>
+      </div>
+      <svg id="hsvg" role="img" aria-label="Distinct codes per patient, by hospital"></svg>
+      <p class="note" id="hnote"></p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Carrier vs non-carrier input length, by support band</h2>
+    <div class="card">
+      <svg id="bsvg" role="img" aria-label="Post-mask input length for carriers
+        and non-carriers of each rare code, grouped by validation support"></svg>
+      <div class="legend">
+        <span><span class="swatch" style="background:var(--carrier)"></span>carries the code</span>
+        <span><span class="swatch" style="background:var(--noncarrier)"></span>does not</span>
+      </div>
+      <p class="note" id="bnote"></p>
+    </div>
+  </section>
+
+  <section>
+    <h2>Every scored code</h2>
+    <div class="ctl">
+      <div><label for="cfold">Data fold</label><select id="cfold"></select></div>
+      <div><label for="cband">Support band</label><select id="cband"></select></div>
+    </div>
+    <div class="tablewrap">
+      <table><thead><tr id="thead"></tr></thead><tbody id="tbody"></tbody></table>
+    </div>
+  </section>
+</div>
+
+<script>
+const DATA = "__DATA__";
+const M = DATA.meta, S = DATA.summary, ROWS = DATA.per_code;
+const $ = id => document.getElementById(id);
+const f2 = v => (v === null || v === undefined || v !== v) ? "—" : v.toFixed(2);
+const f3 = v => (v === null || v === undefined || v !== v) ? "—" : v.toFixed(3);
+const FOLDS = M.data_folds;
+
+/* ---------- header + verdict ---------- */
+$("lede").textContent =
+  `How long is the record of a patient who carries a given rare code, and what ` +
+  `survives after masking? ${M.n_codes} scored codes across ${M.mask_folds} ` +
+  `mask folds, for ${FOLDS.join(" and ")}.`;
+
+(function verdict() {
+  const v = FOLDS.map(f => {
+    const c = S[f].correlations;
+    return `<div><div class="k">${f} · pre-mask</div>` +
+           `<div class="v">${c.pooled_pre >= 0 ? "+" : ""}${f3(c.pooled_pre)}</div></div>` +
+           `<div><div class="k">${f} · post-mask</div>` +
+           `<div class="v">${c.pooled_post >= 0 ? "+" : ""}${f3(c.pooled_post)}</div></div>`;
+  }).join("");
+  const pre = S[FOLDS[0]].correlations.pooled_pre;
+  const post = S[FOLDS[0]].correlations.pooled_post;
+  const flipped = pre > 0 && post < 0;
+  $("verdict").innerHTML =
+    `<h3>${flipped ? "Masking inverts the length/severity relationship"
+                   : "Masking does not invert the length/severity relationship"}</h3>` +
+    `<p>Correlation between how many of a mask fold's codes a patient carries and how ` +
+    `long their input is — measured before masking and after. ` +
+    (flipped
+      ? `The sign flips: after masking, carrying more rare codes means a <em>shorter</em> ` +
+        `record. That is a shortcut a classifier will learn, and it inverts the output.`
+      : `Both stay strongly positive, so the input still says "more rare codes" the ` +
+        `right way round. Whatever drives Test 2's below-chance AUROC, masking is ` +
+        `not it — the signal is present and correctly signed.`) + `</p>` +
+    `<div class="corr">${v}</div>`;
+})();
+
+$("stats").innerHTML = [
+  ["Scored codes", M.n_codes],
+  ["Globally rare", M.n_global_rare],
+  ["Mask folds", M.mask_folds],
+  ...FOLDS.map(f => [`${f} patients`, S[f].n_patients]),
+  ["Median codes / patient", f2(S[FOLDS[0]].lengths.n_codes_dedup.p50)],
+].map(([k, v]) => `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+
+/* ---------- hospital density ---------- */
+FOLDS.forEach(f => {
+  $("hfold").insertAdjacentHTML("beforeend", `<option value="${f}">${f}</option>`);
+  $("cfold").insertAdjacentHTML("beforeend", `<option value="${f}">${f}</option>`);
+});
+// Set both explicitly rather than leaning on a select defaulting to its first
+// option. The hospital chart opens on the largest fold, the per-code table on
+// the scoring fold, which is the one Test 2 reports against.
+$("hfold").value = FOLDS[0];
+$("cfold").value = FOLDS[FOLDS.length - 1];
+
+function drawHospitals() {
+  const fold = $("hfold").value;
+  const ph = S[fold].per_hospital;
+  const hids = Object.keys(ph).sort((a, b) => ph[b].mean_codes_dedup - ph[a].mean_codes_dedup);
+  const W = 1000, H = 40 + hids.length * 40, L = 74, R = 150;
+  const max = Math.max(...hids.map(h => ph[h].mean_codes_dedup));
+  let s = "";
+  hids.forEach((h, i) => {
+    const y = 18 + i * 40, w = (ph[h].mean_codes_dedup / max) * (W - L - R);
+    s += `<text class="tick" x="${L - 10}" y="${y + 15}" text-anchor="end">${h}</text>`;
+    s += `<rect class="bar-c" x="${L}" y="${y}" width="${Math.max(1, w)}" height="21" rx="3"/>`;
+    s += `<text class="lab" x="${L + w + 10}" y="${y + 15}">` +
+         `${f2(ph[h].mean_codes_dedup)} codes · ${f2(ph[h].mean_rare_carried)} rare · ` +
+         `n=${ph[h].n_patients}</text>`;
+  });
+  const svg = $("hsvg");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.innerHTML = s;
+
+  const vals = hids.map(h => ph[h].mean_codes_dedup);
+  const ratio = Math.max(...vals) / Math.min(...vals);
+  $("hnote").innerHTML =
+    `<b>A ${ratio.toFixed(0)}× spread in record density.</b> Patients at ${hids[0]} carry ` +
+    `${f2(Math.max(...vals))} distinct codes; at ${hids[hids.length - 1]}, ${f2(Math.min(...vals))}. ` +
+    `That is documentation practice, not case mix — and it is severe non-IID of exactly ` +
+    `the kind that makes a single averaged model a poor fit everywhere.`;
+}
+$("hfold").addEventListener("change", drawHospitals);
+drawHospitals();
+
+/* ---------- band chart ---------- */
+const BANDS = ["1_4", "5_9", "10_19", "20_49", "50_plus"];
+function drawBands() {
+  const fold = FOLDS[FOLDS.length - 1];
+  const rows = ROWS.filter(r => r.data_fold === fold);
+  const g = BANDS.map(b => {
+    const grp = rows.filter(r => r.support_band === b);
+    if (!grp.length) return null;
+    const mean = k => grp.reduce((a, r) => a + (r[k] || 0), 0) / grp.length;
+    return { band: b, n: grp.length,
+             c: mean("carrier_postmask_mean"), nc: mean("noncarrier_postmask_mean") };
+  }).filter(Boolean);
+  if (!g.length) return;
+  const W = 1000, H = 300, L = 76, B = 52, T = 14;
+  const max = Math.max(...g.map(d => Math.max(d.c, d.nc))) * 1.12;
+  const bw = (W - L - 24) / g.length, y = v => T + (H - T - B) * (1 - v / max);
+  let s = "";
+  for (let i = 0; i <= 4; i++) {
+    const v = max * i / 4, yy = y(v);
+    s += `<line class="grid" x1="${L}" x2="${W - 24}" y1="${yy}" y2="${yy}"/>`;
+    s += `<text class="tick" x="${L - 9}" y="${yy + 4}" text-anchor="end">${v.toFixed(0)}</text>`;
+  }
+  g.forEach((d, i) => {
+    const x0 = L + i * bw, w = bw * 0.3;
+    s += `<rect class="bar-c" x="${x0 + bw * 0.16}" y="${y(d.c)}" width="${w}" height="${y(0) - y(d.c)}" rx="3"/>`;
+    s += `<rect class="bar-n" x="${x0 + bw * 0.52}" y="${y(d.nc)}" width="${w}" height="${y(0) - y(d.nc)}" rx="3"/>`;
+    s += `<text class="tick" x="${x0 + bw / 2}" y="${H - B + 20}" text-anchor="middle">${d.band}</text>`;
+    s += `<text class="tick" x="${x0 + bw / 2}" y="${H - B + 36}" text-anchor="middle" opacity=".7">${d.n} codes</text>`;
+  });
+  s += `<line class="axis" x1="${L}" x2="${W - 24}" y1="${y(0)}" y2="${y(0)}"/>`;
+  s += `<text class="lab" transform="translate(18,${(T + y(0)) / 2}) rotate(-90)" text-anchor="middle">` +
+       `mean post-mask codes in the input</text>`;
+  const svg = $("bsvg");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.innerHTML = s;
+
+  const all = rows.map(r => r.delta_postmask_mean).filter(v => v === v);
+  const neg = all.filter(v => v < 0).length;
+  const mean = all.reduce((a, b) => a + b, 0) / all.length;
+  $("bnote").innerHTML =
+    `<b>Carriers have the longer records, in every band.</b> Averaged over ${all.length} ` +
+    `codes on <span class="mono">${fold}</span>, a carrier keeps ${mean > 0 ? "+" : ""}${f2(mean)} ` +
+    `more codes after masking than a non-carrier, and only ${neg} codes ` +
+    `(${(100 * neg / all.length).toFixed(0)}%) run the other way. A rank-by-input-length rule ` +
+    `should therefore score well above chance — which is what makes Test 2's inverted AUROC ` +
+    `a property of the model or the scoring path, not of the data.`;
+}
+drawBands();
+
+/* ---------- per-code table ---------- */
+$("cband").insertAdjacentHTML("beforeend", `<option value="">all bands</option>`);
+BANDS.forEach(b => $("cband").insertAdjacentHTML("beforeend", `<option value="${b}">${b}</option>`));
+
+const COLS = [
+  ["code", "Code", "c"], ["mask_fold", "Mask fold", "n"],
+  ["n_carriers", "Carriers", "n"], ["support_band", "Band", "n"],
+  ["carrier_n_codes_dedup_mean", "Carrier len (pre)", "n"],
+  ["carrier_postmask_mean", "Carrier len (post)", "n"],
+  ["noncarrier_postmask_mean", "Non-carrier len", "n"],
+  ["delta_postmask_mean", "Delta", "n"],
+  ["carrier_n_rare_carried_mean", "Rare carried", "n"],
+  ["global_rare", "Global rare", "n"],
+];
+let sortKey = "delta_postmask_mean", sortDir = -1;
+
+function renderTable() {
+  $("thead").innerHTML = COLS.map(([k, label]) =>
+    `<th data-k="${k}" tabindex="0">${label}${sortKey === k ? (sortDir > 0 ? " ▲" : " ▼") : ""}</th>`).join("");
+  $("thead").querySelectorAll("th").forEach(th => {
+    const go = () => { const k = th.dataset.k;
+      if (sortKey === k) sortDir *= -1; else { sortKey = k; sortDir = -1; } renderTable(); };
+    th.addEventListener("click", go);
+    th.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); } });
+  });
+
+  const fold = $("cfold").value, band = $("cband").value;
+  const rows = ROWS.filter(r => r.data_fold === fold && (!band || r.support_band === band))
+    .sort((a, b) => {
+      const x = a[sortKey], y = b[sortKey];
+      if (typeof x === "string") return sortDir * x.localeCompare(y);
+      return sortDir * ((x === true ? 1 : x === false ? 0 : x) - (y === true ? 1 : y === false ? 0 : y));
+    });
+
+  $("tbody").innerHTML = rows.map(r =>
+    `<tr>` +
+    `<td class="c">${r.code}</td>` +
+    `<td class="n">${r.mask_fold}</td>` +
+    `<td class="n">${r.n_carriers}</td>` +
+    `<td class="n">${r.support_band}</td>` +
+    `<td class="n">${f2(r.carrier_n_codes_dedup_mean)}</td>` +
+    `<td class="n">${f2(r.carrier_postmask_mean)}</td>` +
+    `<td class="n">${f2(r.noncarrier_postmask_mean)}</td>` +
+    `<td class="n ${r.delta_postmask_mean >= 0 ? "pos" : "neg"}">` +
+      `${r.delta_postmask_mean >= 0 ? "+" : ""}${f2(r.delta_postmask_mean)}</td>` +
+    `<td class="n">${f2(r.carrier_n_rare_carried_mean)}</td>` +
+    `<td class="n">${r.global_rare ? "yes" : "no"}</td>` +
+    `</tr>`).join("");
+}
+$("cfold").addEventListener("change", renderTable);
+$("cband").addEventListener("change", renderTable);
+renderTable();
+</script>

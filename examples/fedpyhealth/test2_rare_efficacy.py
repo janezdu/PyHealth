@@ -4,24 +4,22 @@ The question: if a hospital trains a downstream model on the synthetic EHR its
 regime produced, how well does that model predict which rare codes a real
 patient carries? Train-on-Synthetic, Test-on-Real, specialised to the tail.
 
-One classifier per hospital
----------------------------
-Every arm trains **eight** classifiers, one per hospital, each seeing only that
-hospital's data, and every one of them is scored on the same pooled real
-validation set. Pooling the eight synthetic sets before the downstream model
-would hand Local-Only exactly the cross-site coverage that federation is
-supposed to provide, at evaluation time, for free -- and Local-Only would then
-look competitive for reasons that have nothing to do with its generator.
+One classifier per arm
+----------------------
+Multi-generator regimes (``local``, ``fedavg_ft``) train **eight** classifiers,
+one per hospital, each seeing only that hospital's synthetic data, and every one
+is scored on the same pooled real validation set. Pooling the eight synthetic
+sets before the downstream model would hand Local-Only exactly the cross-site
+coverage federation is supposed to provide, at evaluation time, for free.
 
-Centralized and FedAvg produce a single global generator, so ``synthetic.json``
-stores the same pooled output under all eight hospital keys. Those arms get
-eight **disjoint** size-matched slices of it instead, which preserves the
-protocol (8 classifiers, N samples each) and keeps sampling variance honest.
-
-Every classifier trains on exactly ``--train-budget`` records. TSTR is strongly
-sensitive to downstream training-set size, so without a fixed budget a regime
-that happens to emit more synthetic patients wins on volume rather than on
-fidelity.
+Single-generator regimes (``centralized``, ``fedavg``) train **one**. They have
+one generator and one synthetic set, so there is no hospital identity to attach
+to a slice; cutting that set into eight disjoint pieces would only add sampling
+noise while pretending to be eight independent draws. Pass ``--train-budget`` to
+hold the record count equal across regimes so the comparison is not decided by
+how much synthetic data an arm happens to emit -- it defaults to 0 (uncapped),
+which asks the different question of what each regime can do with everything it
+has.
 
 The arms
 --------
@@ -87,7 +85,7 @@ training jobs finish -- it consumes the ``synthetic.json`` each run persists.
 
 Example:
     python examples/fedpyhealth/test2_rare_efficacy.py \\
-        --cohort-file examples/fedpyhealth/cohorts/strat8.json \\
+        --cohort-cache $FEDCOHORT_CACHE/strat8_random \\
         --run centralized=_outputs/centralized_E2_R20_strat8_utility_save \\
         --run local=_outputs/local_E2_R20_strat8_utility_save
 """
@@ -106,28 +104,19 @@ from pyhealth.processors import MultiLabelProcessor, NestedSequenceProcessor
 from pyhealth.trainer import Trainer
 from utils.cohort import (
     DEFAULT_CACHE_DIR,
+    SUPPORT_BANDS,
+    assign_folds,
     load_manifest,
     load_synthetic,
     load_shared_generator,
     read_trajectories,
+    sample_eval_codes,
+    scored_codes,
 )
 SEED = 0
 
-# Validation-support bands for stratified reporting. A single macro mean over
-# the whole scored pool is separated mostly by its head, which is why the
-# headline table reports these instead.
-# Banded, not filtered. A code with 1-4 validation positives gives a noisy
-# average_precision, but noisy is not the same as uninformative -- across ~200
-# such codes the band mean still carries signal, and dropping them silently
-# discards exactly the deep tail this test exists to measure. Read the low bands
-# with their n_scored counts in hand rather than pretending they do not exist.
-SUPPORT_BANDS: Tuple[Tuple[str, int, float], ...] = (
-    ("1_4", 1, 5),
-    ("5_9", 5, 10),
-    ("10_19", 10, 20),
-    ("20_49", 20, 50),
-    ("50_plus", 50, float("inf")),
-)
+# SUPPORT_BANDS and assign_folds now live in utils/cohort.py so utils/eda/lengths.py
+# can share them without importing torch. Imported above; unchanged in meaning.
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -161,6 +150,22 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         "classifiers for 4 regimes) is the default; 1 strips "
                         "the whole tail at once and is smoke-only, since no arm "
                         "can learn co-occurrence that is not there")
+    p.add_argument("--n-eval-codes", type=int, default=0,
+                   help="DRAW MODE: instead of partitioning all scored codes "
+                        "into --mask-folds folds, draw this many codes once, "
+                        "strip only those, and train ONE classifier per arm "
+                        "over them. Cuts classifiers by a factor of K (27 "
+                        "instead of 108 at the default arm set) and leaves far "
+                        "more rare-to-rare co-occurrence in the input (30 of "
+                        "476 masked keeps 94%, against 75% at K=4). The cost "
+                        "is statistical: the macro mean is an estimate over "
+                        "the drawn codes, not a census, so run several "
+                        "--eval-seed values and report the spread. 0 (default) "
+                        "keeps the K-fold behaviour")
+    p.add_argument("--eval-seed", type=int, default=0,
+                   help="which draw --n-eval-codes takes. Changing it changes "
+                        "the evaluation set, so results across seeds are "
+                        "repeat measurements, not refinements")
     p.add_argument("--train-budget", type=int, default=0,
                    help="records per classifier. 0 (default) = UNCAPPED: every "
                         "arm trains on all the data it has, so a small "
@@ -521,6 +526,12 @@ def run_signature(args, arms: Sequence[str], budget: int, n_folds: int) -> dict:
         "fold": args.fold,
         "min_positives": args.min_positives,
         "mask_folds": n_folds,
+        # Two draws of the same size share every other key here, so without
+        # these a --resume would hand seed 0's cached scores to a seed 1 run and
+        # report them as seed 1's. That failure is silent and the numbers look
+        # entirely plausible, which makes it the worst kind.
+        "n_eval_codes": args.n_eval_codes,
+        "eval_seed": args.eval_seed,
         "train_budget": budget,
         "runs": sorted(args.run),
         "arms": sorted(arms),
@@ -586,19 +597,6 @@ def spread(values: Sequence[float]) -> dict:
 # --------------------------------------------------------------------------- #
 # Orchestration                                                                #
 # --------------------------------------------------------------------------- #
-def assign_folds(codes: Sequence[str], n_folds: int) -> List[List[str]]:
-    """Round-robin the scored codes into ``n_folds`` disjoint, sorted folds.
-
-    Round-robin over the *sorted* code list is deterministic and spreads
-    prevalence evenly, so no fold ends up holding only the head or only the
-    2-positive tail.
-    """
-    folds: List[List[str]] = [[] for _ in range(max(1, n_folds))]
-    for i, code in enumerate(sorted(codes)):
-        folds[i % len(folds)].append(code)
-    return [f for f in folds if f]
-
-
 def main(argv=None) -> None:
     args = _build_arg_parser().parse_args(argv)
     ks = [int(k) for k in args.recall_at.split(",") if k.strip()]
@@ -608,7 +606,7 @@ def main(argv=None) -> None:
     strict = set(manifest.get("global_rare_codes", []))
     support: Dict[str, int] = manifest["pooled_rare_support"][args.fold]
 
-    scored = sorted(c for c, n in support.items() if n >= args.min_positives)
+    scored = scored_codes(manifest, args.fold, args.min_positives)
     if not scored:
         raise ValueError(
             f"no rare code has enough {args.fold} positives to score; lower "
@@ -622,6 +620,43 @@ def main(argv=None) -> None:
     print(f"  of the scored, globally rare (cohort prevalence <= "
           f"{manifest.get('global_rare_prevalence_max')}): "
           f"{len([c for c in scored if c in strict])}")
+
+    # DRAW MODE. Narrowing `scored` is the whole change: assign_folds(scored, 1)
+    # then yields a single fold holding exactly the drawn codes, and every
+    # downstream stage -- masking, training, aggregation, banding, the
+    # global_rare split -- already works off `scored` and needs no edit.
+    pool_size = len(scored)
+    if args.n_eval_codes > 0:
+        if args.n_eval_codes > pool_size:
+            raise SystemExit(
+                f"--n-eval-codes {args.n_eval_codes} exceeds the {pool_size} "
+                f"codes scoreable on {args.fold}; lower it or lower "
+                "--min-positives."
+            )
+        scored = sample_eval_codes(scored, args.n_eval_codes, args.eval_seed)
+        args.mask_folds = 1
+        kept = 1 - len(scored) / pool_size
+        band_counts: Dict[str, int] = {}
+        for c in scored:
+            for name, lo, hi in SUPPORT_BANDS:
+                if lo <= support.get(c, 0) < hi:
+                    band_counts[name] = 1 + band_counts.get(name, 0)
+        print(f"\ndraw mode: {len(scored)} of {pool_size} codes, "
+              f"seed {args.eval_seed}   ONE classifier per arm")
+        print(f"  rare-to-rare co-occurrence left in the input: {kept:.0%} "
+              f"(a {args.mask_folds}-of-{pool_size} mask, against 75% at K=4)")
+        print(f"  drawn, globally rare: "
+              f"{len([c for c in scored if c in strict])}/{len(scored)}")
+        print("  support bands: "
+              + ", ".join(f"{k}={v}" for k, v in sorted(band_counts.items())))
+        # 59% of this pool has 1-4 positives, so a faithful draw is mostly
+        # low-support codes. That is a property of the pool, not of the draw --
+        # but with 30 codes the noise no longer averages away as it does at 476.
+        thin = sum(v for k, v in band_counts.items() if k == "1_4")
+        if thin > len(scored) / 2:
+            print(f"  NOTE: {thin}/{len(scored)} drawn codes have < 5 "
+                  f"{args.fold} positives, so the macro mean rests mostly on "
+                  "noisy per-code scores. Run several --eval-seed values.")
 
     # Straight off the cache: {hospital: {patient: [[code, ...], ...]}}.
     train_traj = read_trajectories(args.cohort_cache, "train", hospitals)
@@ -838,6 +873,13 @@ def main(argv=None) -> None:
         "n_scored_codes": len(scored),
         "n_dropped_low_support": dropped,
         "mask_folds": len(folds),
+        # Draw mode records the drawn codes themselves, not just the count: the
+        # scored pool depends on the cohort cache, so (n, seed) alone does not
+        # pin the subset if the cache is ever rebuilt.
+        "n_eval_codes": args.n_eval_codes,
+        "eval_seed": args.eval_seed,
+        "eval_codes": list(scored) if args.n_eval_codes else None,
+        "n_scoreable_pool": pool_size,
         "train_budget": budget,
         "train_budget_uncapped": uncapped,
         "smallest_real_train_split": smallest_real,
@@ -950,10 +992,19 @@ def main(argv=None) -> None:
               f"{smallest_real} real\nrecords a small hospital actually holds. "
               f"Report it as such.")
     print("\nThe claim to check: real_local < fedavg <= centralized <= real_pooled.")
-    if len(folds) == 1:
+    if len(folds) == 1 and not args.n_eval_codes:
+        # Only a warning when the single fold holds the WHOLE pool. In draw mode
+        # the single fold is 30 of 476 codes, which strips less of the tail than
+        # K=4 does, so the co-occurrence objection does not apply.
         print("NOTE: --mask-folds 1 strips every scored rare code at once, so "
               "no rare-rare co-occurrence is available to any arm. Expect "
-              "scores near the prior; use --mask-folds 4 for the headline run.")
+              "scores near the prior; use --mask-folds 4 for the headline run, "
+              "or --n-eval-codes N to mask a small subset instead.")
+    if args.n_eval_codes:
+        print(f"\nNOTE: draw mode -- these numbers describe {len(scored)} "
+              f"sampled codes, not all {pool_size}. They are NOT comparable to "
+              "a --mask-folds 4 run (different mask size, different task "
+              "difficulty). Compare draw-mode runs only against each other.")
 
 
 if __name__ == "__main__":

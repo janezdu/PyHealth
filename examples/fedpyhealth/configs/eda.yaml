@@ -1,0 +1,54 @@
+# EDA config -- the standing settings for the frozen strat8_random cohort.
+#
+#   cd examples/fedpyhealth
+#   python eda.py --all --config configs/eda.yaml
+#
+# Precedence: built-in defaults < this file's top-level keys < this file's
+# per-analysis section < an explicit CLI flag. Top-level keys reach every
+# analysis that has that knob, which is why `code_fold` below covers both
+# `lengths` and `prevalence_curve` without being restated.
+#
+# `python eda.py --list` prints every key with its default. An unknown key is
+# an error, not a silent no-op.
+
+# Which analyses `eda.py` runs when none is named on the command line. The last
+# two read a training run's artifacts, so they only work once that run exists.
+analyses: [prevalence_curve, lengths]
+
+# ---- shared ---------------------------------------------------------------
+# cohort_cache: leave unset to use utils/cohort.py's DEFAULT_CACHE_DIR (the
+# frozen strat8_random cache). Set it to point at a different frozen cohort.
+out: _outputs/eda          # CSV/JSON artifacts; gitignored
+html: true                 # render the viz/ pages
+
+# Which fold's support decides the scored code list. Must match test2's --fold
+# so the EDA and the result it explains describe the same codes.
+code_fold: val
+min_positives: 1
+
+# ---- per analysis ---------------------------------------------------------
+lengths:
+  data_folds: [train, val]
+  # MUST match the test2 run being explained: it decides which codes each
+  # patient loses, and so every post-mask length reported.
+  mask_folds: 4
+
+prevalence_curve:
+  n_eval: 30
+  # Several seeds overlay several draws on one page -- the point is to see how
+  # much of the result is the draw rather than the method.
+  seeds: [0]
+  names: true              # ICD lookup; downloads a table on first use
+
+generator_distance:
+  outputs: _outputs
+  suffix: _full_strat8_random_save
+  real_fold: train
+  # true restricts the prevalence vector to pooled rare codes, so the head
+  # codes every generator gets right stop dominating the distances.
+  rare_only: false
+  # runs: ["ft25=_outputs/ftsweep_e25_lr3e-4_save", ...]   # sweep dirs
+
+drift:
+  save_dir: _outputs/fedavg_ft_full_strat8_random_save
+  top_layers: 12

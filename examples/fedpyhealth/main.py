@@ -46,6 +46,8 @@ LAUNCH_DIR = "_outputs/slurm/launch"
 
 ACCOUNT = "bgyw-delta-gpu"
 PARTITION = "gpuA100x4"
+# Measured at ~1.0 core in use; see the --cpus help text.
+CPUS_PER_TASK = 16
 MAIL_USER = "zd16@illinois.edu"
 
 REGIMES = ("fedavg", "fedavg_ft", "centralized", "local")
@@ -69,7 +71,7 @@ SBATCH_TEMPLATE = """#!/bin/bash
 #SBATCH --mem={mem}
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=16
+#SBATCH --cpus-per-task={cpus}
 #SBATCH --partition={partition}
 #SBATCH --account={account}
 #SBATCH --job-name={job_name}
@@ -105,6 +107,23 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         help="override the SBATCH wall clock")
     common.add_argument("--mem", default=argparse.SUPPRESS,
                         help="override the SBATCH memory")
+    common.add_argument("--cpus", default=argparse.SUPPRESS,
+                        help="override --cpus-per-task (default 16). Measured: "
+                             "the pipeline uses ~1.0 core (TotalCPU 14:54:44 "
+                             "over 14:52:22 wall on 16 CPUs), and the loader "
+                             "runs num_workers=0, so 16 buys nothing. CPUs bill "
+                             "at 62.5 each on gpuA100x4 -- 16 of them cost about "
+                             "as much as the GPU.")
+    common.add_argument("--partition", default=argparse.SUPPRESS,
+                        help=f"override the SBATCH partition (default "
+                             f"{PARTITION}). 'gpuA100x4-preempt' is the same "
+                             f"A100 hardware at half the billing weight and a "
+                             f"far shorter queue, at the cost of REQUEUE on "
+                             f"preemption -- safe here because every regime "
+                             f"checkpoints per round/epoch and --resume is on "
+                             f"by default.")
+    common.add_argument("--account", default=argparse.SUPPRESS,
+                        help=f"override the SBATCH account (default {ACCOUNT})")
     common.add_argument("--cohort-cache", default=argparse.SUPPRESS,
                         help="cohort cache every job in this invocation reads")
     common.add_argument("--skip-cohort-check", action="store_true",
@@ -516,10 +535,12 @@ def record_run(job_id: str, run_name: str, dry_run: bool) -> None:
               f"submitted; record it by hand with exp_log.py record.")
 
 
-def render(job_name: str, command: str, time: str, mem: str) -> str:
+def render(job_name: str, command: str, time: str, mem: str,
+           partition: str = None, account: str = None, cpus: str = None) -> str:
     """Fill the sbatch template for one job."""
     return SBATCH_TEMPLATE.format(
-        mem=mem, partition=PARTITION, account=ACCOUNT, job_name=job_name,
+        mem=mem, partition=partition or PARTITION, account=account or ACCOUNT,
+        cpus=cpus or CPUS_PER_TASK, job_name=job_name,
         time=time, mail_user=MAIL_USER, slurm_dir=SLURM_DIR, command=command,
     )
 
@@ -554,23 +575,123 @@ def submit(job_name: str, script: str, dry_run: bool,
     return job_id
 
 
+def _flag_value(argv: Sequence[str], flag: str) -> str:
+    """Value of ``--flag v`` or ``--flag=v`` in ``argv``, or None if absent."""
+    for i, a in enumerate(argv):
+        if a == flag and i + 1 < len(argv):
+            return argv[i + 1]
+        if a.startswith(f"{flag}="):
+            return a.split("=", 1)[1]
+    return None
+
+
+def _strip_flag(argv: Sequence[str], flag: str,
+                has_value: bool = True) -> List[str]:
+    """``argv`` without ``--flag``, in either spelling.
+
+    ``has_value=False`` for store_true/store_false flags, which have no
+    following token to drop -- eating one would silently swallow the next
+    flag's value.
+    """
+    out, skip = [], False
+    for a in argv:
+        if skip:
+            skip = False
+            continue
+        if a == flag:
+            skip = has_value
+            continue
+        if a.startswith(f"{flag}="):
+            continue
+        out.append(a)
+    return out
+
+
 def train_job(regime: str, profile: str, passthrough: Sequence[str],
               args, cohort_file: str) -> Tuple[str, str]:
     """Submit one training regime. Returns ``(job_id, run_name)``."""
     res = PROFILE_RESOURCES[profile]
     run_name = run_name_for(regime, profile, cohort_file, passthrough)
+    # --fold is the TESTS' spelling of the reporting fold; train.py calls the
+    # same thing --eval-fold. Translate rather than pass it through, so one
+    # `main.py all --fold test` reaches both sides instead of killing the four
+    # training jobs on an unrecognised argument. See fold_for_tests().
+    fold = _flag_value(passthrough, "--fold")
+    passthrough = _strip_flag(passthrough, "--fold")
+    if fold and _flag_value(passthrough, "--eval-fold") is None:
+        passthrough = list(passthrough) + ["--eval-fold", fold]
+    # --resume unless the caller already said something about it. A `full` run
+    # books the partition maximum (48h) and can still be killed by the wall
+    # clock; without this, resubmitting the same command silently restarts from
+    # round 0 rather than continuing, which cost 12h on job 21095176. It is safe
+    # to default on: run_fedavg refuses a checkpoint whose fingerprint (client
+    # sizes + split sha) does not match, so a checkpoint from another cohort
+    # raises instead of being resumed into.
+    resume = [] if "--resume" in passthrough else ["--resume"]
     command = (f"python examples/fedpyhealth/train.py --profile {profile} "
                f"--regime {regime} --run-name {run_name} "
-               f"{' '.join(passthrough)}").strip()
+               f"{' '.join(list(passthrough) + resume)}").strip()
     script = render(
         job_name=f"fed-{regime}-{profile}",
         command=command,
         time=args.time or res["time"],
         mem=args.mem or res["mem"],
+        partition=getattr(args, "partition", None),
+        account=getattr(args, "account", None),
+        cpus=getattr(args, "cpus", None),
     )
     job_id = submit(f"fed-{regime}-{profile}", script, args.dry_run)
     record_run(job_id, run_name, args.dry_run)
     return job_id, run_name
+
+
+# Knobs only train.py understands. main.py hands ONE passthrough to both the
+# training and the scoring jobs, and the test scripts parse strictly, so a
+# train-only flag reaching them is not ignored -- it kills the job on an
+# unrecognised argument. `main.py all --n-rounds 80` submitted two scoring jobs
+# that died the moment they started, hours later, with the training already
+# done. Strip them instead.
+TRAIN_ONLY_VALUED = (
+    "--config", "--weighting", "--ft-epochs", "--n-rounds", "--local-epochs",
+    "--num-synth", "--synth-per-hospital", "--metrics", "--ckpt-every",
+    "--tb-logdir", "--log-every-epochs", "--run-name", "--es-patience",
+    "--es-min-steps", "--es-min-val-patients", "--es-fallback",
+)
+TRAIN_ONLY_BOOL = ("--resume", "--no-tb", "--no-early-stop")
+
+
+def fold_for_tests(passthrough: Sequence[str]) -> Tuple[List[str], List[str]]:
+    """Decide which real fold the scoring jobs compare against.
+
+    train.py selects models on **val** (early stopping) and reports on **test**,
+    so the tests must score on test too -- scoring on the fold the model was
+    stopped on would quote a number it was tuned against. Both test scripts
+    still default to ``--fold val`` on their own, from before early stopping
+    existed, so the launcher passes it explicitly rather than relying on their
+    default drifting into agreement.
+
+    ``--eval-fold`` is train.py's spelling of the same choice and is not a flag
+    the test scripts know, so it is translated here. Every other train-only knob
+    (``TRAIN_ONLY_VALUED`` / ``TRAIN_ONLY_BOOL``) is simply dropped, since the
+    test scripts parse strictly and would die on it.
+
+    Args:
+        passthrough: Unparsed args destined for the job command.
+
+    Returns:
+        ``(cleaned_passthrough, fold_args)`` -- append ``fold_args`` to the
+        test command. An explicit ``--fold`` from the user always wins.
+    """
+    cleaned = list(passthrough)
+    for flag in TRAIN_ONLY_VALUED:
+        cleaned = _strip_flag(cleaned, flag)
+    for flag in TRAIN_ONLY_BOOL:
+        cleaned = _strip_flag(cleaned, flag, has_value=False)
+    cleaned = _strip_flag(cleaned, "--eval-fold")
+    if _flag_value(passthrough, "--fold") is not None:
+        return cleaned, []                       # user already decided
+    return cleaned, ["--fold",
+                     _flag_value(passthrough, "--eval-fold") or "test"]
 
 
 def test_job(which: str, passthrough: Sequence[str], args,
@@ -579,13 +700,17 @@ def test_job(which: str, passthrough: Sequence[str], args,
     script_name = {"test1": "test1_prevalence.py",
                    "test2": "test2_rare_efficacy.py"}[which]
     res = TEST_RESOURCES[which]
+    passthrough, fold_args = fold_for_tests(passthrough)
     command = (f"python examples/fedpyhealth/{script_name} "
-               + " ".join(passthrough)).strip()
+               + " ".join(list(passthrough) + fold_args)).strip()
     script = render(
         job_name=f"fed-{which}",
         command=command,
         time=args.time or res["time"],
         mem=args.mem or res["mem"],
+        partition=getattr(args, "partition", None),
+        account=getattr(args, "account", None),
+        cpus=getattr(args, "cpus", None),
     )
     return submit(f"fed-{which}", script, args.dry_run, depends_on=depends_on)
 
@@ -605,7 +730,8 @@ def main(argv: List[str] = None) -> None:
     # A stray main.py flag reaching the training script means it was misparsed;
     # better to stop than to submit a job that dies on an unknown argument.
     stray = [a for a in passthrough
-             if a in ("--dry-run", "--skip-cohort-check", "--time", "--mem")]
+             if a in ("--dry-run", "--skip-cohort-check", "--time", "--mem",
+                      "--partition", "--account", "--cpus")]
     if stray:
         sys.exit(f"internal: {stray} leaked into the job command -- refusing to "
                  "submit. This is a launcher bug, not a usage error.")

@@ -130,7 +130,39 @@ PROFILES: Dict[str, dict] = {
         # rare-code recovery with a per-hospital classifier instead.
         metrics="privacy",
         # larger HALO config for full vocabulary / longer sequences
-        embed_dim=256, n_heads=4, n_layers=4, n_ctx=50, batch_size=64, lr=1e-4,
+        # batch_size 256. Measured on hilo8_random, doubling the batch is a
+        # real speedup rather than a bigger number: this pipeline is bound by
+        # per-batch Python overhead, not by the model.
+        #
+        #   batch   GPU util   GPU mem      of an A100's 40960 MB
+        #     64      23%       1260 MB       3%
+        #    128      62%       2194 MB       5%
+        #    256       -       ~4300 MB     ~11%   (extrapolated)
+        #
+        # Memory is nowhere near the limit -- 1024 would still leave half the
+        # card free. The real cost is gradient steps at the small sites, and it
+        # is worth stating plainly because it is invisible in any throughput
+        # number. Batches per epoch on hilo8_random:
+        #
+        #             458(1832)  449(1001)  277(624)  358(194)  429(142)
+        #    b=128       15          8          5         2         2
+        #    b=256        8          4          3         1         1
+        #
+        # So at 256 the two smallest hospitals take ONE optimizer step per
+        # epoch. They also run the full budget rather than early-stopping
+        # (es_fallback=fixed, their val folds are under es_min_val_patients),
+        # so the full budget is now a handful of steps. Read any small-site
+        # result with that in mind.
+        #
+        # The fix, if that matters: cap the batch PER CLIENT, e.g.
+        # min(batch_size, ceil(n_train / 4)), so 458 runs at 256 while 429 runs
+        # at 36 and every site keeps >=4 steps. That needs run_fedavg to build a
+        # model per client instead of sharing one -- see notes/TODO.md A3.
+        #
+        # Raising the batch spends gradient steps to buy throughput, so if val
+        # loss plateaus higher than it did at 128, raise lr before blaming the
+        # data (the ft sweep showed 3e-4 is stable for this model).
+        embed_dim=256, n_heads=4, n_layers=4, n_ctx=50, batch_size=256, lr=1e-4,
         # heavier metric evaluator for tighter confidence intervals
         eval_sample_cap=200,
         eval_lstm=dict(embed_dim=64, hidden_dim=64, batch_size=64, epochs=10),
@@ -206,6 +238,25 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--log-every-epochs", type=int, default=None,
                    help="log per-hospital loss every N local epochs (last epoch "
                         "of each round is always logged; default: 1)")
+    p.add_argument("--no-early-stop", dest="early_stop", action="store_false",
+                   default=None,
+                   help="run the full fixed budget instead of stopping when "
+                        "validation loss stops improving")
+    p.add_argument("--es-patience", type=int,
+                   help="rounds (fedavg) or epochs (others) of no val "
+                        "improvement before stopping (default: 5)")
+    p.add_argument("--es-min-steps", type=int,
+                   help="never stop before this many rounds/epochs (default: 3)")
+    p.add_argument("--es-min-val-patients", type=int,
+                   help="a hospital needs this many val patients before its "
+                        "own val loss is trusted to stop it; smaller sites "
+                        "fall back to --es-fallback (default: 30)")
+    p.add_argument("--es-fallback", choices=["fixed", "train_plateau"],
+                   help="what a too-small site does instead: run the fixed "
+                        "budget (default) or stop on a train-loss plateau")
+    p.add_argument("--eval-fold", choices=["val", "test"],
+                   help="fold the in-run scoring reports on (default: test, "
+                        "since val is now the model-selection fold)")
     p.add_argument("--run-name",
                    help="readable run id for artifacts + results.py labelling "
                         "(default: auto from regime/E/R/cohort/metrics)")
@@ -296,6 +347,10 @@ def build_config(argv: List[str] = None) -> dict:
         "num_synth": args.num_synth, "metrics": args.metrics,
         "synth_per_hospital": args.synth_per_hospital,
         "ft_epochs": args.ft_epochs, "run_name": args.run_name,
+        "early_stop": args.early_stop, "es_patience": args.es_patience,
+        "es_min_steps": args.es_min_steps,
+        "es_min_val_patients": args.es_min_val_patients,
+        "es_fallback": args.es_fallback, "eval_fold": args.eval_fold,
     }
     for k, v in cli.items():
         if v is not None:
@@ -315,6 +370,40 @@ def build_config(argv: List[str] = None) -> dict:
     # Per-hospital synthetic count. Falls back to num_synth so an old YAML that
     # never heard of this knob still produces a self-consistent run.
     cfg.setdefault("synth_per_hospital", cfg["num_synth"])
+
+    # Early stopping. On by default: with it off, every regime runs a fixed
+    # budget and the small sites get the same handful of gradient steps that
+    # made fedavg_ft look worse than local.
+    cfg.setdefault("early_stop", True)
+    cfg.setdefault("es_patience", 5)
+    cfg.setdefault("es_min_delta", 0.0)
+    # Never stop inside the first few steps: a generator's val loss sits nearly
+    # flat while it learns the code marginals, and patience alone would call
+    # that convergence.
+    cfg.setdefault("es_min_steps", 3)
+    # Below this many val patients the fold's mean moves more from which
+    # patients landed in it than from what the model learned. On hilo8_random
+    # this puts 6 of 8 sites on val and leaves 358 (28) and 429 (20) on the
+    # fallback.
+    cfg.setdefault("es_min_val_patients", 30)
+    cfg.setdefault("es_fallback", "fixed")       # or "train_plateau"
+    # Fold the in-run scoring reports on. val is the model-selection fold now
+    # that early stopping reads it, so reporting moved to test to keep the two
+    # apart; test1/test2 take --fold test to match.
+    cfg.setdefault("eval_fold", "test")
+
+    if cfg["es_fallback"] not in ("fixed", "train_plateau"):
+        raise ValueError(
+            f"es_fallback must be 'fixed' or 'train_plateau', got "
+            f"{cfg['es_fallback']!r}")
+    if cfg["eval_fold"] not in ("val", "test"):
+        raise ValueError(
+            f"eval_fold must be 'val' or 'test', got {cfg['eval_fold']!r}")
+    if cfg["early_stop"] and cfg["eval_fold"] == "val":
+        raise ValueError(
+            "early_stop selects the model on val, so scoring on val too would "
+            "report a number the model was tuned against. Use eval_fold=test, "
+            "or set early_stop=false.")
 
     if cfg["weighting"] not in ("sample", "uniform"):
         raise ValueError(
@@ -365,6 +454,216 @@ def _snapshot(model) -> Dict[str, torch.Tensor]:
     return {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
 
+# --------------------------------------------------------------------------- #
+# Validation loss and early stopping                                           #
+# --------------------------------------------------------------------------- #
+# Val loss is computed HERE rather than by handing ``val_dataset`` to
+# ``HALO.train_model``. That method writes a best-model checkpoint to
+# ``save_dir/halo_model`` whenever val improves AND loads that same file at the
+# top of every call -- and all eight FedAvg clients share one ``save_dir``, so
+# passing a val set would make client B silently warm-start from client A's
+# weights instead of the broadcast global. FedAvg would stop being FedAvg with
+# nothing raised. See notes/TODO.md A1.
+#
+# The stop itself rides on ``on_epoch_end``: returning False from the callback
+# ends that model's training after the current epoch, so the criterion lives
+# here and HALO's loop stays unaware of it.
+def val_loss(model, dataset, device: str, batch_size: int = None) -> float:
+    """Mean per-batch validation loss, the same quantity HALO trains on.
+
+    Mirrors the forward pass in ``HALO.train_model`` exactly -- same encoding,
+    same ``pos_loss_weight`` -- so the number is comparable to the training
+    loss printed alongside it rather than a differently-normalised cousin.
+
+    Args:
+        model: A HALO wrapper (must already be on ``device``).
+        dataset: The fold to score, as a ``SampleDataset``.
+        device: Torch device string.
+        batch_size: Loader batch size; defaults to the model's own.
+
+    Returns:
+        Mean loss over batches, or ``nan`` for an empty dataset (a hospital
+        with no val patients is a real possibility on a small site, and a NaN
+        that propagates into "did it improve?" is safer than a fabricated 0.0).
+    """
+    from pyhealth.datasets import get_dataloader
+
+    if len(dataset) == 0:
+        return float("nan")
+    loader = get_dataloader(dataset,
+                            batch_size=batch_size or int(model._batch_size),
+                            shuffle=False)
+    model.halo_model.eval()
+    losses = []
+    with torch.no_grad():
+        for batch in loader:
+            visits = batch["visits"].to(device)
+            ehr, mask = model._encode_visits(visits)
+            loss, _, _ = model.halo_model(
+                ehr, position_ids=None, ehr_labels=ehr, ehr_masks=mask,
+                pos_loss_weight=model.config.pos_loss_weight)
+            losses.append(float(loss.item()))
+    model.halo_model.train()
+    return float(np.mean(losses)) if losses else float("nan")
+
+
+class EarlyStopper:
+    """Track a minimised score, remember the best weights, say when to stop.
+
+    Deliberately keeps the best state in RAM rather than on disk: the on-disk
+    path is the one HALO already uses, and writing to it is what would break
+    FedAvg (see above). A HALO state dict at the ``full`` profile is ~36 MB, so
+    one snapshot per model is cheap next to what training already holds.
+
+    Args:
+        patience: Consecutive non-improving steps tolerated before stopping.
+        min_delta: How much better a score must be to count as an improvement.
+            Guards against declaring victory on numerical noise.
+        min_steps: Never stop before this many steps, however flat the curve.
+            A generator's val loss can sit flat for the first epochs while the
+            model learns the code marginals, and stopping there would report a
+            near-untrained model as "converged".
+
+    Attributes:
+        best_score: Lowest score seen.
+        best_state: Weights snapshot from the step that produced it.
+        best_step: 1-indexed step of the best score.
+        stopped_early: True if ``step`` ever returned True.
+    """
+
+    def __init__(self, patience: int = 5, min_delta: float = 0.0,
+                 min_steps: int = 0):
+        self.patience = int(patience)
+        self.min_delta = float(min_delta)
+        self.min_steps = int(min_steps)
+        self.best_score = float("inf")
+        self.best_state = None
+        self.best_step = 0
+        self.stopped_early = False
+        self.n_steps = 0
+        self.n_bad = 0
+
+    def step(self, score: float, state=None) -> bool:
+        """Record one step's score. Returns True when training should stop.
+
+        Args:
+            score: The quantity being minimised (val loss, usually).
+            state: Weights to remember if this step is the best so far. May be
+                a dict, or a zero-arg callable returning one -- the callable
+                form is only invoked on an improvement, so the ~36 MB snapshot
+                is not paid on epochs that turn out not to matter.
+
+        A NaN score (empty val fold) never improves and never counts against
+        patience, so a misconfigured fold stalls the criterion instead of
+        silently ending the run at step ``patience``.
+        """
+        self.n_steps += 1
+        if score != score:                       # NaN
+            return False
+        if score < self.best_score - self.min_delta:
+            self.best_score = score
+            self.best_step = self.n_steps
+            self.n_bad = 0
+            if state is not None:
+                self.best_state = state() if callable(state) else state
+        else:
+            self.n_bad += 1
+        if self.n_steps >= self.min_steps and self.n_bad >= self.patience:
+            self.stopped_early = True
+            return True
+        return False
+
+    def summary(self, unit: str = "epoch") -> str:
+        if self.best_state is None and self.best_step == 0:
+            return "no validation signal (all scores NaN)"
+        how = "early-stopped" if self.stopped_early else "ran to budget"
+        return (f"{how} after {self.n_steps} {unit}s; best val "
+                f"{self.best_score:.4f} at {unit} {self.best_step}")
+
+
+# --------------------------------------------------------------------------- #
+# GPU accounting                                                               #
+# --------------------------------------------------------------------------- #
+# Measured on the finished runs, this pipeline barely touches the card it books:
+# the 12h FedAvg run averaged 22% GPU utilisation and 1276 MB of an A100's
+# 40960 MB, and asked SLURM for 128 GB of host RAM while using 2.9 GB. That is
+# not a rounding error -- it means wall-clock is set by everything around the
+# compute rather than by the compute, and batch_size could rise a long way
+# before memory bites. Sampling during training turns that from post-hoc sacct
+# archaeology into something the run itself reports.
+_GPU_SAMPLES: List[Tuple[float, float]] = []   # (utilisation %, peak memory MB)
+
+
+def gpu_snapshot() -> Dict[str, float]:
+    """Current GPU utilisation and memory, or {} when there is no GPU.
+
+    Utilisation comes from ``nvidia-smi`` rather than
+    ``torch.cuda.utilization()`` because the latter needs pynvml, which is not
+    installed in this environment. The call costs a few milliseconds, so it
+    belongs at round/epoch boundaries -- never inside the batch loop.
+    """
+    if not torch.cuda.is_available():
+        return {}
+    out: Dict[str, float] = {
+        "mem_allocated_mb": torch.cuda.memory_allocated() / 1e6,
+        "mem_reserved_mb": torch.cuda.memory_reserved() / 1e6,
+        "mem_peak_mb": torch.cuda.max_memory_allocated() / 1e6,
+    }
+    try:
+        free, total = torch.cuda.mem_get_info()
+        out["mem_total_mb"] = total / 1e6
+        out["mem_used_frac"] = (total - free) / total
+    except Exception:                              # noqa: BLE001
+        pass
+    try:
+        import subprocess
+        r = subprocess.run(
+            ["nvidia-smi", "--query-gpu=utilization.gpu",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5)
+        if r.returncode == 0 and r.stdout.strip():
+            out["util_pct"] = float(r.stdout.strip().splitlines()[0])
+    except Exception:                              # noqa: BLE001
+        pass                                        # no nvidia-smi: skip silently
+    return out
+
+
+def log_gpu(writer, step: int, tag: str = "gpu") -> None:
+    """Record one GPU sample to TensorBoard and to the run-level summary."""
+    snap = gpu_snapshot()
+    if not snap:
+        return
+    _GPU_SAMPLES.append((snap.get("util_pct", float("nan")),
+                         snap.get("mem_peak_mb", 0.0)))
+    if writer is not None:
+        for k, v in snap.items():
+            writer.add_scalar(f"{tag}/{k}", v, step)
+
+
+def print_gpu_summary(log: Callable[[str], None] = print) -> None:
+    """Say plainly whether the booked GPU was worth booking."""
+    if not _GPU_SAMPLES:
+        return
+    utils = [u for u, _ in _GPU_SAMPLES if u == u]
+    peak = max((m for _, m in _GPU_SAMPLES), default=0.0)
+    total = gpu_snapshot().get("mem_total_mb", 0.0)
+    log("\n=== GPU usage ===")
+    if utils:
+        mean_u = sum(utils) / len(utils)
+        log(f"  utilisation: mean {mean_u:.0f}%  min {min(utils):.0f}%  "
+            f"max {max(utils):.0f}%  ({len(utils)} samples)")
+        if mean_u < 40:
+            log(f"  -> the GPU idled ~{100 - mean_u:.0f}% of the time. Wall-clock "
+                "is set by data loading\n     and per-sample Python work, not by "
+                "the model. Raising batch_size via\n     --config is the first "
+                "thing to try.")
+    if peak and total:
+        log(f"  memory: peak {peak:.0f} MB of {total:.0f} MB "
+            f"({100 * peak / total:.1f}%)")
+        if peak < 0.25 * total:
+            log(f"  -> {total / max(peak, 1):.0f}x headroom before memory bites.")
+
+
 def _fingerprint(sizes: Dict[str, int], split_sha: str = None) -> dict:
     """Identity of a partition, so resume refuses a mismatched checkpoint.
 
@@ -410,6 +709,8 @@ def run_fedavg(
     log_every_epochs: int = 1,
     log: Callable[[str], None] = print,
     split_sha: str = None,
+    val_dataset=None,
+    stopper: "EarlyStopper" = None,
 ) -> object:
     """Train ``model`` with FedAvg across ``clients`` for ``n_rounds`` rounds.
 
@@ -433,6 +734,15 @@ def run_fedavg(
     If the checkpoint already has >= ``n_rounds`` rounds, training is skipped and
     the model is returned with the final weights (ready for generation/eval).
 
+    Early stopping: with ``val_dataset`` and ``stopper`` given, the aggregated
+    global model is scored on that fold after every round and training stops
+    when it has not improved for ``stopper.patience`` rounds, returning the BEST
+    global state rather than the last. The unit is deliberately the round, not
+    the local epoch: cutting a client's local epochs short would give clients
+    unequal numbers of gradient steps, which biases the weighted average toward
+    whoever trained longer and stops the result being FedAvg. Rounds are the
+    only place a global model exists to validate.
+
     TensorBoard: when ``writer`` is given, each client's mean train loss is logged
     under ``loss_train/hospital_<id>`` every ``log_every_epochs`` epochs (and on
     each client's last local epoch), on a cumulative x-axis
@@ -452,7 +762,7 @@ def run_fedavg(
             raise ValueError(
                 f"Checkpoint {ckpt_path} was written for a different partition "
                 f"(client sizes and/or frozen split differ); refusing to "
-                f"resume. Delete it, or point --cohort-file at the manifest it "
+                f"resume. Delete it, or point --cohort-cache at the cache it "
                 f"was trained against."
             )
         global_state = ckpt["global_state"]
@@ -505,6 +815,30 @@ def run_fedavg(
             log(f"round {r + 1}/{n_rounds} aggregated + checkpointed -> {ckpt_path}")
         else:
             log(f"round {r + 1}/{n_rounds} aggregated")
+        log_gpu(writer, r + 1)
+
+        if val_dataset is not None and stopper is not None:
+            vl = val_loss(model, val_dataset, device)
+            if writer is not None:
+                writer.add_scalar("loss_val/global", vl, r + 1)
+            stop = stopper.step(vl, state=global_state)
+            log(f"  round {r + 1}: val {vl:.4f}  (best {stopper.best_score:.4f} "
+                f"at round {stopper.best_step})")
+            if stop:
+                log(f"FedAvg: early stop at round {r + 1}/{n_rounds} -- "
+                    f"{stopper.summary('round')}")
+                break
+
+    # Restoring the best global state is the half of early stopping that is
+    # easy to leave out: without it the run stops early AND keeps the worse
+    # weights it stopped on, which is strictly worse than not stopping.
+    if stopper is not None and stopper.best_state is not None:
+        model.load_state_dict(stopper.best_state)
+        if ckpt_path:
+            _save_ckpt(ckpt_path, stopper.best_step, stopper.best_state,
+                       fingerprint)
+        log(f"FedAvg: restored best global (round {stopper.best_step}, val "
+            f"{stopper.best_score:.4f})")
 
     return model
 
@@ -541,7 +875,8 @@ def train_centralized(model, pooled_train, device: str = "cpu", writer=None,
                       log: Callable[[str], None] = print,
                       total_epochs: int = None, ckpt_path: str = None,
                       ckpt_every: int = 1, resume: bool = False,
-                      fingerprint: dict = None) -> object:
+                      fingerprint: dict = None, val_dataset=None,
+                      stopper: "EarlyStopper" = None) -> object:
     """Train ONE model on the pooled (all-hospital) train data. Returns it.
 
     Checkpointing is epoch-granular rather than round-granular (there are no
@@ -553,6 +888,11 @@ def train_centralized(model, pooled_train, device: str = "cpu", writer=None,
     Only weights are saved -- ``train_model`` builds a fresh optimizer per call,
     so a resumed run restarts Adam's moment estimates and is not bit-identical
     to an uninterrupted one. The same caveat applies to the FedAvg checkpoints.
+
+    With ``val_dataset`` and ``stopper``, the pooled val fold is scored after
+    every epoch and training stops when it stops improving; the best weights are
+    restored at the end. This regime has the whole cohort's val fold behind it,
+    so the signal is the least noisy of the four.
     """
     total_epochs = total_epochs or int(getattr(model, "_epochs", 1))
     start_epoch = 0
@@ -572,17 +912,73 @@ def train_centralized(model, pooled_train, device: str = "cpu", writer=None,
         done = start_epoch + epoch + 1
         if writer is not None:
             writer.add_scalar("loss_train/pooled", mean_loss, done - 1)
-        log(f"  centralized  epoch {done}/{total_epochs}  loss={mean_loss:.4f}")
+            log_gpu(writer, done - 1)
         if ckpt_path and (done % ckpt_every == 0 or done == total_epochs):
             _save_ckpt(ckpt_path, done, _snapshot(model), fingerprint,
                        key="completed_epochs")
+
+        if val_dataset is None or stopper is None:
+            log(f"  centralized  epoch {done}/{total_epochs}  "
+                f"loss={mean_loss:.4f}")
+            return None
+        vl = val_loss(model, val_dataset, device)
+        if writer is not None:
+            writer.add_scalar("loss_val/pooled", vl, done - 1)
+        stop = stopper.step(vl, state=lambda: _snapshot(model))
+        log(f"  centralized  epoch {done}/{total_epochs}  loss={mean_loss:.4f}"
+            f"  val={vl:.4f}  (best {stopper.best_score:.4f} @ "
+            f"{stopper.best_step})")
+        # False is the stop request HALO's loop honours; None keeps going.
+        return False if stop else None
 
     # Resuming means training only what is left, so the model is rebuilt with
     # the remaining epoch count rather than the original budget.
     model._epochs = total_epochs - start_epoch
     model.train_model(pooled_train, val_dataset=None, device=device,
                       on_epoch_end=_on_epoch_end)
+    if stopper is not None:
+        log(f"Centralized: {stopper.summary()}")
+        if stopper.best_state is not None:
+            model.load_state_dict(stopper.best_state)
+            if ckpt_path:
+                # Stamped with the FULL budget, not best_step: early stopping
+                # means the remaining epochs are deliberately not wanted, and a
+                # resume that saw best_step would train them anyway.
+                _save_ckpt(ckpt_path, total_epochs, stopper.best_state,
+                           fingerprint, key="completed_epochs")
     return model
+
+
+def make_site_stopper(hid: str, n_val: int, es_cfg: dict,
+                      log: Callable[[str], None] = print):
+    """Decide how one hospital's training ends. Returns ``(stopper, use_val)``.
+
+    Three outcomes, in order of preference:
+
+    * val fold big enough -> stop on val loss, the criterion that actually
+      measures generalisation;
+    * too small, ``fallback="train_plateau"`` -> stop when TRAIN loss flattens.
+      Weaker by construction: train loss on a 142-record site keeps falling as
+      the model memorises it, so this usually runs to budget and is a guard
+      against wasted epochs rather than a real convergence test;
+    * too small, ``fallback="fixed"`` -> no stopper, run the budget.
+
+    ``(None, False)`` means "train the fixed number of epochs".
+    """
+    if not es_cfg:
+        return None, False
+    if n_val >= int(es_cfg["min_val_patients"]):
+        log(f"  {hid}: early stopping on val (n_val={n_val})")
+        return EarlyStopper(es_cfg["patience"], es_cfg["min_delta"],
+                            es_cfg["min_steps"]), True
+    if es_cfg.get("fallback") == "train_plateau":
+        log(f"  {hid}: n_val={n_val} < {es_cfg['min_val_patients']} -- "
+            f"stopping on TRAIN-loss plateau instead")
+        return EarlyStopper(es_cfg["patience"], es_cfg["min_delta"],
+                            es_cfg["min_steps"]), False
+    log(f"  {hid}: n_val={n_val} < {es_cfg['min_val_patients']} -- too noisy "
+        f"to stop on; fixed budget")
+    return None, False
 
 
 def train_local(
@@ -596,6 +992,8 @@ def train_local(
     ckpt_every: int = 1,
     resume: bool = False,
     fingerprint: dict = None,
+    val_clients: Dict[str, object] = None,
+    es_cfg: dict = None,
 ) -> Dict[str, object]:
     """Train an INDEPENDENT model per hospital on its own data (no averaging).
 
@@ -608,6 +1006,12 @@ def train_local(
     hospitals whose file is complete and continues the one that was in flight --
     which matters most here, since this regime is 8 sequential trainings and has
     the longest exposure to a wall-clock kill.
+
+    With ``val_clients`` and ``es_cfg``, each hospital stops on its OWN val fold
+    once that fold is large enough to mean anything -- see ``make_site_stopper``
+    for what happens when it is not. Per-site and not pooled on purpose: this is
+    the no-collaboration baseline, and letting a site borrow another site's
+    stopping epoch would quietly make it collaborative.
     """
     models: Dict[str, object] = {}
     for hid, train_subset in clients.items():
@@ -629,19 +1033,40 @@ def train_local(
         log(f"Local-only: training hospital {hid} (n={len(train_subset)}), "
             f"epochs {start_epoch}->{epochs}")
 
+        val_ds = (val_clients or {}).get(hid)
+        stopper, use_val = make_site_stopper(
+            hid, len(val_ds) if val_ds is not None else 0, es_cfg, log)
+
         def _on_epoch_end(epoch, mean_loss, hid=hid, path=path,
-                          start_epoch=start_epoch, epochs=epochs, m=m):
+                          start_epoch=start_epoch, epochs=epochs, m=m,
+                          val_ds=val_ds, stopper=stopper, use_val=use_val):
             done = start_epoch + epoch + 1
             if writer is not None:
                 writer.add_scalar(f"loss_train/hospital_{hid}", mean_loss,
                                   done - 1)
+                log_gpu(writer, done - 1, tag="gpu_local")
             if path and (done % ckpt_every == 0 or done == epochs):
                 _save_ckpt(path, done, _snapshot(m), fingerprint,
                            key="completed_epochs")
+            if stopper is None:
+                return None
+            score = val_loss(m, val_ds, device) if use_val else mean_loss
+            if writer is not None and use_val:
+                writer.add_scalar(f"loss_val/hospital_{hid}", score, done - 1)
+            stop = stopper.step(score, state=lambda: _snapshot(m))
+            return False if stop else None
 
         m._epochs = epochs - start_epoch
         m.train_model(train_subset, val_dataset=None, device=device,
                       on_epoch_end=_on_epoch_end)
+        if stopper is not None:
+            log(f"  {hid}: {stopper.summary()}")
+            if stopper.best_state is not None:
+                m.load_state_dict(stopper.best_state)
+                if path:
+                    # Full budget, not best_step -- see train_centralized.
+                    _save_ckpt(path, epochs, stopper.best_state, fingerprint,
+                               key="completed_epochs")
         models[hid] = m
     return models
 
@@ -655,6 +1080,8 @@ def finetune_local(
     log: Callable[[str], None] = print,
     ckpt_dir: str = None,
     fingerprint: dict = None,
+    val_clients: Dict[str, object] = None,
+    es_cfg: dict = None,
 ) -> Dict[str, object]:
     """FedAvg + fine-tuning: personalize the shared global model per hospital.
 
@@ -680,6 +1107,12 @@ def finetune_local(
         ckpt_dir: Where to persist each fine-tuned model. None skips saving.
         fingerprint: Partition identity stamped into each checkpoint so one
             written against a different cohort or split is refused on load.
+        val_clients: ``{hospital_id: val_subset}``. With ``es_cfg``, each site
+            fine-tunes until its own val loss stops improving instead of for a
+            fixed ``ft_epochs``. Safe here in a way it is not inside the
+            federated rounds: this runs AFTER the last aggregation, so sites
+            taking different numbers of steps never get averaged together.
+        es_cfg: Early-stopping settings; see ``make_site_stopper``.
 
     Returns:
         ``{hospital_id: fine_tuned_model}``.
@@ -691,12 +1124,33 @@ def finetune_local(
         m = build_model()
         m.load_state_dict(global_state)  # warm start from the federated global
 
-        def _on_epoch_end(epoch, mean_loss, hid=hid):
+        val_ds = (val_clients or {}).get(hid)
+        stopper, use_val = make_site_stopper(
+            hid, len(val_ds) if val_ds is not None else 0, es_cfg, log)
+
+        def _on_epoch_end(epoch, mean_loss, hid=hid, m=m, val_ds=val_ds,
+                          stopper=stopper, use_val=use_val):
             if writer is not None:
                 writer.add_scalar(f"loss_ft/hospital_{hid}", mean_loss, epoch)
+                log_gpu(writer, epoch, tag="gpu_ft")
+            if stopper is None:
+                return None
+            score = val_loss(m, val_ds, device) if use_val else mean_loss
+            if writer is not None and use_val:
+                writer.add_scalar(f"loss_val_ft/hospital_{hid}", score, epoch)
+            stop = stopper.step(score, state=lambda: _snapshot(m))
+            return False if stop else None
 
         m.train_model(train_subset, val_dataset=None, device=device,
                       on_epoch_end=_on_epoch_end)
+        if stopper is not None:
+            log(f"  {hid}: {stopper.summary()}")
+            # The warm start means epoch 0 can already be the best the site
+            # gets: fine-tuning a converged global on 142 records often makes
+            # val loss worse immediately, and keeping the best is what stops
+            # that from silently becoming the reported fedavg_ft result.
+            if stopper.best_state is not None:
+                m.load_state_dict(stopper.best_state)
         models[hid] = m
         if ckpt_dir:
             path = os.path.join(ckpt_dir, f"ft_{hid}.pt")
@@ -783,10 +1237,15 @@ if __name__ == "__main__":
     # cache's own build step verified that its Parquet files reproduce the eICU
     # tensors byte-for-byte, which is what makes this shortcut safe.
     #
-    # Train on train, score on VAL while the pipeline is still under
-    # development. The test fold is never read here: tuning against val
-    # therefore cannot leak into the final numbers.
-    EVAL_FOLD = "val"
+    # Three folds, three jobs, and they must not be confused:
+    #   train  -- what the generator fits
+    #   val    -- what early stopping selects the model on (never reported)
+    #   test   -- what the in-run scoring reports (never trained or selected on)
+    # Before early stopping existed, scoring ran on val to keep test pristine.
+    # Now that val IS the selection signal, reporting on it would quote a number
+    # the model was tuned against, so EVAL_FOLD moved to test. Pass
+    # --fold test to test1_prevalence.py / test2_rare_efficacy.py to match.
+    EVAL_FOLD = cfg["eval_fold"]
     cache = cfg["cohort_cache"]
     manifest = load_manifest(cache)
     split_sha = manifest_sha256(manifest)
@@ -796,11 +1255,14 @@ if __name__ == "__main__":
           f"{manifest['guaranteed_folds']}, rare <= "
           f"{manifest['rare_prevalence_max']} per hospital")
 
-    clients_by_fold = load_clients(cache, folds=("train", EVAL_FOLD))
+    folds = tuple(dict.fromkeys(("train", "val", EVAL_FOLD)))
+    clients_by_fold = load_clients(cache, folds=folds)
     clients = {hid: f["train"] for hid, f in clients_by_fold.items()}
     client_tests = {hid: f[EVAL_FOLD] for hid, f in clients_by_fold.items()}
+    client_vals = {hid: f["val"] for hid, f in clients_by_fold.items()}
     pooled_train = load_fold(cache, "train")
     pooled_test = load_fold(cache, EVAL_FOLD)
+    pooled_val = load_fold(cache, "val")
     sample_dataset = pooled_train          # any fold: they share one processor
     vocab_size = sample_dataset.input_processors["visits"].vocab_size()
 
@@ -921,6 +1383,26 @@ if __name__ == "__main__":
     # checkpoint written against a different cohort or split is refused rather
     # than silently resumed onto the wrong data.
     fingerprint = _fingerprint(sizes, split_sha)
+    es_cfg = ({"patience": cfg["es_patience"], "min_delta": cfg["es_min_delta"],
+               "min_steps": cfg["es_min_steps"],
+               "min_val_patients": cfg["es_min_val_patients"],
+               "fallback": cfg["es_fallback"]}
+              if cfg["early_stop"] else None)
+    if es_cfg:
+        eligible = [h for h in cohort
+                    if len(client_vals[h]) >= cfg["es_min_val_patients"]]
+        print(f"\nEarly stopping: patience {cfg['es_patience']}, min "
+              f"{cfg['es_min_steps']} steps, selecting on val, reporting on "
+              f"{EVAL_FOLD}")
+        print(f"  {len(eligible)}/{len(cohort)} hospitals have >= "
+              f"{cfg['es_min_val_patients']} val patients: {eligible}")
+        small = [f"{h}({len(client_vals[h])})" for h in cohort
+                 if h not in eligible]
+        if small:
+            print(f"  fallback '{cfg['es_fallback']}' for: {', '.join(small)}")
+    else:
+        print("\nEarly stopping: OFF -- every regime runs its fixed budget")
+
     # client_synth[hid] = the synthetic set scored against hospital `hid` in the
     # per-client eval (STEP 7). For fedavg/centralized that's the single global
     # model's output (shared by all); for local it's that hospital's OWN model.
@@ -933,7 +1415,8 @@ if __name__ == "__main__":
                                  device=device, writer=writer,
                                  total_epochs=total_epochs, ckpt_dir=save_dir,
                                  ckpt_every=cfg["ckpt_every"],
-                                 resume=cfg["resume"], fingerprint=fingerprint)
+                                 resume=cfg["resume"], fingerprint=fingerprint,
+                                 val_clients=client_vals, es_cfg=es_cfg)
             num_params = sum(p.numel()
                              for p in next(iter(models.values())).parameters())
             print(f"Each model: {num_params} parameters")
@@ -957,7 +1440,12 @@ if __name__ == "__main__":
                     total_epochs=total_epochs,
                     ckpt_path=os.path.join(save_dir, "centralized_state.pt"),
                     ckpt_every=cfg["ckpt_every"], resume=cfg["resume"],
-                    fingerprint=fingerprint)
+                    fingerprint=fingerprint,
+                    val_dataset=pooled_val if es_cfg else None,
+                    stopper=(EarlyStopper(cfg["es_patience"],
+                                          cfg["es_min_delta"],
+                                          cfg["es_min_steps"])
+                             if es_cfg else None))
             else:  # fedavg or fedavg_ft -- both start with a FedAvg run
                 print(f"Regime: {regime} -- {len(clients)} clients, "
                       f"{cfg['local_epochs']} local epochs x {fed_rounds} rounds"
@@ -972,7 +1460,17 @@ if __name__ == "__main__":
                            resume=cfg["resume"], weighting=cfg["weighting"],
                            writer=writer,
                            log_every_epochs=cfg["log_every_epochs"],
-                           split_sha=split_sha)
+                           split_sha=split_sha,
+                           # The federated global is validated on the POOLED
+                           # val fold: it is one model serving every site, so
+                           # the question it answers is a cohort-wide one, and
+                           # 1,217 patients make a far steadier signal than any
+                           # single hospital's slice.
+                           val_dataset=pooled_val if es_cfg else None,
+                           stopper=(EarlyStopper(cfg["es_patience"],
+                                                 cfg["es_min_delta"],
+                                                 cfg["es_min_steps"])
+                                    if es_cfg else None))
             # STEP 5: generate synthetic patients from the single global/server
             # model. For fedavg_ft this stays the SHARED global model's output, so
             # the global eval (STEP 6) is directly comparable to plain fedavg.
@@ -998,7 +1496,8 @@ if __name__ == "__main__":
                 ft_models = finetune_local(
                     global_state, lambda: build_model(cfg["ft_epochs"]),
                     clients, device=device, writer=writer,
-                    ckpt_dir=save_dir, fingerprint=fingerprint)
+                    ckpt_dir=save_dir, fingerprint=fingerprint,
+                    val_clients=client_vals, es_cfg=es_cfg)
                 _, client_synth = generate_local(
                     ft_models, sizes, cfg["num_synth"],
                     cfg["synth_per_hospital"], device=device)
@@ -1033,4 +1532,8 @@ if __name__ == "__main__":
         num_params=num_params, split_sha=split_sha,
     )
     print(f"\nSaved results -> {results_path}")
+
+    # Say plainly whether the booked GPU earned its keep. Cheap to print,
+    # and it is the number nobody thinks to look up in sacct afterwards.
+    print_gpu_summary()
  

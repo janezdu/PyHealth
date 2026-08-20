@@ -23,7 +23,7 @@ Scoring runs on the **val** fold during development. Test is not read by any scr
 | [test2_rare_efficacy.py](examples/fedpyhealth/test2_rare_efficacy.py) | rare-code ML efficacy (TSTR) |
 | [exp_log.py](examples/fedpyhealth/exp_log.py), [results.py](examples/fedpyhealth/results.py) | run registry, leaderboard |
 | `scripts/status.sh` | "are my jobs healthy?" — queue + progress + health, safe on the login node |
-| `scripts/run_*.sh` | standalone sbatch wrappers, for when the user wants to submit without `main.py` |
+| `scripts/run_cohort.sh` | the one standalone sbatch wrapper: builds the cohort cache, which `main.py` does not do |
 
 ## Command selection
 

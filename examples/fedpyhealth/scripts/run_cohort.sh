@@ -1,38 +1,40 @@
 #!/bin/bash
-# Build the cohort caches: the one job that reads eICU. Everything else reads
-# what this writes.
+# Build a cohort cache: the one job that reads eICU. Everything else reads what
+# this writes.
 #
-# Builds TWO caches over the SAME eight hospitals, differing only in how each
-# hospital's patients are split into train/val/test:
+# Defaults build hilo8_random -- eight hospitals, four at >= 1500 post-task
+# patients and four drawn at random from 100-1499, all above the floor where
+# "rare" is a real band rather than a single count (see FLOOR below).
 #
-#   strat8         iterative multilabel stratification over rare codes, with
-#                  >=1 patient of every rare code guaranteed in train and test
-#   strat8_random  a plain seeded 70/10/20 shuffle, blind to rare codes
+#   sbatch examples/fedpyhealth/scripts/run_cohort.sh
 #
-# The pair is the experiment: run `--report` on both and the difference tells
-# you what the stratification is actually buying, rather than assuming it.
+# Everything is overridable from the environment, so a different cohort needs
+# no edit to this file:
 #
-# Paths come from the environment, not from this file -- so the same script
-# runs on the cluster and on a laptop, and no one's personal path is committed:
+#   COHORT_NAME=big8_random COHORT_HOSPITALS=264,420,243,338,458,443,73,188 \
+#       sbatch examples/fedpyhealth/scripts/run_cohort.sh
+#   COHORT_SPLIT=stratified sbatch examples/fedpyhealth/scripts/run_cohort.sh
 #
-#   export EICU_ROOT=/path/to/eicu-crd/2.0        # required
+# Paths come from the environment too -- so the same script runs on the cluster
+# and on a laptop, and no one's personal path is committed:
+#
+#   export EICU_ROOT=/path/to/eicu-crd/2.0         # required
 #   export FEDCOHORT_CACHE=/fast/scratch/fedcohort # optional, see below
 #
 # Put those in ~/.bashrc once. sbatch forwards your environment by default, so
 # a one-off override also works: EICU_ROOT=... sbatch scripts/run_cohort.sh
 #
-# Run ONCE from the repo root:
-#   mkdir -p _outputs/slurm
-#   sbatch examples/fedpyhealth/scripts/run_cohort.sh
-#
 # Rebuilding RE-SPLITS the data: it invalidates every checkpoint and makes
 # already-finished runs incomparable to new ones. Build once, then keep
-# pointing every train/test job at the same directory.
+# pointing every train/test job at the same directory. Building a NEW cohort
+# under a new COHORT_NAME is safe -- it writes its own directory and leaves the
+# existing ones untouched.
 #
-# A GPU is requested even though this job never touches one: Delta rejects any
-# zero-GPU job submitted under a *-delta-gpu account, and this project holds
-# only GPU accounts. gpuA40x4 is the cheapest tier and usually the shortest
-# queue -- do not "upgrade" it to A100.
+# Runtime is ~1-2h, almost all of it the single pass over eICU. It is CPU and
+# I/O bound; a GPU is requested even though nothing touches one, because Delta
+# rejects any zero-GPU job submitted under a *-delta-gpu account and this
+# project holds only GPU accounts. gpuA40x4 is the cheapest tier and usually the
+# shortest queue -- do not "upgrade" it to A100.
 #
 #SBATCH --mem=128g
 #SBATCH --nodes=1
@@ -49,14 +51,30 @@
 #SBATCH --mail-type=END
 #SBATCH --mail-type=FAIL
 #SBATCH --output=_outputs/slurm/%x-%j.out
-
 set -euo pipefail
 
-# The frozen draw: two hospitals from each of four size bands, recorded in
-# cohorts/strat8.cohort.json. Passing them explicitly (rather than re-drawing
-# from --bands) is what makes this reproduce the SAME cohort every time.
-HOSPITALS="420,199,345,79,259,253,438,201"
-SEED=0
+NAME="${COHORT_NAME:-hilo8_random}"
+SPLIT="${COHORT_SPLIT:-random}"
+SEED="${COHORT_SEED:-0}"
+
+# The frozen draw, recorded in cohorts/<NAME>.config.json. Passing the ids
+# explicitly (rather than re-drawing from the bands) is what makes this
+# reproduce the SAME cohort every time -- draw_bands samples uniformly within
+# each band, so a re-draw is a different cohort even at the same seed.
+#
+# Set COHORT_HOSPITALS='' to draw fresh from the bands instead. The build
+# prints the draw and a `--hospitals ...` line; pin that line here and record it
+# under cohorts/ so the cache can be rebuilt if it is ever lost.
+HOSPITALS="${COHORT_HOSPITALS-458,188,300,208,449,277,358,429}"
+
+# FLOOR=100: a hospital's rare codes are those held by >= 2 patients but
+# <= 5% of them, so below 40 patients no code can be both and the build dies
+# with "empty rare set". 40 is degenerate -- "rare" would mean exactly 2
+# patients, sitting on the 5% line. At 100 the band is 2-5 patients, the first
+# size where it has real width. 1500 splits the eight into four large sites and
+# four drawn from the long tail.
+BANDS="${COHORT_BANDS:-100-1499,1500-}"
+PER_BAND="${COHORT_PER_BAND:-4}"
 
 if [ -z "${EICU_ROOT:-}" ]; then
     echo "EICU_ROOT is not set. Point it at the folder holding patient.csv:" >&2
@@ -66,38 +84,49 @@ fi
 # Defaults to a repo-relative gitignored dir so a fresh clone works untouched;
 # on a cluster point FEDCOHORT_CACHE at fast local storage instead.
 ROOT="${FEDCOHORT_CACHE:-_outputs/cache/fedcohort}"
-echo "eICU:  $EICU_ROOT"
-echo "cache: $ROOT"
+OUT="$ROOT/$NAME"
+
+echo "eICU:   $EICU_ROOT"
+echo "cache:  $OUT"
+echo "split:  $SPLIT   seed: $SEED"
+
+# A half-written cache from a failed build has parquet files but no
+# manifest.json, so nothing downstream can load it -- but its stale per-hospital
+# parquet would survive a rebuild that draws different hospitals. Refuse rather
+# than silently mix two draws in one directory.
+if [ -d "$OUT" ] && [ ! -f "$OUT/manifest.json" ]; then
+    echo "$OUT exists but has no manifest.json -- a previous build failed part" >&2
+    echo "way through. Remove it first:  rm -rf $OUT" >&2
+    exit 1
+fi
 
 source .venv/bin/activate
 
 COHORT=examples/fedpyhealth/utils/cohort.py
 
-# Same hospitals, same seed, same eICU -- only --split differs, so any
-# difference in the reports is attributable to the splitter alone. The second
-# build re-reads eICU, but PyHealth's processed-sample cache makes that cheap.
-for SPLIT in stratified random; do
-    if [ "$SPLIT" = "stratified" ]; then OUT="$ROOT/strat8"; NAME=strat8
-    else OUT="$ROOT/strat8_random"; NAME=strat8_random; fi
-
-    echo
-    echo "==================== building $NAME (--split $SPLIT) ===================="
-    python "$COHORT" \
-        --hospitals "$HOSPITALS" \
-        --out "$OUT" \
-        --name "$NAME" \
-        --split "$SPLIT" \
-        --seed "$SEED" \
-        "$@"
-done
-
-# Both caches verified themselves above (rebuild from Parquet, compare tensors).
-# Now the comparison you actually want.
-for NAME in strat8 strat8_random; do
-    echo
-    echo "==================== report: $NAME ===================="
-    python "$COHORT" --report --out "$ROOT/$NAME"
-done
+if [ -n "$HOSPITALS" ]; then
+    echo "draw:   pinned ($HOSPITALS)"
+    SELECT=(--hospitals "$HOSPITALS")
+else
+    echo "draw:   $PER_BAND per band from $BANDS (seed $SEED)"
+    SELECT=(--bands "$BANDS" --per-band "$PER_BAND")
+fi
 
 echo
-echo "Next:  python examples/fedpyhealth/main.py all --profile full --cohort-cache $ROOT/strat8"
+echo "==================== building $NAME (--split $SPLIT) ===================="
+python "$COHORT" \
+    "${SELECT[@]}" \
+    --out "$OUT" \
+    --name "$NAME" \
+    --split "$SPLIT" \
+    --seed "$SEED" \
+    "$@"
+
+# The build verified itself above (rebuild from Parquet, compare tensors).
+# This is the fold coverage you actually read.
+echo
+echo "==================== report: $NAME ===================="
+python "$COHORT" --report --out "$OUT"
+
+echo
+echo "Next:  python examples/fedpyhealth/main.py all --profile full --cohort-cache $OUT"
