@@ -1,0 +1,38 @@
+# Render the fidelity/utility page for lo8_random instead of hilo8_random.
+#
+#   python examples/fedpyhealth/eda.py fidelity --config examples/fedpyhealth/viz/lo8.yaml
+#
+# Needs scripts/sbatch/rescore_lo8.sbatch to have run: `main.py all` scores with
+# no controls and only one real target, which is neither comparable across arms
+# nor enough for the specialist-vs-generalist panel.
+#
+# `cohort_name` is asserted against every source file, so pointing one of these
+# at a hilo8 run fails loudly instead of relabelling the numbers.
+analyses:
+  - fidelity
+
+fidelity:
+  cohort_name: lo8_random
+
+  # SPECIALIST: each site's synthetic against its own test fold (24-260
+  # patients). This is the primary axis on the page.
+  test1_json: _outputs/results/tests/test1_prevalence_lo8_random_capped_pooledrare.json
+
+  # GENERALIST: the same arms against the pooled 766-patient cohort fold. The
+  # head-vs-tail panel switches between this and the one above; they answer
+  # different questions and need not rank the arms the same way.
+  test1_own_json: _outputs/results/tests/test1_prevalence_lo8_random_pooledreal_pooledrare.json
+
+  # Matched budget: every downstream classifier trains on 8,000 records, so a
+  # TSTR win is about data quality rather than how much data an arm held.
+  test2_json: _outputs/results/tests/test2_rare_efficacy_lo8_random_budget8000.json
+
+  page: examples/fedpyhealth/viz/fidelity_utility_lo8.html
+  title: Eight Small Hospitals
+  subtitle: >-
+    lo8_random -- eight eICU hospitals, every one under 1,500 patients
+    (3,832 total, 120 to 1,301 per site). Synthetic capped at 8,000 per
+    hospital and classifiers budgeted to 8,000 records, matching
+    hilo8_random so the two cohorts read on one axis. Rare = the union of
+    codes rare at any site; 213 of them have at least one positive in the
+    test fold.

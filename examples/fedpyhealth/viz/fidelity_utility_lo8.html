@@ -1,0 +1,1130 @@
+<title>Eight Small Hospitals</title>
+<style>
+  :root {
+    color-scheme: light;
+    --ground:#f4f4f1;
+    --surface:#fcfcfb;
+    --ink:#0b0b0b;
+    --ink-2:#52514e;
+    --ink-3:#898781;
+    --grid:#e1e0d9;
+    --axis:#83817a;
+    --frontier:#c3c2b7;
+    /* Baselines are reference LINES, not data. They get their own warm hues so
+       they never read as another regime -- the regime points are the blue ramp
+       below -- and each carries a distinct dash pattern so they stay separable
+       without relying on colour. */
+    --base-prior:#9a6b0a;
+    --base-local:#a8452c;
+    --base-pooled:#1f7a4d;
+    --rule:rgba(11,11,11,0.10);
+    --s-local:#86b6ef;
+    --s-fedavg_ft:#5598e7;
+    --s-fedavg:#2a78d6;
+    --s-centralized:#184f95;
+    --accent:#2a78d6;
+    --sem-warn:#ec835a;
+    --sem-crit:#d03b3b;
+    --sem-ok:#1f7a4d;
+    --focus:#2a78d6;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --ground:#0d0d0d; --surface:#1a1a19; --ink:#ffffff; --ink-2:#c3c2b7;
+      --ink-3:#898781; --grid:#2c2c2a; --axis:#7c7a72; --frontier:#4a4a46;
+      --base-prior:#e0a63f; --base-local:#e08163; --base-pooled:#4fbe86;
+      --rule:rgba(255,255,255,0.10);
+      --s-local:#9ec5f4; --s-fedavg_ft:#6da7ec; --s-fedavg:#3987e5;
+      --s-centralized:#1c5cab; --accent:#3987e5; --sem-ok:#4fbe86;
+      --focus:#6da7ec;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --ground:#0d0d0d; --surface:#1a1a19; --ink:#ffffff; --ink-2:#c3c2b7;
+    --ink-3:#898781; --grid:#2c2c2a; --axis:#7c7a72; --frontier:#4a4a46;
+    --base-prior:#e0a63f; --base-local:#e08163; --base-pooled:#4fbe86;
+    --rule:rgba(255,255,255,0.10);
+    --s-local:#9ec5f4; --s-fedavg_ft:#6da7ec; --s-fedavg:#3987e5;
+    --s-centralized:#1c5cab; --accent:#3987e5; --sem-ok:#4fbe86;
+    --focus:#6da7ec;
+  }
+
+  * { box-sizing:border-box; }
+  body {
+    margin:0; padding:40px 20px 72px;
+    background:var(--ground); color:var(--ink);
+    font-family:var(--sans); line-height:1.55;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap { max-width:1020px; margin:0 auto; display:flex; flex-direction:column; gap:22px; }
+
+  header { display:flex; flex-direction:column; gap:7px; }
+  .eyebrow {
+    font-family:var(--mono); font-size:0.7rem; letter-spacing:0.11em;
+    text-transform:uppercase; color:var(--ink-3);
+  }
+  h1 { font-size:clamp(1.5rem,3.4vw,2rem); font-weight:640; margin:0;
+       letter-spacing:-0.02em; text-wrap:balance; }
+  .lede { color:var(--ink-2); font-size:0.95rem; margin:0; max-width:64ch; }
+  .runmeta { font-family:var(--mono); font-size:0.73rem; color:var(--ink-3); margin:0; }
+
+  .tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:12px; }
+  .tile {
+    background:var(--surface); border:1px solid var(--rule); border-radius:9px;
+    padding:15px 16px; display:flex; flex-direction:column; gap:3px;
+    border-top:2px solid var(--tile-accent,var(--axis));
+  }
+  .tile .k { font-size:0.75rem; color:var(--ink-3); }
+  .tile .v { font-family:var(--mono); font-size:1.42rem; font-weight:600; letter-spacing:-0.02em; }
+  .tile .n { font-size:0.76rem; color:var(--ink-2); }
+
+  .note {
+    background:var(--surface); border:1px solid var(--rule);
+    border-left:3px solid var(--note,var(--axis));
+    border-radius:0 9px 9px 0; padding:13px 16px;
+    font-size:0.87rem; color:var(--ink-2);
+  }
+  .note b { color:var(--ink); }
+  .note code, code { font-family:var(--mono); font-size:0.92em; color:var(--ink); }
+
+  .panel { background:var(--surface); border:1px solid var(--rule); border-radius:11px; padding:20px; }
+  h2 { font-size:0.95rem; font-weight:640; margin:0 0 14px; letter-spacing:-0.01em; }
+
+  .controls { display:flex; flex-wrap:wrap; gap:14px; align-items:flex-end; margin-bottom:14px; }
+  .ctl { display:flex; flex-direction:column; gap:5px; }
+  .ctl label {
+    font-family:var(--mono); font-size:0.66rem; letter-spacing:0.09em;
+    text-transform:uppercase; color:var(--ink-3);
+  }
+  select, button {
+    font-family:var(--sans); font-size:0.85rem; padding:7px 11px; min-height:36px;
+    background:var(--surface); color:var(--ink);
+    border:1px solid var(--axis); border-radius:7px;
+  }
+  button { cursor:pointer; font-family:var(--mono); font-size:0.8rem; }
+  button[aria-pressed="true"] { border-color:var(--accent); color:var(--accent); }
+  select:focus-visible, button:focus-visible { outline:2px solid var(--focus); outline-offset:2px; }
+
+  .plotwrap { position:relative; overflow-x:auto; }
+  svg { display:block; width:100%; height:auto; }
+  .legend { display:flex; flex-wrap:wrap; gap:16px; margin-top:14px; font-size:0.81rem; color:var(--ink-2); }
+  .legend .item { display:flex; align-items:center; gap:7px; }
+  .dot { width:11px; height:11px; border-radius:50%; flex:none; }
+  .legend .nm { font-family:var(--mono); font-size:0.78rem; color:var(--ink); }
+  .hint { font-size:0.77rem; color:var(--ink-3); margin:11px 0 0; }
+
+  .tip {
+    position:absolute; pointer-events:none; opacity:0; transition:opacity .12s;
+    background:var(--surface); border:1px solid var(--rule); border-radius:8px;
+    padding:10px 12px; font-size:0.77rem; color:var(--ink-2);
+    box-shadow:0 6px 18px rgba(0,0,0,.16); min-width:186px; z-index:5;
+  }
+  .tip b { color:var(--ink); font-family:var(--mono); font-size:0.82rem; display:block; margin-bottom:6px; }
+  .tip .r { display:flex; justify-content:space-between; gap:16px; }
+  .tip .r span:last-child { font-family:var(--mono); color:var(--ink); }
+
+  .tablewrap { overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; font-size:0.81rem; }
+  th, td { text-align:right; padding:8px 10px; border-bottom:1px solid var(--grid); }
+  td { font-family:var(--mono); font-variant-numeric:tabular-nums; }
+  th:first-child, td:first-child { text-align:left; }
+  th {
+    color:var(--ink-3); font-weight:600; font-size:0.67rem; font-family:var(--mono);
+    text-transform:uppercase; letter-spacing:0.07em; white-space:nowrap;
+  }
+  tbody tr:last-child td { border-bottom:none; }
+  tr.sep td { border-top:1px solid var(--axis); }
+  tr.base td { color:var(--ink-2); }
+  .best { color:var(--ink); font-weight:600; }
+  .warnv { color:var(--sem-crit); }
+  button[disabled] { opacity:.45; cursor:not-allowed; }
+  @media (prefers-reduced-motion: reduce) { * { transition:none !important; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <p class="eyebrow">lo8_random -- all 8 sites under 1,500 patients (3,832 total). Scored on each site's own test fold, per-hospital rare scope, uncapped synthetic. Not directly comparable to hilo8_random.</p>
+    <h1>Eight Small Hospitals</h1>
+    <p class="lede">Four training regimes, ordered by how much cross-site averaging they do,
+      measured two ways: does the synthetic data reproduce each site's code prevalence, and can a
+      classifier trained on it predict real patients' rare codes?</p>
+    <p class="runmeta" id="runmeta"></p>
+  </header>
+
+  <section class="tiles" id="tiles"></section>
+
+  <div class="note" id="note-budget" style="--note:var(--sem-crit)"></div>
+  <div class="note" id="note-auroc" style="--note:var(--sem-warn)"></div>
+  <div class="note" id="note-scope" style="--note:var(--axis)"></div>
+
+  <section class="panel">
+    <h2>Plot any fidelity metric against any utility metric</h2>
+    <div class="controls">
+      <div class="ctl"><label for="xsel">Prevalence — test 1</label><select id="xsel"></select></div>
+      <div class="ctl"><label for="ysel">Rare-code TSTR — test 2</label><select id="ysel"></select></div>
+      <div class="ctl"><label for="basetog">Baselines</label>
+        <button id="basetog" aria-pressed="true">shown</button></div>
+      <div class="ctl"><label for="hosptog">Per hospital</label>
+        <button id="hosptog" aria-pressed="false">hidden</button></div>
+      <div class="ctl"><label for="rltog">real_local</label>
+        <button id="rltog" aria-pressed="false" disabled>hidden</button></div>
+    </div>
+    <div class="plotwrap">
+      <svg id="plot" viewBox="0 0 720 470" role="img"
+           aria-label="Scatter of prevalence fidelity against rare-code TSTR for four regimes"></svg>
+      <div class="tip" id="tip" role="status"></div>
+    </div>
+    <div class="legend" id="legend"></div>
+    <p class="hint" id="hint"></p>
+  </section>
+
+  <section class="panel">
+    <h2>Does head fidelity predict tail fidelity?</h2>
+    <div class="controls">
+      <div class="ctl"><label for="psel">Prevalence metric</label>
+        <select id="psel"></select></div>
+      <div class="ctl"><label for="tsel">Scored against</label>
+        <select id="tsel"></select></div>
+      <div class="ctl"><label for="phosptog">Per hospital</label>
+        <button id="phosptog" aria-pressed="false">hidden</button></div>
+    </div>
+    <div class="plotwrap">
+      <svg id="plot2" viewBox="0 0 720 470" role="img"
+           aria-label="Prevalence fidelity on all codes against prevalence fidelity on rare codes"></svg>
+      <div class="tip" id="tip2" role="status"></div>
+    </div>
+    <p class="hint" id="hint2"></p>
+  </section>
+
+  <section class="panel">
+    <h2>Specialist or generalist? Own site vs the cohort</h2>
+    <div class="controls">
+      <div class="ctl"><label for="ksel">Metric</label><select id="ksel"></select></div>
+      <div class="ctl"><label for="khosptog">Per hospital</label>
+        <button id="khosptog" aria-pressed="false">hidden</button></div>
+    </div>
+    <div class="plotwrap">
+      <svg id="plot3" viewBox="0 0 720 470" role="img"
+           aria-label="Fidelity on each hospital's own test fold against fidelity on the pooled cohort fold"></svg>
+      <div class="tip" id="tip3" role="status"></div>
+    </div>
+    <p class="hint" id="hint3"></p>
+  </section>
+
+  <section class="panel" id="panel4">
+    <h2>Utility: does a site's classifier serve its own hospital, or the cohort?</h2>
+    <div class="controls">
+      <div class="ctl"><label for="usel">Utility metric</label><select id="usel"></select></div>
+    </div>
+    <div class="plotwrap">
+      <svg id="plot4" viewBox="0 0 720 470" role="img"
+           aria-label="Rare-code utility on a hospital's own eval rows against utility on the pooled cohort"></svg>
+      <div class="tip" id="tip4" role="status"></div>
+    </div>
+    <p class="hint" id="hint4"></p>
+  </section>
+
+  <section class="panel">
+    <h2>Every value</h2>
+    <div class="tablewrap"><table id="tbl"></table></div>
+  </section>
+</div>
+
+<script>
+const DATA = {"regimes": [{"id": "local", "prev_all_r2": 0.7206831000754617, "prev_all_pearson": 0.8964249562429714, "prev_all_rmse": 0.011864963913664492, "prev_rare_r2": -0.20007552438736154, "prev_rare_pearson": 0.36280877570778997, "prev_rare_rmse": 0.018272120966136004, "n_hospitals": 8, "tstr_ap": 0.01418240835486181, "tstr_auroc": 0.3993560291902268, "tstr_ap_rare": 0.008354804880615862, "tstr_auroc_rare": 0.4010626438253371, "tstr_f1_best": 0.03611047380847926, "tstr_f1_prev": 0.005093168129571793, "tstr_f1_best_rare": 0.022811595960376678, "tstr_f1_prev_rare": 0.0005065856129685916, "tstr_recall5": 0.4183168416534031, "tstr_recall10": 0.5760657133169452, "tstr_recall20": 0.7521016142253111, "n_classifiers": 8, "n_records": 2000.0, "n_degenerate": 0, "bands": {"10_19": 0.017726083639513994, "1_4": 0.007512410496657606, "20_49": 0.027173225669926998, "50_plus": 0.06781026483804395, "5_9": 0.011272743455881713}}, {"id": "fedavg_ft", "prev_all_r2": 0.4258027630505995, "prev_all_pearson": 0.7913915448850635, "prev_all_rmse": 0.015491060101517622, "prev_rare_r2": -0.7523413155498041, "prev_rare_pearson": 0.43334501263206554, "prev_rare_rmse": 0.024519175332479177, "n_hospitals": 8, "tstr_ap": 0.015475515792697424, "tstr_auroc": 0.40699158416804326, "tstr_ap_rare": 0.010836806541314168, "tstr_auroc_rare": 0.41326401699572074, "tstr_f1_best": 0.038483705752876886, "tstr_f1_prev": 0.004495559221871118, "tstr_f1_best_rare": 0.026229016418375994, "tstr_f1_prev_rare": 0.001182033096926714, "tstr_recall5": 0.4314511166049811, "tstr_recall10": 0.6206974751358866, "tstr_recall20": 0.7929885512726674, "n_classifiers": 8, "n_records": 2000.0, "n_degenerate": 0, "bands": {"10_19": 0.01797777338698542, "1_4": 0.008532158727976809, "20_49": 0.02718900220828853, "50_plus": 0.06759464925918468, "5_9": 0.01454138959244858}}, {"id": "fedavg", "prev_all_r2": 0.3833817747217779, "prev_all_pearson": 0.7849105721507224, "prev_all_rmse": 0.012640949153324275, "prev_rare_r2": -0.8983920967064114, "prev_rare_pearson": 0.4709114426142167, "prev_rare_rmse": 0.021598692184887865, "n_hospitals": 8, "tstr_ap": 0.01941181949257458, "tstr_auroc": 0.5151862939063724, "tstr_ap_rare": 0.011084496305224817, "tstr_auroc_rare": 0.5153446334155692, "tstr_f1_best": 0.049370056318374406, "tstr_f1_prev": 0.012834585563374903, "tstr_f1_best_rare": 0.032197865519505944, "tstr_f1_prev_rare": 0.0010131712259371832, "tstr_recall5": 0.4294318588212074, "tstr_recall10": 0.615361990504337, "tstr_recall20": 0.8002922777679955, "n_classifiers": 1, "n_records": 16000, "n_degenerate": 0, "bands": {"10_19": 0.02396187156846173, "1_4": 0.008407780851453776, "20_49": 0.051817643727850735, "50_plus": 0.09755651810985784, "5_9": 0.018178556022107488}}, {"id": "centralized", "prev_all_r2": 0.5977131597978648, "prev_all_pearson": 0.8366077806765235, "prev_all_rmse": 0.01285776067857865, "prev_rare_r2": -0.6502655431323396, "prev_rare_pearson": 0.47365599971853034, "prev_rare_rmse": 0.020824730426370792, "n_hospitals": 8, "tstr_ap": 0.020863030419057377, "tstr_auroc": 0.5249670705684731, "tstr_ap_rare": 0.011475083071661387, "tstr_auroc_rare": 0.5194822170227373, "tstr_f1_best": 0.05196046849843955, "tstr_f1_prev": 0.014676775298589517, "tstr_f1_best_rare": 0.03356314287907964, "tstr_f1_prev_rare": 0.0038697512101767417, "tstr_recall5": 0.49466913962744685, "tstr_recall10": 0.6422350804530436, "tstr_recall20": 0.8044140911363838, "n_classifiers": 1, "n_records": 16000, "n_degenerate": 0, "bands": {"10_19": 0.03015292359053428, "1_4": 0.007666861562902418, "20_49": 0.05744428033548747, "50_plus": 0.09716824392250281, "5_9": 0.021720634090962414}}], "baselines": {"prior": {"tstr_ap": 0.010677872393552243, "tstr_auroc": 0.5, "tstr_ap_rare": 0.003752371593218238, "tstr_auroc_rare": 0.5, "tstr_f1_best": 0.02060752715370981, "tstr_f1_prev": 0.020607527153709813, "tstr_f1_best_rare": 0.007463151351740388, "tstr_f1_prev_rare": 0.00746315135174039, "tstr_recall5": null, "tstr_recall10": null, "tstr_recall20": null, "n_classifiers": 1, "n_records": null, "n_degenerate": 0, "bands": {"10_19": 0.01562198060180231, "1_4": 0.002550944296775354, "20_49": 0.032635012371779695, "50_plus": 0.07570934355714577, "5_9": 0.007943128521554071}}, "real_pooled": {"tstr_ap": 0.019213042791633512, "tstr_auroc": 0.46197630639054527, "tstr_ap_rare": 0.009410143579182788, "tstr_auroc_rare": 0.4433076834622726, "tstr_f1_best": 0.04478674559656807, "tstr_f1_prev": 0.010806962095371143, "tstr_f1_best_rare": 0.025786996123576832, "tstr_f1_prev_rare": 0.0, "tstr_recall5": 0.5189217496113003, "tstr_recall10": 0.6674252659614258, "tstr_recall20": 0.8249264060221676, "n_classifiers": 1, "n_records": 2684, "n_degenerate": 0, "bands": {"10_19": 0.020367552408077538, "1_4": 0.008202181313484255, "20_49": 0.0439215885759635, "50_plus": 0.1397084056012547, "5_9": 0.013163973660702023}}, "real_local": {"tstr_ap": 0.01770026513725047, "tstr_auroc": 0.43128217076016695, "tstr_ap_rare": 0.012253951896691748, "tstr_auroc_rare": 0.4427274727437649, "tstr_f1_best": 0.04193204249946972, "tstr_f1_prev": 0.008543400007639026, "tstr_f1_best_rare": 0.027735900786496806, "tstr_f1_prev_rare": 0.005051784307103456, "tstr_recall5": 0.26057541958550984, "tstr_recall10": 0.389548374467588, "tstr_recall20": 0.5564823997638455, "n_classifiers": 8, "n_records": 229.5, "n_degenerate": 0, "bands": {"10_19": 0.022774323952191745, "1_4": 0.008643695576274223, "20_49": 0.028584616884957538, "50_plus": 0.06455336295580746, "5_9": 0.020776296668540282}}}, "per_hospital": {"411": {"fedavg": {"prev_all_r2": -1.512342461496741, "prev_all_pearson": 0.880021826089141, "prev_all_rmse": 0.011427137648732773, "prev_rare_r2": -3.661950465398604, "prev_rare_pearson": 0.6787944051509387, "prev_rare_rmse": 0.021729155586239658}, "fedavg_ft": {"prev_all_r2": -0.202073539442722, "prev_all_pearson": 0.922525931850339, "prev_all_rmse": 0.014707441864371668, "prev_rare_r2": -0.7091758462083302, "prev_rare_pearson": 0.751962808184637, "prev_rare_rmse": 0.014027927833971507, "tstr_ap": 0.014926129991538374, "tstr_auroc": 0.40824736021834757, "tstr_ap_rare": 0.010184276898105825, "tstr_auroc_rare": 0.41874709733041204, "tstr_f1_best": 0.03666949336879639, "tstr_f1_prev": 0.004374101102649653, "tstr_f1_best_rare": 0.024087544875912872, "tstr_f1_prev_rare": 0.0008343763037129745, "tstr_recall5": 0.37940578811356124, "tstr_recall10": 0.6013814997128629, "tstr_recall20": 0.7808249450756857, "n_records": 2000, "own_tstr_ap": 0.028159649349906907, "own_tstr_auroc": 0.4564009557383879, "own_tstr_ap_rare": 0.02853592196233061, "own_tstr_auroc_rare": 0.458143570321204, "own_tstr_f1_best": 0.05845234022029747, "own_tstr_f1_prev": 0.008660714285714285, "own_tstr_f1_best_rare": 0.0499430508813746, "own_tstr_f1_prev_rare": 0.0, "own_tstr_recall5": 0.42843790395090936, "own_tstr_recall10": 0.6464425422578215, "own_tstr_recall20": 0.8336143841994981, "own_n_val_patients": 260}, "centralized": {"prev_all_r2": -0.7888565898001353, "prev_all_pearson": 0.8401917778954084, "prev_all_rmse": 0.01375213904835319, "prev_rare_r2": -4.631443769004514, "prev_rare_pearson": 0.6107854564615263, "prev_rare_rmse": 0.02211348938737891}, "local": {"prev_all_r2": 0.4852124541412091, "prev_all_pearson": 0.9237805725952176, "prev_all_rmse": 0.007902118792727349, "prev_rare_r2": 0.23243273881261123, "prev_rare_pearson": 0.7743858937297019, "prev_rare_rmse": 0.009609470964676677, "tstr_ap": 0.013525844150833357, "tstr_auroc": 0.40434753957066827, "tstr_ap_rare": 0.00791850857462002, "tstr_auroc_rare": 0.41066177746678684, "tstr_f1_best": 0.036213584853861544, "tstr_f1_prev": 0.004706822139719259, "tstr_f1_best_rare": 0.021425657600705028, "tstr_f1_prev_rare": 0.0, "tstr_recall5": 0.364457232904987, "tstr_recall10": 0.5245178791014854, "tstr_recall20": 0.7286791205895113, "n_records": 2000, "own_tstr_ap": 0.027170365811013043, "own_tstr_auroc": 0.44531632854018915, "own_tstr_ap_rare": 0.026039626539967123, "own_tstr_auroc_rare": 0.44706754546480193, "own_tstr_f1_best": 0.05868615871026293, "own_tstr_f1_prev": 0.007083333333333333, "own_tstr_f1_best_rare": 0.05055581015038479, "own_tstr_f1_prev_rare": 0.0, "own_tstr_recall5": 0.46747631755117464, "own_tstr_recall10": 0.6367608016816115, "own_tstr_recall20": 0.8236222211900939, "own_n_val_patients": 260}, "real_local": {"tstr_ap": 0.017608944901026418, "tstr_auroc": 0.43233872632537546, "tstr_ap_rare": 0.012263371368434164, "tstr_auroc_rare": 0.43923019094935584, "tstr_f1_best": 0.041976186969120026, "tstr_f1_prev": 0.009009744452022602, "tstr_f1_best_rare": 0.027464839337727337, "tstr_f1_prev_rare": 0.004728132387706856, "tstr_recall5": 0.39385103815297784, "tstr_recall10": 0.5047905794730949, "tstr_recall20": 0.6423508757392772, "n_records": 911, "own_tstr_ap": 0.04129946413588038, "own_tstr_auroc": 0.4222862755219781, "own_tstr_ap_rare": 0.04683678578674008, "own_tstr_auroc_rare": 0.4442008934805407, "own_tstr_f1_best": 0.07139798351098323, "own_tstr_f1_prev": 0.020624999999999998, "own_tstr_f1_best_rare": 0.06840322501994198, "own_tstr_f1_prev_rare": 0.023809523809523808, "own_tstr_recall5": 0.45745512592881765, "own_tstr_recall10": 0.6201734112995333, "own_tstr_recall20": 0.7535857563528813, "own_n_val_patients": 260}}, "148": {"fedavg": {"prev_all_r2": 0.7118999229003907, "prev_all_pearson": 0.9089673735384161, "prev_all_rmse": 0.008114033862154691, "prev_rare_r2": -1.2136776530867048, "prev_rare_pearson": 0.5074280735588079, "prev_rare_rmse": 0.017067983873962016}, "fedavg_ft": {"prev_all_r2": 0.7145940265703455, "prev_all_pearson": 0.9631049838459929, "prev_all_rmse": 0.012286021696167587, "prev_rare_r2": -0.8531928404943991, "prev_rare_pearson": 0.5726003324841817, "prev_rare_rmse": 0.014428596695661206, "tstr_ap": 0.015535309409290354, "tstr_auroc": 0.41055961370858246, "tstr_ap_rare": 0.010902030906834568, "tstr_auroc_rare": 0.4170914999672746, "tstr_f1_best": 0.03736059476068312, "tstr_f1_prev": 0.003947348862346683, "tstr_f1_best_rare": 0.025484745243153018, "tstr_f1_prev_rare": 0.0, "tstr_recall5": 0.4412122456477731, "tstr_recall10": 0.6338061665130281, "tstr_recall20": 0.7917696274583593, "n_records": 2000, "own_tstr_ap": 0.043029074391755955, "own_tstr_auroc": 0.43727416897468674, "own_tstr_ap_rare": 0.0377433896226188, "own_tstr_auroc_rare": 0.4295373051521653, "own_tstr_f1_best": 0.0848252669224808, "own_tstr_f1_prev": 0.01580441270411626, "own_tstr_f1_best_rare": 0.07161504136656144, "own_tstr_f1_prev_rare": 0.011111111111111112, "own_tstr_recall5": 0.5649786317208114, "own_tstr_recall10": 0.7146355472013366, "own_tstr_recall20": 0.8477714530035781, "own_n_val_patients": 197}, "centralized": {"prev_all_r2": 0.8051943247680233, "prev_all_pearson": 0.9163268727629494, "prev_all_rmse": 0.007632636929842358, "prev_rare_r2": -0.7393299581999704, "prev_rare_pearson": 0.4890250779429701, "prev_rare_rmse": 0.01508262524232624}, "local": {"prev_all_r2": 0.7342913090934492, "prev_all_pearson": 0.950726222848665, "prev_all_rmse": 0.01080318590272979, "prev_rare_r2": -0.1297048749208752, "prev_rare_pearson": 0.7068795871987373, "prev_rare_rmse": 0.01171946586805729, "tstr_ap": 0.013457559423505586, "tstr_auroc": 0.4126973901991748, "tstr_ap_rare": 0.008087074840296901, "tstr_auroc_rare": 0.42159818494198026, "tstr_f1_best": 0.03552350262613087, "tstr_f1_prev": 0.004637190774150693, "tstr_f1_best_rare": 0.02216410974969051, "tstr_f1_prev_rare": 0.0010131712259371832, "tstr_recall5": 0.4277844581021563, "tstr_recall10": 0.6065594646332299, "tstr_recall20": 0.7570115976185462, "n_records": 2000, "own_tstr_ap": 0.04609486929760531, "own_tstr_auroc": 0.4276153280688849, "own_tstr_ap_rare": 0.03879845263110543, "own_tstr_auroc_rare": 0.4127527483858946, "own_tstr_f1_best": 0.08989367855539133, "own_tstr_f1_prev": 0.011515404610760343, "own_tstr_f1_best_rare": 0.06968986110398806, "own_tstr_f1_prev_rare": 0.0, "own_tstr_recall5": 0.5835234706262511, "own_tstr_recall10": 0.7542475489037057, "own_tstr_recall20": 0.8544866490124683, "own_n_val_patients": 197}, "real_local": {"tstr_ap": 0.015894621207257622, "tstr_auroc": 0.4299339464899489, "tstr_ap_rare": 0.011678638553477902, "tstr_auroc_rare": 0.4418978214803088, "tstr_f1_best": 0.039091564298376805, "tstr_f1_prev": 0.003817315732004183, "tstr_f1_best_rare": 0.027438641797536644, "tstr_f1_prev_rare": 0.0, "tstr_recall5": 0.43693252091957513, "tstr_recall10": 0.598786020165193, "tstr_recall20": 0.7259580293650876, "n_records": 689, "own_tstr_ap": 0.05373706770474269, "own_tstr_auroc": 0.4228738719371401, "own_tstr_ap_rare": 0.061393351437086845, "own_tstr_auroc_rare": 0.4115693394455837, "own_tstr_f1_best": 0.09675030973235822, "own_tstr_f1_prev": 0.019237012987012986, "own_tstr_f1_best_rare": 0.09572921346668482, "own_tstr_f1_prev_rare": 0.022222222222222223, "own_tstr_recall5": 0.5662725504799735, "own_tstr_recall10": 0.7402458583565833, "own_tstr_recall20": 0.852010578726691, "own_n_val_patients": 197}}, "259": {"fedavg": {"prev_all_r2": -0.01686771868188137, "prev_all_pearson": 0.7896239114115657, "prev_all_rmse": 0.012341720418590224, "prev_rare_r2": -2.0329134473249426, "prev_rare_pearson": 0.481655700558872, "prev_rare_rmse": 0.02146822878353607}, "fedavg_ft": {"prev_all_r2": 0.7123652836647336, "prev_all_pearson": 0.8664294503261372, "prev_all_rmse": 0.0093678985460839, "prev_rare_r2": -0.795506784891278, "prev_rare_pearson": 0.41852792101488234, "prev_rare_rmse": 0.015014744664776081, "tstr_ap": 0.014189276034330749, "tstr_auroc": 0.393565037503765, "tstr_ap_rare": 0.009339046297001684, "tstr_auroc_rare": 0.4002545139709386, "tstr_f1_best": 0.03658843791879282, "tstr_f1_prev": 0.004340530068164852, "tstr_f1_best_rare": 0.024406942469076452, "tstr_f1_prev_rare": 0.0010911074740861976, "tstr_recall5": 0.4657634889685277, "tstr_recall10": 0.6318020634452074, "tstr_recall20": 0.797105990332285, "n_records": 2000, "own_tstr_ap": 0.056698291622594904, "own_tstr_auroc": 0.42809685909436385, "own_tstr_ap_rare": 0.05524278707066303, "own_tstr_auroc_rare": 0.427054486181535, "own_tstr_f1_best": 0.09625715088883392, "own_tstr_f1_prev": 0.01627906976744186, "own_tstr_f1_best_rare": 0.08525838256566852, "own_tstr_f1_prev_rare": 0.022727272727272728, "own_tstr_recall5": 0.3866798941798941, "own_tstr_recall10": 0.5467658730158731, "own_tstr_recall20": 0.707473544973545, "own_n_val_patients": 89}, "centralized": {"prev_all_r2": 0.5250371973704531, "prev_all_pearson": 0.813772117708227, "prev_all_rmse": 0.011867141454283933, "prev_rare_r2": -1.9587079532788239, "prev_rare_pearson": 0.47383474742006115, "prev_rare_rmse": 0.017689257998602353}, "local": {"prev_all_r2": 0.7144559827959627, "prev_all_pearson": 0.8877381854205915, "prev_all_rmse": 0.009575140799026141, "prev_rare_r2": -0.9540818234918215, "prev_rare_pearson": 0.2195803657132876, "prev_rare_rmse": 0.016711101897251536, "tstr_ap": 0.017709966872197322, "tstr_auroc": 0.39007605246242405, "tstr_ap_rare": 0.014260187519608164, "tstr_auroc_rare": 0.39591807123693756, "tstr_f1_best": 0.04137221294972376, "tstr_f1_prev": 0.01233926236926556, "tstr_f1_best_rare": 0.03206122664955767, "tstr_f1_prev_rare": 0.01182033096926714, "tstr_recall5": 0.4115433948117382, "tstr_recall10": 0.611342194230674, "tstr_recall20": 0.7681452132409892, "n_records": 2000, "own_tstr_ap": 0.05414093246614715, "own_tstr_auroc": 0.3885984787697867, "own_tstr_ap_rare": 0.05023146593895813, "own_tstr_auroc_rare": 0.37067754400071473, "own_tstr_f1_best": 0.09320448326254784, "own_tstr_f1_prev": 0.023255813953488372, "own_tstr_f1_best_rare": 0.07654005934446503, "own_tstr_f1_prev_rare": 0.022727272727272728, "own_tstr_recall5": 0.360760582010582, "own_tstr_recall10": 0.5498214285714286, "own_tstr_recall20": 0.7135846560846562, "own_n_val_patients": 89}, "real_local": {"tstr_ap": 0.014181299470342495, "tstr_auroc": 0.43167490166630024, "tstr_ap_rare": 0.008764023693442372, "tstr_auroc_rare": 0.4417456136205906, "tstr_f1_best": 0.0368835497604957, "tstr_f1_prev": 0.00582690850578983, "tstr_f1_best_rare": 0.022661412803442374, "tstr_f1_prev_rare": 0.0017730496453900709, "tstr_recall5": 0.2539793410204356, "tstr_recall10": 0.38018932992336485, "tstr_recall20": 0.5399261129150684, "n_records": 312, "own_tstr_ap": 0.05236979939664302, "own_tstr_auroc": 0.46002443783916613, "own_tstr_ap_rare": 0.04210354105576656, "own_tstr_auroc_rare": 0.458515742793872, "own_tstr_f1_best": 0.10029714193689682, "own_tstr_f1_prev": 0.00813953488372093, "own_tstr_f1_best_rare": 0.07765556732409697, "own_tstr_f1_prev_rare": 0.0, "own_tstr_recall5": 0.29438492063492067, "own_tstr_recall10": 0.3954431216931217, "own_tstr_recall20": 0.6007473544973545, "own_n_val_patients": 89}}, "396": {"fedavg": {"prev_all_r2": 0.41168275781975927, "prev_all_pearson": 0.6829305547082345, "prev_all_rmse": 0.017489084739026318, "prev_rare_r2": 0.022038653694995202, "prev_rare_pearson": 0.4601671846695613, "prev_rare_rmse": 0.016068216263136238}, "fedavg_ft": {"prev_all_r2": 0.2144098164378052, "prev_all_pearson": 0.7030925108733115, "prev_all_rmse": 0.017308976661231122, "prev_rare_r2": -0.6198512481535746, "prev_rare_pearson": 0.44816210424924874, "prev_rare_rmse": 0.022157535345687623, "tstr_ap": 0.015612515251283578, "tstr_auroc": 0.39745132732913074, "tstr_ap_rare": 0.010873825501296064, "tstr_auroc_rare": 0.3988653716908946, "tstr_f1_best": 0.03834145533264122, "tstr_f1_prev": 0.006681333505836032, "tstr_f1_best_rare": 0.026434649861096438, "tstr_f1_prev_rare": 0.0035460992907801418, "tstr_recall5": 0.43435379487020137, "tstr_recall10": 0.6245965900459535, "tstr_recall20": 0.7942074750869755, "n_records": 2000, "own_tstr_ap": 0.07267696085453906, "own_tstr_auroc": 0.45476679753390475, "own_tstr_ap_rare": 0.07334965366405809, "own_tstr_auroc_rare": 0.49200976646842637, "own_tstr_f1_best": 0.13044588327631707, "own_tstr_f1_prev": 0.030226055372130776, "own_tstr_f1_best_rare": 0.12127094221894788, "own_tstr_f1_prev_rare": 0.03273809523809524, "own_tstr_recall5": 0.39536900728670915, "own_tstr_recall10": 0.6283800180151112, "own_tstr_recall20": 0.786809476755129, "own_n_val_patients": 81}, "centralized": {"prev_all_r2": 0.7010552673794498, "prev_all_pearson": 0.8444416625434554, "prev_all_rmse": 0.013142087980921025, "prev_rare_r2": 0.1030295370644149, "prev_rare_pearson": 0.47347725201699953, "prev_rare_rmse": 0.012909173623139984}, "local": {"prev_all_r2": 0.7293351734952915, "prev_all_pearson": 0.9051117270653511, "prev_all_rmse": 0.012006523191295198, "prev_rare_r2": -0.11109227320399792, "prev_rare_pearson": 0.4092065036286575, "prev_rare_rmse": 0.015498399019548146, "tstr_ap": 0.018477678026577456, "tstr_auroc": 0.403318906730507, "tstr_ap_rare": 0.015288477353668246, "tstr_auroc_rare": 0.41002652978008536, "tstr_f1_best": 0.03907706107087173, "tstr_f1_prev": 0.010694590031490257, "tstr_f1_best_rare": 0.028269537305279754, "tstr_f1_prev_rare": 0.010638297872340425, "tstr_recall5": 0.4742555694664544, "tstr_recall10": 0.6213261175760108, "tstr_recall20": 0.8023553140640771, "n_records": 2000, "own_tstr_ap": 0.07045122159016652, "own_tstr_auroc": 0.4747225390632854, "own_tstr_ap_rare": 0.06282195228902797, "own_tstr_auroc_rare": 0.5192420678604227, "own_tstr_f1_best": 0.12840958364214283, "own_tstr_f1_prev": 0.02772979447736729, "own_tstr_f1_best_rare": 0.11451275803461068, "own_tstr_f1_prev_rare": 0.01488095238095238, "own_tstr_recall5": 0.47898080180688885, "own_tstr_recall10": 0.6382063200774382, "own_tstr_recall20": 0.8215952784275764, "own_n_val_patients": 81}, "real_local": {"tstr_ap": 0.01938459113134186, "tstr_auroc": 0.4222380305429098, "tstr_ap_rare": 0.01509410991141445, "tstr_auroc_rare": 0.43911484923964894, "tstr_f1_best": 0.04314995967486234, "tstr_f1_prev": 0.00807705556325545, "tstr_f1_best_rare": 0.03177725228166095, "tstr_f1_prev_rare": 0.00681224337439343, "tstr_recall5": 0.42670148779005734, "tstr_recall10": 0.5380487899963519, "tstr_recall20": 0.666074820855818, "n_records": 282, "own_tstr_ap": 0.07267376404990346, "own_tstr_auroc": 0.4639947000650447, "own_tstr_ap_rare": 0.07437405441178305, "own_tstr_auroc_rare": 0.5102927627707227, "own_tstr_f1_best": 0.13248976265565723, "own_tstr_f1_prev": 0.026934392468373054, "own_tstr_f1_best_rare": 0.11855012177345259, "own_tstr_f1_prev_rare": 0.026785714285714284, "own_tstr_recall5": 0.4449203100212417, "own_tstr_recall10": 0.5564140181764405, "own_tstr_recall20": 0.6809819580005916, "own_n_val_patients": 81}}, "402": {"fedavg": {"prev_all_r2": 0.5765986407735846, "prev_all_pearson": 0.7801972328898791, "prev_all_rmse": 0.012940177888058329, "prev_rare_r2": -0.04687931886064134, "prev_rare_pearson": 0.4114249222220624, "prev_rare_rmse": 0.020345059172221687}, "fedavg_ft": {"prev_all_r2": 0.4572435466996911, "prev_all_pearson": 0.7899354419383684, "prev_all_rmse": 0.016274678338663577, "prev_rare_r2": -1.0537473675228406, "prev_rare_pearson": 0.40994328390780366, "prev_rare_rmse": 0.02688081531927073, "tstr_ap": 0.015415722176104495, "tstr_auroc": 0.4097948391455883, "tstr_ap_rare": 0.010388412136554302, "tstr_auroc_rare": 0.41378443686543304, "tstr_f1_best": 0.038625956173112555, "tstr_f1_prev": 0.004574595335943574, "tstr_f1_best_rare": 0.026023382975655554, "tstr_f1_prev_rare": 0.001182033096926714, "tstr_recall5": 0.4285484383397608, "tstr_recall10": 0.6189695512433206, "tstr_recall20": 0.7843349590527584, "n_records": 2000, "own_tstr_ap": 0.12554398997438357, "own_tstr_auroc": 0.47075732840565404, "own_tstr_ap_rare": 0.10581124385488347, "own_tstr_auroc_rare": 0.46744326300897715, "own_tstr_f1_best": 0.20312823313624992, "own_tstr_f1_prev": 0.047991833549340134, "own_tstr_f1_best_rare": 0.1591416828446803, "own_tstr_f1_prev_rare": 0.03571428571428571, "own_tstr_recall5": 0.4059491092180237, "own_tstr_recall10": 0.6386329237891738, "own_tstr_recall20": 0.7827443988354077, "own_n_val_patients": 50}, "centralized": {"prev_all_r2": 0.7035450397222138, "prev_all_pearson": 0.8437085916835475, "prev_all_rmse": 0.012573433376236273, "prev_rare_r2": -0.02292231448374704, "prev_rare_pearson": 0.37097437728233357, "prev_rare_rmse": 0.01953597146536267}, "local": {"prev_all_r2": 0.7269102173549605, "prev_all_pearson": 0.887399595279059, "prev_all_rmse": 0.011723404636033786, "prev_rare_r2": -0.023028159358663713, "prev_rare_pearson": 0.3164110477869224, "prev_rare_rmse": 0.019833140035020472, "tstr_ap": 0.013486785949403645, "tstr_auroc": 0.396983095188711, "tstr_ap_rare": 0.008315894808132142, "tstr_auroc_rare": 0.40095751590678047, "tstr_f1_best": 0.0353648168704463, "tstr_f1_prev": 0.003747753749444449, "tstr_f1_best_rare": 0.022984369811189183, "tstr_f1_prev_rare": 0.0, "tstr_recall5": 0.4718325095405462, "tstr_recall10": 0.5983709815915794, "tstr_recall20": 0.7609943228571461, "n_records": 2000, "own_tstr_ap": 0.1413924992054108, "own_tstr_auroc": 0.49011792957774536, "own_tstr_ap_rare": 0.14893162849157493, "own_tstr_auroc_rare": 0.5103424565174893, "own_tstr_f1_best": 0.2095895122295128, "own_tstr_f1_prev": 0.062218668561952156, "own_tstr_f1_best_rare": 0.2021279974041525, "own_tstr_f1_prev_rare": 0.07142857142857142, "own_tstr_recall5": 0.536450757859749, "own_tstr_recall10": 0.69025337225721, "own_tstr_recall20": 0.8377191030014495, "own_n_val_patients": 50}, "real_local": {"tstr_ap": 0.014066971587622506, "tstr_auroc": 0.42888574690386805, "tstr_ap_rare": 0.009280805901843193, "tstr_auroc_rare": 0.44682607116165096, "tstr_f1_best": 0.037145374689915994, "tstr_f1_prev": 0.007301579410352821, "tstr_f1_best_rare": 0.023725618784500305, "tstr_f1_prev_rare": 0.0030625402965828497, "tstr_recall5": 0.26717149815058405, "tstr_recall10": 0.39890741901181115, "tstr_recall20": 0.5730386866126227, "n_records": 177, "own_tstr_ap": 0.12377141458450582, "own_tstr_auroc": 0.4732123066304044, "own_tstr_ap_rare": 0.09790016312956783, "own_tstr_auroc_rare": 0.5188941062551983, "own_tstr_f1_best": 0.20373037635569366, "own_tstr_f1_prev": 0.04898440130176187, "own_tstr_f1_best_rare": 0.16484510602474028, "own_tstr_f1_prev_rare": 0.0, "own_tstr_recall5": 0.24782583908132153, "own_tstr_recall10": 0.38348964581146594, "own_tstr_recall20": 0.6090800836894587, "own_n_val_patients": 50}}, "59": {"fedavg": {"prev_all_r2": 0.3706900103752191, "prev_all_pearson": 0.6124724681405024, "prev_all_rmse": 0.02310831261303788, "prev_rare_r2": -0.6454085122040567, "prev_rare_pearson": -0.0637044123755907, "prev_rare_rmse": 0.03481964788226703}, "fedavg_ft": {"prev_all_r2": 0.3943619794015079, "prev_all_pearson": 0.6820331433317877, "prev_all_rmse": 0.01906486778151322, "prev_rare_r2": -0.6669407483810155, "prev_rare_pearson": 0.03386205395332087, "prev_rare_rmse": 0.03688697447092005, "tstr_ap": 0.015701649188569245, "tstr_auroc": 0.40954199210370584, "tstr_ap_rare": 0.011266816500976534, "tstr_auroc_rare": 0.41274359712600844, "tstr_f1_best": 0.03884248227207767, "tstr_f1_prev": 0.004416523107798662, "tstr_f1_best_rare": 0.027685840133722633, "tstr_f1_prev_rare": 0.001182033096926714, "tstr_recall5": 0.42398398362110334, "tstr_recall10": 0.6224253990284525, "tstr_recall20": 0.7887935956350562, "n_records": 2000, "own_tstr_ap": 0.11608223775395989, "own_tstr_auroc": 0.44236607473538814, "own_tstr_ap_rare": 0.07019077476370889, "own_tstr_auroc_rare": 0.4047603768780239, "own_tstr_f1_best": 0.19982158614524478, "own_tstr_f1_prev": 0.036118233618233624, "own_tstr_f1_best_rare": 0.1269865716280852, "own_tstr_f1_prev_rare": 0.0, "own_tstr_recall5": 0.4355960841694537, "own_tstr_recall10": 0.6271832032701598, "own_tstr_recall20": 0.8172008547008547, "own_n_val_patients": 37}, "centralized": {"prev_all_r2": 0.5901457614924693, "prev_all_pearson": 0.8019720172395524, "prev_all_rmse": 0.02100349614956977, "prev_rare_r2": -0.5612011280647089, "prev_rare_pearson": 0.05617889839358412, "prev_rare_rmse": 0.03319887307193119}, "local": {"prev_all_r2": 0.8155022355057151, "prev_all_pearson": 0.9062151124509465, "prev_all_rmse": 0.012627977761678264, "prev_rare_r2": -0.27044617385384784, "prev_rare_pearson": 0.051518233416935746, "prev_rare_rmse": 0.02961010892742888, "tstr_ap": 0.014239234902384797, "tstr_auroc": 0.40172896319174256, "tstr_ap_rare": 0.00755589288143977, "tstr_auroc_rare": 0.4011677717438936, "tstr_f1_best": 0.035896890567019946, "tstr_f1_prev": 0.005614956979907821, "tstr_f1_best_rare": 0.02066568808256976, "tstr_f1_prev_rare": 0.0014184397163120568, "tstr_recall5": 0.425090288495068, "tstr_recall10": 0.553760445042311, "tstr_recall20": 0.747191630832076, "n_records": 2000, "own_tstr_ap": 0.12909567742459982, "own_tstr_auroc": 0.45132125564038894, "own_tstr_ap_rare": 0.09133873838101061, "own_tstr_auroc_rare": 0.4109539088362618, "own_tstr_f1_best": 0.21081278539787188, "own_tstr_f1_prev": 0.059370166870166864, "own_tstr_f1_best_rare": 0.1579899900672027, "own_tstr_f1_prev_rare": 0.04, "own_tstr_recall5": 0.5825407608695652, "own_tstr_recall10": 0.7550480769230768, "own_tstr_recall20": 0.8588646181716834, "own_n_val_patients": 37}, "real_local": {"tstr_ap": 0.017791585373474524, "tstr_auroc": 0.43983131603954145, "tstr_ap_rare": 0.012244532424949333, "tstr_auroc_rare": 0.4533213175288157, "tstr_f1_best": 0.041887898029819404, "tstr_f1_prev": 0.009419692135879131, "tstr_f1_best_rare": 0.02800696223526627, "tstr_f1_prev_rare": 0.0053754362265000565, "tstr_recall5": 0.18248884862352593, "tstr_recall10": 0.3098531483083081, "tstr_recall20": 0.49855300074057196, "n_records": 131, "own_tstr_ap": 0.13521667470337517, "own_tstr_auroc": 0.44409504195490446, "own_tstr_ap_rare": 0.09075970466387925, "own_tstr_auroc_rare": 0.41356098803157626, "own_tstr_f1_best": 0.21820665473005071, "own_tstr_f1_prev": 0.040046805046805044, "own_tstr_f1_best_rare": 0.14529570783029772, "own_tstr_f1_prev_rare": 0.02, "own_tstr_recall5": 0.2634394741731698, "own_tstr_recall10": 0.43020891397250094, "own_tstr_recall20": 0.5926003344481605, "own_n_val_patients": 37}}, "204": {"fedavg": {"prev_all_r2": 0.3960735390683368, "prev_all_pearson": 0.8033501724724454, "prev_all_rmse": 0.011793369449263198, "prev_rare_r2": -0.986267707724692, "prev_rare_pearson": 0.5113960941158296, "prev_rare_rmse": 0.03473346753647469}, "fedavg_ft": {"prev_all_r2": 0.5012821363163027, "prev_all_pearson": 0.7928476478317585, "prev_all_rmse": 0.012085781851933732, "prev_rare_r2": -0.033141458459623706, "prev_rare_pearson": 0.5909511768579756, "prev_rare_rmse": 0.028251357183261383, "tstr_ap": 0.015896326310742857, "tstr_auroc": 0.4057358081177389, "tstr_ap_rare": 0.011377400523457022, "tstr_auroc_rare": 0.41435207104763255, "tstr_f1_best": 0.039535676131633765, "tstr_f1_prev": 0.00812434655349397, "tstr_f1_best_rare": 0.02787036956598702, "tstr_f1_prev_rare": 0.006146572104018913, "tstr_recall5": 0.44483694973547716, "tstr_recall10": 0.6107816490212596, "tstr_recall20": 0.7948015125477171, "n_records": 2000, "own_tstr_ap": 0.11348507927376213, "own_tstr_auroc": 0.3841498175737306, "own_tstr_ap_rare": 0.10009920634920634, "own_tstr_auroc_rare": 0.4270833333333333, "own_tstr_f1_best": 0.18852630118419594, "own_tstr_f1_prev": 0.016666666666666666, "own_tstr_f1_best_rare": 0.17606060606060606, "own_tstr_f1_prev_rare": 0.0, "own_tstr_recall5": 0.7745535714285714, "own_tstr_recall10": 0.8392857142857143, "own_tstr_recall20": 0.9017857142857143, "own_n_val_patients": 28}, "centralized": {"prev_all_r2": 0.6052805581032602, "prev_all_pearson": 0.8330237834576387, "prev_all_rmse": 0.011271225843560832, "prev_rare_r2": 0.1772310256464253, "prev_rare_pearson": 0.6187198727146388, "prev_rare_rmse": 0.025465601928714537}, "local": {"prev_all_r2": -3.5966940098827203, "prev_all_pearson": 0.49110051589624326, "prev_all_rmse": 0.031005363616886716, "prev_rare_r2": -2.2812818209854764, "prev_rare_pearson": 0.4454349545630677, "prev_rare_rmse": 0.04277654167617428, "tstr_ap": 0.014228009476036219, "tstr_auroc": 0.3886342263368747, "tstr_ap_rare": 0.009812007339678738, "tstr_auroc_rare": 0.39464505620013973, "tstr_f1_best": 0.03846133386724273, "tstr_f1_prev": 0.003706124489985137, "tstr_f1_best_rare": 0.02629132491443064, "tstr_f1_prev_rare": 0.0, "tstr_recall5": 0.3001145847359317, "tstr_recall10": 0.48059045184383425, "tstr_recall20": 0.7091744654733503, "n_records": 2000, "own_tstr_ap": 0.11883064830056352, "own_tstr_auroc": 0.37050141887098403, "own_tstr_ap_rare": 0.17848320158102765, "own_tstr_auroc_rare": 0.46875, "own_tstr_f1_best": 0.19550982873808959, "own_tstr_f1_prev": 0.016666666666666666, "own_tstr_f1_best_rare": 0.2647946859903382, "own_tstr_f1_prev_rare": 0.0, "own_tstr_recall5": 0.6629464285714286, "own_tstr_recall10": 0.7879464285714286, "own_tstr_recall20": 0.8861607142857143, "own_n_val_patients": 28}, "real_local": {"tstr_ap": 0.022639879708843978, "tstr_auroc": 0.45341550069189324, "tstr_ap_rare": 0.018001104657272712, "tstr_auroc_rare": 0.465624064676055, "tstr_f1_best": 0.045174043241786935, "tstr_f1_prev": 0.01358749455192913, "tstr_f1_best_rare": 0.03249030879044852, "tstr_f1_prev_rare": 0.01028368794326241, "tstr_recall5": 0.1512601249621658, "tstr_recall10": 0.2686352429962148, "tstr_recall20": 0.46232518732960226, "n_records": 98, "own_tstr_ap": 0.10973606305377068, "own_tstr_auroc": 0.4171024627546366, "own_tstr_ap_rare": 0.08994505494505495, "own_tstr_auroc_rare": 0.46875, "own_tstr_f1_best": 0.1901440628614542, "own_tstr_f1_prev": 0.0, "own_tstr_f1_best_rare": 0.1628996003996004, "own_tstr_f1_prev_rare": 0.0, "own_tstr_recall5": 0.015625, "own_tstr_recall10": 0.4799107142857143, "own_tstr_recall20": 0.796875, "own_n_val_patients": 28}}, "123": {"fedavg": {"prev_all_r2": 0.32721430936849405, "prev_all_pearson": 0.5922841357708377, "prev_all_rmse": 0.03402969497432183, "prev_rare_r2": -0.8105164856881307, "prev_rare_pearson": -0.07008238430645758, "prev_rare_rmse": 0.05052165845859084}, "fedavg_ft": {"prev_all_r2": 0.3858552421778954, "prev_all_pearson": 0.6330113931962738, "prev_all_rmse": 0.03720284108744938, "prev_rare_r2": -0.963677190398476, "prev_rare_pearson": -0.15366578922960566, "prev_rare_rmse": 0.05020286078852091, "tstr_ap": 0.01541210670180848, "tstr_auroc": 0.4006694087717958, "tstr_ap_rare": 0.01079978758133227, "tstr_auroc_rare": 0.40269710408255227, "tstr_f1_best": 0.039327498695780304, "tstr_f1_prev": 0.004687977010492925, "tstr_f1_best_rare": 0.028134203829314964, "tstr_f1_prev_rare": 0.001182033096926714, "tstr_recall5": 0.4095480382036153, "tstr_recall10": 0.6015455508572105, "tstr_recall20": 0.7980927970602689, "n_records": 2000, "own_tstr_ap": 0.1881164990694113, "own_tstr_auroc": 0.4636746563022519, "own_tstr_ap_rare": 0.1538135073436057, "own_tstr_auroc_rare": 0.4818504368469304, "own_tstr_f1_best": 0.2921405115693335, "own_tstr_f1_prev": 0.07328588486676721, "own_tstr_f1_best_rare": 0.2469127273010486, "own_tstr_f1_prev_rare": 0.03225806451612903, "own_tstr_recall5": 0.2897288995726496, "own_tstr_recall10": 0.48690927706552706, "own_tstr_recall20": 0.6409112357549857, "own_n_val_patients": 24}, "centralized": {"prev_all_r2": 0.4761669937890719, "prev_all_pearson": 0.7534133359956926, "prev_all_rmse": 0.031348890307692966, "prev_rare_r2": -0.9212546533696875, "prev_rare_pearson": -0.11625778942546336, "prev_rare_rmse": 0.05083096326342612}, "local": {"prev_all_r2": 0.5432574705208945, "prev_all_pearson": 0.8271902008781107, "prev_all_rmse": 0.029827596153168656, "prev_rare_r2": -1.2135280959620247, "prev_rare_pearson": -0.01844631654224693, "prev_rare_rmse": 0.053690028928104525, "tstr_ap": 0.014136807233687402, "tstr_auroc": 0.38998726408215845, "tstr_ap_rare": 0.00839371495309958, "tstr_auroc_rare": 0.390576463371302, "tstr_f1_best": 0.036007362763096976, "tstr_f1_prev": 0.005479514119424327, "tstr_f1_best_rare": 0.02263882210956417, "tstr_f1_prev_rare": 0.0, "tstr_recall5": 0.312357463995659, "tstr_recall10": 0.4631245425371408, "tstr_recall20": 0.6812630355336433, "n_records": 2000, "own_tstr_ap": 0.19959822721563736, "own_tstr_auroc": 0.4449156357151902, "own_tstr_ap_rare": 0.19626806007261413, "own_tstr_auroc_rare": 0.4816820023517079, "own_tstr_f1_best": 0.3052762619553132, "own_tstr_f1_prev": 0.09446161477411477, "own_tstr_f1_best_rare": 0.2911963255361403, "own_tstr_f1_prev_rare": 0.08448540706605223, "own_tstr_recall5": 0.5341025641025641, "own_tstr_recall10": 0.6421843839031338, "own_tstr_recall20": 0.8230364138176638, "own_n_val_patients": 24}, "real_local": {"tstr_ap": 0.02007669986761636, "tstr_auroc": 0.4308894398540336, "tstr_ap_rare": 0.015299010285843554, "tstr_auroc_rare": 0.4435571240072209, "tstr_f1_best": 0.04603371115445991, "tstr_f1_prev": 0.011646776313730192, "tstr_f1_best_rare": 0.03476454839475893, "tstr_f1_prev_rare": 0.008066480406905939, "tstr_recall5": 0.19854326886559565, "tstr_recall10": 0.30194564888085595, "tstr_recall20": 0.5155757968485124, "n_records": 84, "own_tstr_ap": 0.19482489739509629, "own_tstr_auroc": 0.44214095146262933, "own_tstr_ap_rare": 0.18999748302891983, "own_tstr_auroc_rare": 0.4879154194722217, "own_tstr_f1_best": 0.2931585592394269, "own_tstr_f1_prev": 0.10193309294871794, "own_tstr_f1_best_rare": 0.2760049164413491, "own_tstr_f1_prev_rare": 0.09139784946236558, "own_tstr_recall5": 0.330608084045584, "own_tstr_recall10": 0.41888087606837604, "own_tstr_recall20": 0.5784784544159544, "own_n_val_patients": 24}}}, "fidelity_by_target": {"primary": {"regimes": {"fedavg": {"prev_all_r2": 0.3833817747217779, "prev_all_pearson": 0.7849105721507224, "prev_all_rmse": 0.012640949153324275, "prev_rare_r2": -0.8983920967064114, "prev_rare_pearson": 0.4709114426142167, "prev_rare_rmse": 0.021598692184887865, "n_hospitals": 8}, "fedavg_ft": {"prev_all_r2": 0.4258027630505995, "prev_all_pearson": 0.7913915448850635, "prev_all_rmse": 0.015491060101517622, "prev_rare_r2": -0.7523413155498041, "prev_rare_pearson": 0.43334501263206554, "prev_rare_rmse": 0.024519175332479177, "n_hospitals": 8}, "centralized": {"prev_all_r2": 0.5977131597978648, "prev_all_pearson": 0.8366077806765235, "prev_all_rmse": 0.01285776067857865, "prev_rare_r2": -0.6502655431323396, "prev_rare_pearson": 0.47365599971853034, "prev_rare_rmse": 0.020824730426370792, "n_hospitals": 8}, "local": {"prev_all_r2": 0.7206831000754617, "prev_all_pearson": 0.8964249562429714, "prev_all_rmse": 0.011864963913664492, "prev_rare_r2": -0.20007552438736154, "prev_rare_pearson": 0.36280877570778997, "prev_rare_rmse": 0.018272120966136004, "n_hospitals": 8}}, "per_hospital": {"411": {"fedavg": {"prev_all_r2": -1.512342461496741, "prev_all_pearson": 0.880021826089141, "prev_all_rmse": 0.011427137648732773, "prev_rare_r2": -3.661950465398604, "prev_rare_pearson": 0.6787944051509387, "prev_rare_rmse": 0.021729155586239658}, "fedavg_ft": {"prev_all_r2": -0.202073539442722, "prev_all_pearson": 0.922525931850339, "prev_all_rmse": 0.014707441864371668, "prev_rare_r2": -0.7091758462083302, "prev_rare_pearson": 0.751962808184637, "prev_rare_rmse": 0.014027927833971507}, "centralized": {"prev_all_r2": -0.7888565898001353, "prev_all_pearson": 0.8401917778954084, "prev_all_rmse": 0.01375213904835319, "prev_rare_r2": -4.631443769004514, "prev_rare_pearson": 0.6107854564615263, "prev_rare_rmse": 0.02211348938737891}, "local": {"prev_all_r2": 0.4852124541412091, "prev_all_pearson": 0.9237805725952176, "prev_all_rmse": 0.007902118792727349, "prev_rare_r2": 0.23243273881261123, "prev_rare_pearson": 0.7743858937297019, "prev_rare_rmse": 0.009609470964676677}}, "148": {"fedavg": {"prev_all_r2": 0.7118999229003907, "prev_all_pearson": 0.9089673735384161, "prev_all_rmse": 0.008114033862154691, "prev_rare_r2": -1.2136776530867048, "prev_rare_pearson": 0.5074280735588079, "prev_rare_rmse": 0.017067983873962016}, "fedavg_ft": {"prev_all_r2": 0.7145940265703455, "prev_all_pearson": 0.9631049838459929, "prev_all_rmse": 0.012286021696167587, "prev_rare_r2": -0.8531928404943991, "prev_rare_pearson": 0.5726003324841817, "prev_rare_rmse": 0.014428596695661206}, "centralized": {"prev_all_r2": 0.8051943247680233, "prev_all_pearson": 0.9163268727629494, "prev_all_rmse": 0.007632636929842358, "prev_rare_r2": -0.7393299581999704, "prev_rare_pearson": 0.4890250779429701, "prev_rare_rmse": 0.01508262524232624}, "local": {"prev_all_r2": 0.7342913090934492, "prev_all_pearson": 0.950726222848665, "prev_all_rmse": 0.01080318590272979, "prev_rare_r2": -0.1297048749208752, "prev_rare_pearson": 0.7068795871987373, "prev_rare_rmse": 0.01171946586805729}}, "259": {"fedavg": {"prev_all_r2": -0.01686771868188137, "prev_all_pearson": 0.7896239114115657, "prev_all_rmse": 0.012341720418590224, "prev_rare_r2": -2.0329134473249426, "prev_rare_pearson": 0.481655700558872, "prev_rare_rmse": 0.02146822878353607}, "fedavg_ft": {"prev_all_r2": 0.7123652836647336, "prev_all_pearson": 0.8664294503261372, "prev_all_rmse": 0.0093678985460839, "prev_rare_r2": -0.795506784891278, "prev_rare_pearson": 0.41852792101488234, "prev_rare_rmse": 0.015014744664776081}, "centralized": {"prev_all_r2": 0.5250371973704531, "prev_all_pearson": 0.813772117708227, "prev_all_rmse": 0.011867141454283933, "prev_rare_r2": -1.9587079532788239, "prev_rare_pearson": 0.47383474742006115, "prev_rare_rmse": 0.017689257998602353}, "local": {"prev_all_r2": 0.7144559827959627, "prev_all_pearson": 0.8877381854205915, "prev_all_rmse": 0.009575140799026141, "prev_rare_r2": -0.9540818234918215, "prev_rare_pearson": 0.2195803657132876, "prev_rare_rmse": 0.016711101897251536}}, "396": {"fedavg": {"prev_all_r2": 0.41168275781975927, "prev_all_pearson": 0.6829305547082345, "prev_all_rmse": 0.017489084739026318, "prev_rare_r2": 0.022038653694995202, "prev_rare_pearson": 0.4601671846695613, "prev_rare_rmse": 0.016068216263136238}, "fedavg_ft": {"prev_all_r2": 0.2144098164378052, "prev_all_pearson": 0.7030925108733115, "prev_all_rmse": 0.017308976661231122, "prev_rare_r2": -0.6198512481535746, "prev_rare_pearson": 0.44816210424924874, "prev_rare_rmse": 0.022157535345687623}, "centralized": {"prev_all_r2": 0.7010552673794498, "prev_all_pearson": 0.8444416625434554, "prev_all_rmse": 0.013142087980921025, "prev_rare_r2": 0.1030295370644149, "prev_rare_pearson": 0.47347725201699953, "prev_rare_rmse": 0.012909173623139984}, "local": {"prev_all_r2": 0.7293351734952915, "prev_all_pearson": 0.9051117270653511, "prev_all_rmse": 0.012006523191295198, "prev_rare_r2": -0.11109227320399792, "prev_rare_pearson": 0.4092065036286575, "prev_rare_rmse": 0.015498399019548146}}, "402": {"fedavg": {"prev_all_r2": 0.5765986407735846, "prev_all_pearson": 0.7801972328898791, "prev_all_rmse": 0.012940177888058329, "prev_rare_r2": -0.04687931886064134, "prev_rare_pearson": 0.4114249222220624, "prev_rare_rmse": 0.020345059172221687}, "fedavg_ft": {"prev_all_r2": 0.4572435466996911, "prev_all_pearson": 0.7899354419383684, "prev_all_rmse": 0.016274678338663577, "prev_rare_r2": -1.0537473675228406, "prev_rare_pearson": 0.40994328390780366, "prev_rare_rmse": 0.02688081531927073}, "centralized": {"prev_all_r2": 0.7035450397222138, "prev_all_pearson": 0.8437085916835475, "prev_all_rmse": 0.012573433376236273, "prev_rare_r2": -0.02292231448374704, "prev_rare_pearson": 0.37097437728233357, "prev_rare_rmse": 0.01953597146536267}, "local": {"prev_all_r2": 0.7269102173549605, "prev_all_pearson": 0.887399595279059, "prev_all_rmse": 0.011723404636033786, "prev_rare_r2": -0.023028159358663713, "prev_rare_pearson": 0.3164110477869224, "prev_rare_rmse": 0.019833140035020472}}, "59": {"fedavg": {"prev_all_r2": 0.3706900103752191, "prev_all_pearson": 0.6124724681405024, "prev_all_rmse": 0.02310831261303788, "prev_rare_r2": -0.6454085122040567, "prev_rare_pearson": -0.0637044123755907, "prev_rare_rmse": 0.03481964788226703}, "fedavg_ft": {"prev_all_r2": 0.3943619794015079, "prev_all_pearson": 0.6820331433317877, "prev_all_rmse": 0.01906486778151322, "prev_rare_r2": -0.6669407483810155, "prev_rare_pearson": 0.03386205395332087, "prev_rare_rmse": 0.03688697447092005}, "centralized": {"prev_all_r2": 0.5901457614924693, "prev_all_pearson": 0.8019720172395524, "prev_all_rmse": 0.02100349614956977, "prev_rare_r2": -0.5612011280647089, "prev_rare_pearson": 0.05617889839358412, "prev_rare_rmse": 0.03319887307193119}, "local": {"prev_all_r2": 0.8155022355057151, "prev_all_pearson": 0.9062151124509465, "prev_all_rmse": 0.012627977761678264, "prev_rare_r2": -0.27044617385384784, "prev_rare_pearson": 0.051518233416935746, "prev_rare_rmse": 0.02961010892742888}}, "204": {"fedavg": {"prev_all_r2": 0.3960735390683368, "prev_all_pearson": 0.8033501724724454, "prev_all_rmse": 0.011793369449263198, "prev_rare_r2": -0.986267707724692, "prev_rare_pearson": 0.5113960941158296, "prev_rare_rmse": 0.03473346753647469}, "fedavg_ft": {"prev_all_r2": 0.5012821363163027, "prev_all_pearson": 0.7928476478317585, "prev_all_rmse": 0.012085781851933732, "prev_rare_r2": -0.033141458459623706, "prev_rare_pearson": 0.5909511768579756, "prev_rare_rmse": 0.028251357183261383}, "centralized": {"prev_all_r2": 0.6052805581032602, "prev_all_pearson": 0.8330237834576387, "prev_all_rmse": 0.011271225843560832, "prev_rare_r2": 0.1772310256464253, "prev_rare_pearson": 0.6187198727146388, "prev_rare_rmse": 0.025465601928714537}, "local": {"prev_all_r2": -3.5966940098827203, "prev_all_pearson": 0.49110051589624326, "prev_all_rmse": 0.031005363616886716, "prev_rare_r2": -2.2812818209854764, "prev_rare_pearson": 0.4454349545630677, "prev_rare_rmse": 0.04277654167617428}}, "123": {"fedavg": {"prev_all_r2": 0.32721430936849405, "prev_all_pearson": 0.5922841357708377, "prev_all_rmse": 0.03402969497432183, "prev_rare_r2": -0.8105164856881307, "prev_rare_pearson": -0.07008238430645758, "prev_rare_rmse": 0.05052165845859084}, "fedavg_ft": {"prev_all_r2": 0.3858552421778954, "prev_all_pearson": 0.6330113931962738, "prev_all_rmse": 0.03720284108744938, "prev_rare_r2": -0.963677190398476, "prev_rare_pearson": -0.15366578922960566, "prev_rare_rmse": 0.05020286078852091}, "centralized": {"prev_all_r2": 0.4761669937890719, "prev_all_pearson": 0.7534133359956926, "prev_all_rmse": 0.031348890307692966, "prev_rare_r2": -0.9212546533696875, "prev_rare_pearson": -0.11625778942546336, "prev_rare_rmse": 0.05083096326342612}, "local": {"prev_all_r2": 0.5432574705208945, "prev_all_pearson": 0.8271902008781107, "prev_all_rmse": 0.029827596153168656, "prev_rare_r2": -1.2135280959620247, "prev_rare_pearson": -0.01844631654224693, "prev_rare_rmse": 0.053690028928104525}}}, "real_scope": "hospital", "rare_scope": "hospital"}}, "meta": {"cohort": "lo8_random", "n_hospitals": 8, "fold": "test", "n_scored_codes": 213, "n_pooled_rare_codes": 256, "n_dropped_low_support": 43, "n_eval_codes": 0, "mask_folds": 4, "train_budget": 0, "train_budget_uncapped": true, "smallest_real_train_split": 84, "pooled_budget": 2684, "shared_generator": {"fedavg": true, "fedavg_ft": false, "centralized": true, "local": false}, "record_counts": {"local": 2000.0, "fedavg_ft": 2000.0, "fedavg": 16000, "centralized": 16000}, "per_hospital_utility_arms": ["fedavg_ft", "local", "real_local"], "fidelity_targets": {"primary": {"real_scope": "hospital", "rare_scope": "hospital"}}}};
+
+const REGIMES = [
+  {id:"local",       label:"local",       note:"8 isolated generators",             css:"--s-local"},
+  {id:"fedavg_ft",   label:"fedavg_ft",   note:"global model, fine-tuned per site", css:"--s-fedavg_ft"},
+  {id:"fedavg",      label:"fedavg",      note:"one federated generator",           css:"--s-fedavg"},
+  {id:"centralized", label:"centralized", note:"one generator, pooled raw data",    css:"--s-centralized"},
+];
+const BASE_LABEL = {
+  prior:                "prior — frequency baseline",
+  real_local:           "real, own site only",
+  // Only present when test2 ran with an explicit --train-budget: the pooled real
+  // ceiling re-measured at the SAME record count as the synthetic arms, which is
+  // the ceiling federation could actually reach. The unbudgeted real_pooled uses
+  // every record there is and is the higher, less comparable bar.
+  real_pooled_budgeted: "real, pooled, same budget — reachable ceiling",
+  real_pooled:          "real, all sites pooled — full data",
+};
+const BASE_STYLE = {
+  prior:                {css:"--base-prior",  dash:"2 4"},
+  real_local:           {css:"--base-local",  dash:"6 4"},
+  real_pooled_budgeted: {css:"--base-pooled", dash:"11 5"},
+  real_pooled:          {css:"--base-pooled", dash:"3 5"},
+};
+// "chance floor" is only true where 0.5 IS the floor, i.e. on an AUROC axis. On
+// average precision the floor is the code's own prevalence, and the prior is a
+// frequency-ranking rule that beats chance -- so the phrase would be wrong
+// there, and on recall@k there is no analytic floor at all.
+const baseLabel = (k, ym) =>
+  (k === "prior" && /auroc/.test(ym.k)) ? "prior — chance floor" : BASE_LABEL[k] || k;
+
+const X_METRICS = [
+  {k:"prev_all_pearson",  label:"Pearson · all codes",  better:"up",   fmt:v=>v.toFixed(3)},
+  {k:"prev_all_rmse",     label:"RMSE · all codes",     better:"down", fmt:v=>v.toFixed(4)},
+  {k:"prev_all_r2",       label:"R² · all codes",       better:"up",   fmt:v=>v.toFixed(2)},
+  {k:"prev_rare_pearson", label:"Pearson · rare codes", better:"up",   fmt:v=>v.toFixed(3)},
+  {k:"prev_rare_rmse",    label:"RMSE · rare codes",    better:"down", fmt:v=>v.toFixed(4)},
+  {k:"prev_rare_r2",      label:"R² · rare codes",      better:"up",   fmt:v=>v.toFixed(2)},
+];
+const Y_METRICS = [
+  {k:"tstr_ap",         label:"AP · all rare",       better:"up", fmt:v=>v.toFixed(4)},
+  {k:"tstr_ap_rare",    label:"AP · global-rare",    better:"up", fmt:v=>v.toFixed(4)},
+  {k:"tstr_auroc",      label:"AUROC · all rare",    better:"up", fmt:v=>v.toFixed(3)},
+  {k:"tstr_auroc_rare", label:"AUROC · global-rare", better:"up", fmt:v=>v.toFixed(3)},
+  {k:"tstr_f1_prev",     label:"F1 \u00b7 all rare (prevalence thr.)",  better:"up", fmt:v=>v.toFixed(4)},
+  {k:"tstr_f1_prev_rare", label:"F1 \u00b7 global-rare (prev. thr.)",   better:"up", fmt:v=>v.toFixed(4)},
+  {k:"tstr_f1_best",      label:"F1 \u00b7 all rare (best thr., optimistic)", better:"up", fmt:v=>v.toFixed(4)},
+  {k:"tstr_f1_best_rare", label:"F1 \u00b7 global-rare (best thr., optimistic)", better:"up", fmt:v=>v.toFixed(4)},
+  {k:"tstr_recall5",    label:"recall@5",            better:"up", fmt:v=>v.toFixed(3)},
+  {k:"tstr_recall10",   label:"recall@10",           better:"up", fmt:v=>v.toFixed(3)},
+  {k:"tstr_recall20",   label:"recall@20",           better:"up", fmt:v=>v.toFixed(3)},
+];
+
+const $ = s => document.querySelector(s);
+const NS = "http://www.w3.org/2000/svg";
+const el = (n,a={}) => { const e=document.createElementNS(NS,n); for(const k in a) e.setAttribute(k,a[k]); return e; };
+const cssv = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const M = DATA.meta;
+const num = v => (v == null ? "—" : v.toLocaleString());
+
+$("#runmeta").textContent =
+  `cohort ${M.cohort} · ${M.n_hospitals} hospitals · ${M.fold} fold · `
+  + `${M.mask_folds} mask folds · utility over ${M.n_scored_codes} of `
+  + `${M.n_pooled_rare_codes} rare codes `
+  + `(${M.n_dropped_low_support} dropped for low support)`;
+
+// ---- Notes. These describe THIS run, read out of the payload, because the
+// previous version of this page carried warnings from a different run
+// configuration and quietly kept asserting them after they stopped being true.
+const counts = M.record_counts || {};
+const vals = Object.values(counts).filter(v => v != null);
+const spread = vals.length ? Math.max(...vals) / Math.min(...vals) : 1;
+// The severity is data-driven: unmatched volume is a red flag on every reading
+// of the chart, matched volume is the condition that makes it readable.
+$("#note-budget").style.setProperty(
+  "--note", M.train_budget_uncapped ? "var(--sem-crit)" : "var(--sem-ok)");
+$("#note-budget").innerHTML = M.train_budget_uncapped
+  ? `<b>Training volume is not matched across arms — read every comparison through that.</b>
+     This run is uncapped (<code>train_budget_uncapped</code>), so the single-generator arms
+     train a classifier on ${num(Math.max(...vals))} synthetic records while the per-hospital
+     arms get ${num(Math.min(...vals))} — a ${spread.toFixed(0)}× gap. The real baselines differ
+     again: <code>real_pooled</code> has ${num((DATA.baselines.real_pooled||{}).n_records)} and
+     <code>real_local</code> a median of ${num((DATA.baselines.real_local||{}).n_records)}.
+     An arm that leads here may be leading on volume rather than on data quality. Re-run test 2
+     with <code>--train-budget</code> to settle it.`
+  : `<b>Training volume is matched at ${num(M.train_budget)} records per classifier.</b>
+     Every arm's downstream classifier sees the same amount of data, so differences are
+     attributable to the data itself rather than to how much of it there is.`;
+
+const aurocs = DATA.regimes.map(r => r.tstr_auroc).filter(v => v != null);
+const above = DATA.regimes.filter(r => r.tstr_auroc > 0.5).map(r => r.id);
+const rpAuroc = (DATA.baselines.real_pooled || {}).tstr_auroc;
+$("#note-auroc").innerHTML = above.length
+  ? `<b>AUROC is no longer inverted everywhere — but it still is for the small-data arms.</b>
+     ${above.map(a=>`<code>${a}</code>`).join(", ")} now sit above chance
+     (${Math.max(...aurocs).toFixed(3)}), as does <code>real_pooled</code>
+     (${rpAuroc != null ? rpAuroc.toFixed(3) : "—"}). The per-hospital arms remain below
+     <code>0.500</code>, which is the same unexplained inversion seen before and is not
+     accounted for by masking: cutting the mask from 119 codes to 30 moved it not at all, and
+     rare-code burden still correlates <code>+0.75</code> with input length after masking.
+     Arms below 0.5 should be read on AP against the <code>prior</code> floor, not on AUROC.`
+  : `<b>The downstream task is still inverted.</b> Every regime scores below chance on AUROC
+     (<code>0.500</code>), and masking has been refuted as the cause twice. Read AP against the
+     <code>prior</code> floor and treat AUROC as unexplained.`;
+
+$("#note-scope").innerHTML = M.n_eval_codes
+  ? `<b>Utility is estimated from a ${M.n_eval_codes}-code random draw</b> out of the
+     ${M.n_scored_codes} scoreable ones, so the vertical position is one sample of a noisy
+     quantity. Bars, where drawn, span the seeds.`
+  : `<b>Utility covers every scoreable code — ${M.n_scored_codes} of them</b> — rather than a
+     random draw, so there is no sampling error on the vertical axis and no error bars to draw.
+     Fidelity is likewise a single run per arm. What remains is that ${M.n_dropped_low_support}
+     codes were dropped for having too few positives to score at all, so the deepest tail is
+     absent from both axes rather than measured and found wanting.`;
+
+// ---- Verdict tiles: floor, best synthetic arm, and the real-data ceiling.
+const bestSyn = DATA.regimes.reduce((a,b)=> (b.tstr_ap ?? -1) > (a.tstr_ap ?? -1) ? b : a);
+const floorAP = (DATA.baselines.prior || {}).tstr_ap;
+const ceilB   = DATA.baselines.real_pooled_budgeted;
+const ceilAP  = (ceilB || DATA.baselines.real_pooled || {}).tstr_ap;
+const localAP = (DATA.baselines.real_local || {}).tstr_ap;
+const share   = (floorAP != null && ceilAP != null)
+  ? (bestSyn.tstr_ap - floorAP) / (ceilAP - floorAP) : null;
+const nAbove  = DATA.regimes.filter(r => floorAP != null && r.tstr_ap > floorAP).length;
+$("#tiles").innerHTML = [
+  {k:"Prior floor (AP)", v:floorAP != null ? floorAP.toFixed(4) : "—",
+   n:"ranking codes by frequency, ignoring the patient", a:"var(--base-prior)"},
+  {k:`Best synthetic — ${bestSyn.id}`, v:bestSyn.tstr_ap != null ? bestSyn.tstr_ap.toFixed(4) : "—",
+   n:floorAP != null
+      ? `${(bestSyn.tstr_ap/floorAP).toFixed(1)}× the floor — ${nAbove} of ${DATA.regimes.length} arms clear it`
+      : "",
+   a:"var(--s-fedavg)"},
+  {k:"Own-site real data", v:localAP != null ? localAP.toFixed(4) : "—",
+   n:"what a hospital gets training on its own records alone", a:"var(--base-local)"},
+  {k:"Real-data ceiling", v:ceilAP != null ? ceilAP.toFixed(4) : "—",
+   n:share != null ? `real data pooled${ceilB ? ", same record budget" : ""} — best arm covers ${(share*100).toFixed(0)}%` : "",
+   a:"var(--base-pooled)"},
+].map(t=>`<div class="tile" style="--tile-accent:${t.a}"><span class="k">${t.k}</span>`
+      +`<span class="v">${t.v}</span><span class="n">${t.n}</span></div>`).join("");
+
+for (const m of X_METRICS) $("#xsel").append(new Option(m.label, m.k));
+for (const m of Y_METRICS) $("#ysel").append(new Option(m.label, m.k));
+$("#xsel").value = "prev_all_pearson";
+// Open on AP, not AUROC: AP has a meaningful floor (the prior) that the page
+// draws as a reference line, and AUROC is still inverted for half the arms.
+$("#ysel").value = "tstr_ap";
+
+let showBase = true, showHosp = false, showRL = false;
+const PH = DATA.per_hospital || {};
+const PH_ARMS = new Set(M.per_hospital_utility_arms || []);
+const HOSPS = Object.keys(PH).sort(
+  (a, b) => (PH[b].local?.n_records || 0) - (PH[a].local?.n_records || 0));
+
+const toggle = (id, get, set) => $(id).addEventListener("click", () => {
+  if ($(id).disabled) return;
+  set(!get());
+  $(id).setAttribute("aria-pressed", String(get()));
+  $(id).textContent = get() ? "shown" : "hidden";
+  draw();
+});
+toggle("#basetog", () => showBase, v => showBase = v);
+toggle("#hosptog", () => showHosp, v => {
+  showHosp = v;
+  // real_local only exists as a per-site quantity, so its toggle is live only
+  // while the per-hospital view is on -- rather than silently doing nothing.
+  const rl = $("#rltog");
+  rl.disabled = !v;
+  if (!v && showRL) {
+    showRL = false;
+    rl.setAttribute("aria-pressed", "false");
+    rl.textContent = "hidden";
+  }
+});
+toggle("#rltog", () => showRL, v => showRL = v);
+$("#xsel").addEventListener("change", draw);
+$("#ysel").addEventListener("change", draw);
+
+function niceTicks(lo, hi, n=5) {
+  const span = hi - lo || 1, raw = span/n;
+  const mag = Math.pow(10, Math.floor(Math.log10(Math.abs(raw))));
+  const step = [1,2,2.5,5,10].map(m=>m*mag).find(s=>s>=raw) || 10*mag;
+  const out = [];
+  for (let t = Math.ceil(lo/step)*step; t <= hi + step*1e-9; t += step) out.push(+t.toFixed(10));
+  return out;
+}
+
+function draw() {
+  const xm = X_METRICS.find(m=>m.k===$("#xsel").value);
+  const ym = Y_METRICS.find(m=>m.k===$("#ysel").value);
+  const svg = $("#plot"); svg.textContent = "";
+
+  const W=720, H=470, P={t:26,r:150,b:60,l:76};
+  const iw = W-P.l-P.r, ih = H-P.t-P.b;
+  const pts = REGIMES
+    .map(r => { const d = DATA.regimes.find(x=>x.id===r.id); return d ? {...r, x:d[xm.k], y:d[ym.k], d} : null; })
+    .filter(p => p && p.x != null && p.y != null);
+  const baseVals = showBase
+    ? Object.entries(DATA.baselines).map(([k,v])=>({k,y:v[ym.k]})).filter(b=>b.y!=null) : [];
+  if (!pts.length) return;
+
+  // Per-hospital marks. Only arms with a genuine per-site classifier appear:
+  // fedavg and centralized share one generator across the cohort, so their
+  // utility is a cohort constant and plotting it eight times would invent
+  // measurements that were never made.
+  const marks = [];
+  if (showHosp) {
+    for (const hid of HOSPS) {
+      for (const r of REGIMES) {
+        const d = PH[hid]?.[r.id];
+        if (!d || !PH_ARMS.has(r.id)) continue;
+        if (d[xm.k] == null || d[ym.k] == null) continue;
+        marks.push({hid, arm: r.id, label: r.label, css: r.css,
+                    x: d[xm.k], y: d[ym.k], n: d.n_records});
+      }
+    }
+  }
+  // real_local has NO fidelity coordinate -- it IS real data, so there is no
+  // synthetic prevalence to score against the real fold. It is drawn at the
+  // IDEAL x for whichever fidelity metric is selected, which is what perfect
+  // fidelity would mean, and marked with an open diamond so it never reads as
+  // a measured point. The honest caveat is in the hint below the chart.
+  const rlIdeal = xm.better === "down" ? 0 : 1;
+  const rlMarks = [];
+  if (showHosp && showRL) {
+    for (const hid of HOSPS) {
+      const d = PH[hid]?.real_local;
+      if (d && d[ym.k] != null) rlMarks.push({hid, y: d[ym.k], n: d.n_records});
+    }
+  }
+
+  const pad = a => { const lo=Math.min(...a), hi=Math.max(...a), s=(hi-lo)||Math.abs(hi)||1;
+                     return [lo-s*0.17, hi+s*0.17]; };
+  const [x0,x1] = pad(pts.map(p=>p.x).concat(marks.map(m=>m.x))
+                        .concat(rlMarks.length ? [rlIdeal] : []));
+  const [y0,y1] = pad(pts.map(p=>p.y).concat(baseVals.map(b=>b.y))
+                        .concat(marks.map(m=>m.y)).concat(rlMarks.map(m=>m.y)));
+  const sx = v => P.l + (v-x0)/(x1-x0)*iw;
+  const sy = v => P.t + ih - (v-y0)/(y1-y0)*ih;
+
+  const g = el("g"); svg.append(g);
+  const GRID=cssv("--grid"), AXIS=cssv("--axis"), MUT=cssv("--ink-3"),
+        SEC=cssv("--ink-2"), PRI=cssv("--ink"), SURF=cssv("--surface");
+
+  for (const t of niceTicks(y0,y1)) { if (t<y0||t>y1) continue;
+    g.append(el("line",{x1:P.l,x2:P.l+iw,y1:sy(t),y2:sy(t),stroke:GRID,"stroke-width":1}));
+    const x=el("text",{x:P.l-11,y:sy(t)+4,"text-anchor":"end","font-size":11,fill:MUT,
+                       "font-family":"ui-monospace,Menlo,monospace"});
+    x.textContent=ym.fmt(t); g.append(x); }
+  for (const t of niceTicks(x0,x1)) { if (t<x0||t>x1) continue;
+    g.append(el("line",{x1:sx(t),x2:sx(t),y1:P.t,y2:P.t+ih,stroke:GRID,"stroke-width":1}));
+    const x=el("text",{x:sx(t),y:P.t+ih+21,"text-anchor":"middle","font-size":11,fill:MUT,
+                       "font-family":"ui-monospace,Menlo,monospace"});
+    x.textContent=xm.fmt(t); g.append(x); }
+  g.append(el("line",{x1:P.l,x2:P.l+iw,y1:P.t+ih,y2:P.t+ih,stroke:AXIS,"stroke-width":1}));
+  g.append(el("line",{x1:P.l,x2:P.l,y1:P.t,y2:P.t+ih,stroke:AXIS,"stroke-width":1}));
+
+  const xt=el("text",{x:P.l+iw/2,y:H-16,"text-anchor":"middle","font-size":12,fill:SEC});
+  xt.textContent = `${xm.label}  —  ${xm.better==="up"?"higher":"lower"} is better fidelity`;
+  g.append(xt);
+  const yt=el("text",{x:17,y:P.t+ih/2,"text-anchor":"middle","font-size":12,fill:SEC,
+                      transform:`rotate(-90 17 ${P.t+ih/2})`});
+  yt.textContent = `${ym.label}  —  higher is better`; g.append(yt);
+
+  for (const b of baseVals) {
+    const y = sy(b.y);
+    const st = BASE_STYLE[b.k] || {css:"--axis", dash:"4 4"};
+    const col = cssv(st.css);
+    g.append(el("line",{x1:P.l,x2:P.l+iw,y1:y,y2:y,stroke:col,"stroke-width":1.25,
+                        "stroke-opacity":0.4,"stroke-dasharray":st.dash,"stroke-linecap":"round"}));
+    const t=el("text",{x:P.l+iw+9,y:y+4,"font-size":10.5,fill:col,
+                       "fill-opacity":0.85,"font-weight":600});
+    t.textContent=baseLabel(b.k, ym); g.append(t);
+  }
+
+  const path = pts.map((p,i)=>`${i?"L":"M"}${sx(p.x)},${sy(p.y)}`).join(" ");
+  g.append(el("path",{d:path,fill:"none",stroke:cssv("--frontier"),"stroke-width":2,
+                      "stroke-linecap":"round","stroke-linejoin":"round",opacity:0.85}));
+
+  pts.forEach(p => { p.cx=sx(p.x); p.cy=sy(p.y); });
+
+  // Seed spread, drawn ONLY when the run actually has one. An all-codes run has
+  // no draws, and inventing a bar there would imply a precision estimate that
+  // was never computed.
+  const loK = ym.k + "_lo", hiK = ym.k + "_hi";
+  pts.forEach(p => {
+    const r = p.d || {};
+    if (r[loK] == null || r[hiK] == null) return;
+    const y0s = sy(r[loK]), y1s = sy(r[hiK]);
+    if (Math.abs(y0s - y1s) < 1.5) return;
+    const col = cssv(p.css);
+    g.append(el("line",{x1:p.cx,x2:p.cx,y1:y0s,y2:y1s,stroke:col,
+                        "stroke-width":1.5,"stroke-opacity":0.42,"stroke-linecap":"round"}));
+    for (const yy of [y0s, y1s])
+      g.append(el("line",{x1:p.cx-3.5,x2:p.cx+3.5,y1:yy,y2:yy,stroke:col,
+                          "stroke-width":1.5,"stroke-opacity":0.42,"stroke-linecap":"round"}));
+  });
+
+  // Per-site marks first, so the aggregate points stay readable on top.
+  marks.forEach(m => {
+    m.cx = sx(m.x); m.cy = sy(m.y);
+    g.append(el("circle",{cx:m.cx,cy:m.cy,r:3.4,fill:cssv(m.css),
+                          "fill-opacity":0.55,stroke:SURF,"stroke-width":1}));
+  });
+  rlMarks.forEach(m => {
+    m.cx = sx(rlIdeal); m.cy = sy(m.y);
+    const c = cssv("--base-local"), s2 = 4.6;
+    g.append(el("path",{d:`M${m.cx},${m.cy-s2}L${m.cx+s2},${m.cy}`
+                          +`L${m.cx},${m.cy+s2}L${m.cx-s2},${m.cy}Z`,
+                        fill:"none",stroke:c,"stroke-width":1.6}));
+    const t=el("text",{x:m.cx-s2-4,y:m.cy+3.5,"text-anchor":"end","font-size":9.5,
+                       fill:c,"font-family":"ui-monospace,Menlo,monospace"});
+    t.textContent=m.hid; g.append(t);
+  });
+
+  pts.forEach(p => g.append(el("circle",{cx:p.cx,cy:p.cy,r:7,fill:cssv(p.css),
+                                         stroke:SURF,"stroke-width":2})));
+
+  const CH=6.9, LH=15, placed=[];
+  const ov=(a,b)=>Math.abs(a.cx-b.cx)<(a.w+b.w)/2+7 && Math.abs(a.ly-b.ly)<LH+2;
+  [...pts].sort((a,b)=>a.cy-b.cy).forEach(p => {
+    const w=p.label.length*CH;
+    let box=null;
+    for (const ly of [p.cy-16,p.cy+25,p.cy-35,p.cy+44,p.cy-54]) {
+      if (ly<P.t+10 || ly>P.t+ih-4) continue;
+      const c={cx:p.cx,ly,w};
+      if (!placed.some(q=>ov(c,q))) { box=c; break; }
+    }
+    if (!box) box={cx:p.cx,ly:p.cy-16,w};
+    placed.push(box);
+    if (Math.abs(box.ly-(p.cy-16))>1)
+      g.append(el("line",{x1:p.cx,y1:p.cy,x2:p.cx,y2:box.ly>p.cy?box.ly-11:box.ly+4,
+                          stroke:AXIS,"stroke-width":1}));
+    const l=el("text",{x:box.cx,y:box.ly,"text-anchor":"middle","font-size":12,
+                       "font-weight":600,fill:PRI,"font-family":"ui-monospace,Menlo,monospace"});
+    l.textContent=p.label; g.append(l);
+  });
+
+  marks.concat(rlMarks.map(m => ({...m, arm:"real_local", label:"real_local",
+                                  css:"--base-local", x:rlIdeal}))).forEach(m => {
+    const hit=el("circle",{cx:m.cx,cy:m.cy,r:9,fill:"transparent",
+                           style:"cursor:pointer",tabindex:0});
+    hit.setAttribute("role","img");
+    hit.setAttribute("aria-label",
+      `${m.label} at hospital ${m.hid}. ${ym.label}: ${ym.fmt(m.y)}.`);
+    const show=()=>{
+      const tip=$("#tip");
+      tip.innerHTML = `<b>${m.label} @ ${m.hid}</b>`
+        + (m.arm === "real_local"
+            ? row(xm.label, "n/a (real data)")
+            : row(xm.label, xm.fmt(m.x)))
+        + row(ym.label, ym.fmt(m.y))
+        + row("records/clf", num(m.n));
+      tip.style.opacity = 1;
+      const wrap=$(".plotwrap").getBoundingClientRect(),
+            box=$("#plot").getBoundingClientRect();
+      const cl=(v,lo,hi)=>Math.max(lo,Math.min(hi,v));
+      const cx=box.left-wrap.left+(m.cx/720)*box.width,
+            cy=box.top-wrap.top+(m.cy/470)*box.height;
+      tip.style.left = cl(cx+15,4,Math.max(4,wrap.width-tip.offsetWidth-4))+"px";
+      tip.style.top  = cl(cy-tip.offsetHeight/2,4,
+                          Math.max(4,wrap.height-tip.offsetHeight-4))+"px";
+    };
+    hit.addEventListener("mouseenter",show); hit.addEventListener("focus",show);
+    hit.addEventListener("mouseleave",hideTip); hit.addEventListener("blur",hideTip);
+    g.append(hit);
+  });
+
+  pts.forEach(p => {
+    const hit=el("circle",{cx:p.cx,cy:p.cy,r:17,fill:"transparent",style:"cursor:pointer",tabindex:0});
+    hit.setAttribute("role","img");
+    hit.setAttribute("aria-label",
+      `${p.label}. ${xm.label}: ${xm.fmt(p.x)}. ${ym.label}: ${ym.fmt(p.y)}. `
+      + `Trained on ${num(p.d.n_records)} records.`);
+    const show=()=>showTip(p,xm,ym,p.cx,p.cy);
+    hit.addEventListener("mouseenter",show); hit.addEventListener("focus",show);
+    hit.addEventListener("mouseleave",hideTip); hit.addEventListener("blur",hideTip);
+    g.append(hit);
+  });
+
+  $("#hint").innerHTML =
+    `Colour runs light to dark with increasing cross-site averaging; the connector traces that
+     order. Hover or tab to any point for its full metric set. Point size is fixed — it does
+     <em>not</em> encode training volume, which the tooltip and table carry instead.`
+    + (showHosp
+       ? ` <b>Small dots are individual hospitals</b>, shown only for
+           ${[...PH_ARMS].filter(a => a !== "real_local").map(a=>`<code>${a}</code>`).join(" and ")}
+           — <code>fedavg</code> and <code>centralized</code> share one generator across the
+           cohort, so test2 trains a single classifier for all sites and there is no per-site
+           utility to plot.`
+       : "")
+    + (showRL
+       ? ` <b>Open diamonds are <code>real_local</code></b>: a classifier trained on that
+           hospital's own real records. It has no fidelity coordinate — real data has no
+           synthetic prevalence to score — so it is drawn at the ideal
+           <code>${xm.label}</code> and only its height is a measurement.`
+       : "");
+  $("#legend").innerHTML = REGIMES.map(r =>
+    `<span class="item"><span class="dot" style="background:var(${r.css})"></span>`
+    +`<span class="nm">${r.label}</span> <span style="color:var(--ink-3)">${r.note}</span></span>`).join("");
+  buildTable();
+}
+
+function showTip(p, xm, ym, vbx, vby) {
+  const tip=$("#tip"), d=p.d;
+  tip.innerHTML = `<b>${p.label}</b>`
+    + row(xm.label, d[xm.k] != null ? xm.fmt(d[xm.k]) : "—")
+    + row(ym.label, d[ym.k] != null ? ym.fmt(d[ym.k]) : "—")
+    + row("records/clf", num(d.n_records))
+    + row("classifiers", d.n_classifiers ?? "—");
+  tip.style.opacity=1;
+  const wrap=$(".plotwrap").getBoundingClientRect(), box=$("#plot").getBoundingClientRect();
+  const cl=(v,lo,hi)=>Math.max(lo,Math.min(hi,v));
+  const tw=tip.offsetWidth, th=tip.offsetHeight;
+  const cx=box.left-wrap.left+(vbx/720)*box.width, cy=box.top-wrap.top+(vby/470)*box.height;
+  tip.style.left = cl(cx+19,4,Math.max(4,wrap.width-tw-4))+"px";
+  tip.style.top  = cl(cy-th/2,4,Math.max(4,wrap.height-th-4))+"px";
+}
+const row=(k,v)=>`<div class="r"><span>${k}</span><span>${v}</span></div>`;
+const hideTip=()=>{ $("#tip").style.opacity=0; };
+
+function buildTable() {
+  const cols=[...X_METRICS,...Y_METRICS];
+  const bestOf = {};
+  for (const c of cols) {
+    const vals = DATA.regimes.map(r=>r[c.k]).filter(v=>v!=null);
+    if (!vals.length) continue;
+    bestOf[c.k] = c.better==="down" ? Math.min(...vals) : Math.max(...vals);
+  }
+  let h = `<thead><tr><th>Arm</th><th>Records</th><th>Clf</th>`
+        + cols.map(c=>`<th>${c.label}</th>`).join("") + `</tr></thead><tbody>`;
+  for (const r of REGIMES) {
+    const d = DATA.regimes.find(x=>x.id===r.id);
+    if (!d) continue;
+    h += `<tr><td><span class="dot" style="display:inline-block;background:var(${r.css});margin-right:8px;vertical-align:middle"></span>${r.label}</td>`
+       + `<td>${num(d.n_records)}</td><td>${d.n_classifiers ?? "—"}</td>`
+       + cols.map(c=>{ const v=d[c.k];
+           // AUROC below chance is flagged rather than left as a plain number:
+           // on this axis 0.5 is the floor, so a lower value is not "worse", it
+           // is a ranking that has come out backwards.
+           const bad = /auroc/.test(c.k) && v != null && v < 0.5;
+           const cls = v===bestOf[c.k] ? "best" : (bad ? "warnv" : "");
+           return `<td class="${cls}">${v!=null?c.fmt(v):"—"}</td>`;}).join("")
+       + `</tr>`;
+  }
+  let first = true;
+  for (const [k,v] of Object.entries(DATA.baselines)) {
+    h += `<tr class="base${first?" sep":""}"><td>${BASE_LABEL[k] || k}</td>`
+       + `<td>${num(v.n_records)}</td><td>${v.n_classifiers ?? "—"}</td>`
+       + cols.map(c=>`<td>${v[c.k]!=null?c.fmt(v[c.k]):"—"}</td>`).join("") + `</tr>`;
+    first = false;
+  }
+  $("#tbl").innerHTML = h + `</tbody>`;
+}
+
+// --------------------------------------------------------------------------
+// Panel 2: the same prevalence metric on ALL codes vs on RARE codes.
+//
+// The main scatter asks whether fidelity buys utility. This one asks a prior
+// question: whether an arm that reproduces the cohort's common codes also
+// reproduces its tail. They are not the same skill -- a generator can match the
+// head almost perfectly by learning marginals and still place the tail
+// anywhere -- and the y=x line makes the gap between them readable directly.
+//
+// "Rare" here is PER HOSPITAL: each site's own codes at <=5% prevalence there,
+// which is 296 codes at hospital 458 and 103 at 429. test1 has no global-rare
+// split, so unlike the utility axis there is no cohort-wide variant to offer.
+const P_METRICS = [
+  {k:"pearson", label:"Pearson", all:"prev_all_pearson", rare:"prev_rare_pearson",
+   better:"up", fmt:v=>v.toFixed(3)},
+  {k:"r2", label:"R\u00b2", all:"prev_all_r2", rare:"prev_rare_r2",
+   better:"up", fmt:v=>v.toFixed(2)},
+  {k:"rmse", label:"RMSE", all:"prev_all_rmse", rare:"prev_rare_rmse",
+   better:"down", fmt:v=>v.toFixed(4)},
+];
+// Which real fold the synthetic is compared with. Two targets ask two
+// different questions and rank the arms in OPPOSITE orders, so the page offers
+// both rather than presenting a choice of target as a fact about the models.
+const TGT = DATA.fidelity_by_target || {};
+const TGT_LABEL = {
+  primary: "each hospital's own test fold",
+  alt: "the pooled cohort test fold",
+};
+for (const k of Object.keys(TGT))
+  $("#tsel").append(new Option(TGT_LABEL[k] || k, k));
+$("#tsel").value = Object.keys(TGT)[0] || "primary";
+$("#tsel").addEventListener("change", draw2);
+
+for (const m of P_METRICS) $("#psel").append(new Option(m.label, m.k));
+$("#psel").value = "pearson";
+$("#psel").addEventListener("change", draw2);
+
+let showHosp2 = false;
+$("#phosptog").addEventListener("click", () => {
+  showHosp2 = !showHosp2;
+  $("#phosptog").setAttribute("aria-pressed", String(showHosp2));
+  $("#phosptog").textContent = showHosp2 ? "shown" : "hidden";
+  draw2();
+});
+
+function draw2() {
+  const pm = P_METRICS.find(m => m.k === $("#psel").value);
+  const svg = $("#plot2"); svg.textContent = "";
+  const W=720, H=470, P={t:26,r:40,b:60,l:76};
+  const iw = W-P.l-P.r, ih = H-P.t-P.b;
+
+  const tk = $("#tsel").value;
+  const T = TGT[tk] || {regimes:{}, per_hospital:{}};
+  const pts = REGIMES.map(r => {
+    const d = T.regimes?.[r.id];
+    return d && d[pm.all] != null && d[pm.rare] != null
+      ? {...r, x:d[pm.all], y:d[pm.rare]} : null;
+  }).filter(Boolean);
+  const marks = [];
+  if (showHosp2) {
+    for (const hid of HOSPS) for (const r of REGIMES) {
+      const d = T.per_hospital?.[hid]?.[r.id];
+      if (d && d[pm.all] != null && d[pm.rare] != null)
+        marks.push({hid, label:r.label, css:r.css, x:d[pm.all], y:d[pm.rare]});
+    }
+  }
+  if (!pts.length) return;
+
+  const all = pts.concat(marks);
+  const pad = a => { const lo=Math.min(...a), hi=Math.max(...a),
+                     s=(hi-lo)||Math.abs(hi)||1; return [lo-s*0.12, hi+s*0.12]; };
+  // One shared range for both axes: y=x only reads as "equal" if the scales
+  // match, and the whole point of the panel is the distance from that line.
+  const span = pad(all.map(p=>p.x).concat(all.map(p=>p.y)));
+  const [lo, hi] = span;
+  const sx = v => P.l + (v-lo)/(hi-lo)*iw;
+  const sy = v => P.t + ih - (v-lo)/(hi-lo)*ih;
+
+  const g = el("g"); svg.append(g);
+  const GRID=cssv("--grid"), AXIS=cssv("--axis"), MUT=cssv("--ink-3"),
+        SEC=cssv("--ink-2"), PRI=cssv("--ink"), SURF=cssv("--surface");
+
+  for (const t of niceTicks(lo, hi)) {
+    if (t < lo || t > hi) continue;
+    g.append(el("line",{x1:P.l,x2:P.l+iw,y1:sy(t),y2:sy(t),stroke:GRID,"stroke-width":1}));
+    g.append(el("line",{x1:sx(t),x2:sx(t),y1:P.t,y2:P.t+ih,stroke:GRID,"stroke-width":1}));
+    const a=el("text",{x:P.l-11,y:sy(t)+4,"text-anchor":"end","font-size":11,fill:MUT,
+                       "font-family":"ui-monospace,Menlo,monospace"});
+    a.textContent=pm.fmt(t); g.append(a);
+    const b=el("text",{x:sx(t),y:P.t+ih+21,"text-anchor":"middle","font-size":11,fill:MUT,
+                       "font-family":"ui-monospace,Menlo,monospace"});
+    b.textContent=pm.fmt(t); g.append(b);
+  }
+  g.append(el("line",{x1:P.l,x2:P.l+iw,y1:P.t+ih,y2:P.t+ih,stroke:AXIS,"stroke-width":1}));
+  g.append(el("line",{x1:P.l,x2:P.l,y1:P.t,y2:P.t+ih,stroke:AXIS,"stroke-width":1}));
+
+  // y = x: the tail is reproduced exactly as well as the head.
+  g.append(el("line",{x1:sx(lo),y1:sy(lo),x2:sx(hi),y2:sy(hi),
+                      stroke:cssv("--frontier"),"stroke-width":1.5,
+                      "stroke-dasharray":"5 4"}));
+  const eq=el("text",{x:sx(hi)-6,y:sy(hi)+16,"text-anchor":"end","font-size":10.5,
+                      fill:cssv("--frontier"),"font-weight":600});
+  eq.textContent="rare = all"; g.append(eq);
+
+  const xt=el("text",{x:P.l+iw/2,y:H-16,"text-anchor":"middle","font-size":12,fill:SEC});
+  xt.textContent=`${pm.label} on ALL codes — ${pm.better==="up"?"higher":"lower"} is better`;
+  g.append(xt);
+  const yt=el("text",{x:17,y:P.t+ih/2,"text-anchor":"middle","font-size":12,fill:SEC,
+                      transform:`rotate(-90 17 ${P.t+ih/2})`});
+  yt.textContent=`${pm.label} on RARE codes`; g.append(yt);
+
+  marks.forEach(m => {
+    m.cx=sx(m.x); m.cy=sy(m.y);
+    g.append(el("circle",{cx:m.cx,cy:m.cy,r:3.4,fill:cssv(m.css),
+                          "fill-opacity":0.55,stroke:SURF,"stroke-width":1}));
+  });
+  pts.forEach(p => {
+    p.cx=sx(p.x); p.cy=sy(p.y);
+    g.append(el("circle",{cx:p.cx,cy:p.cy,r:7,fill:cssv(p.css),
+                          stroke:SURF,"stroke-width":2}));
+    const t=el("text",{x:p.cx,y:p.cy-14,"text-anchor":"middle","font-size":12,
+                       "font-weight":600,fill:PRI,
+                       "font-family":"ui-monospace,Menlo,monospace"});
+    t.textContent=p.label; g.append(t);
+  });
+
+  pts.concat(marks).forEach(m => {
+    const hit=el("circle",{cx:m.cx,cy:m.cy,r:m.hid?9:15,fill:"transparent",
+                           style:"cursor:pointer",tabindex:0});
+    hit.setAttribute("role","img");
+    hit.setAttribute("aria-label",
+      `${m.label}${m.hid?" at hospital "+m.hid:""}. ${pm.label} all codes `
+      + `${pm.fmt(m.x)}, rare codes ${pm.fmt(m.y)}.`);
+    const show=()=>{
+      const tip=$("#tip2");
+      tip.innerHTML=`<b>${m.label}${m.hid?" @ "+m.hid:""}</b>`
+        + row(`${pm.label} · all`, pm.fmt(m.x))
+        + row(`${pm.label} · rare`, pm.fmt(m.y))
+        + row("gap (rare − all)", pm.fmt(m.y - m.x));
+      tip.style.opacity=1;
+      const wrap=$("#plot2").parentElement.getBoundingClientRect(),
+            box=$("#plot2").getBoundingClientRect();
+      const cl=(v,a,b)=>Math.max(a,Math.min(b,v));
+      const cx=box.left-wrap.left+(m.cx/720)*box.width,
+            cy=box.top-wrap.top+(m.cy/470)*box.height;
+      tip.style.left=cl(cx+15,4,Math.max(4,wrap.width-tip.offsetWidth-4))+"px";
+      tip.style.top =cl(cy-tip.offsetHeight/2,4,
+                        Math.max(4,wrap.height-tip.offsetHeight-4))+"px";
+    };
+    hit.addEventListener("mouseenter",show); hit.addEventListener("focus",show);
+    hit.addEventListener("mouseleave",()=>{$("#tip2").style.opacity=0;});
+    hit.addEventListener("blur",()=>{$("#tip2").style.opacity=0;});
+    g.append(hit);
+  });
+
+  const below = pts.filter(p => pm.better === "up" ? p.y < p.x : p.y > p.x).length;
+  const winner = pts.slice().sort((a,b) =>
+    pm.better === "up" ? b.x - a.x : a.x - b.x)[0];
+  $("#hint2").innerHTML =
+    `<b>Target: ${TGT_LABEL[tk] || tk}</b> — synthetic is compared with `
+    + (tk === "alt"
+        ? `the same 2,430-patient cohort-wide fold for every site, asking how far each
+           generator sits from the COHORT. `
+        : `that site's own test fold (40–523 patients), asking whether each generator
+           matches ITS OWN site. `)
+    + `Best on all-codes here: <code>${winner ? winner.label : "—"}</code>. Switching the
+       target reverses the ranking, because a site-specific generator matches its own site
+       best and the cohort worst. `;
+  $("#hint2").innerHTML +=
+    `Both axes share one scale, so the dashed diagonal is where an arm reproduces the tail
+     exactly as well as the head. <b>${below} of ${pts.length} arms fall on the worse side</b>
+     of it — the gap between a point and the diagonal is how much fidelity is lost going from
+     common codes to rare ones. "Rare" is per hospital (296 codes at 458, 103 at 429), so the
+     tail is a different set of codes at every site.`
+    + (showHosp2 ? " Small dots are individual hospitals." : "");
+}
+
+// --------------------------------------------------------------------------
+// Panel 3: ONE metric, both targets. Left-right is fidelity against the pooled
+// cohort fold; height is fidelity against the hospital's own fold.
+//
+// The two are not a better and a worse measurement of one thing -- they are two
+// questions, and the arms rank in opposite orders on them. Plotting them
+// against each other turns that reversal into a position: above the diagonal a
+// generator fits its OWN site better than the cohort (a specialist), below it
+// the cohort better than its own site (a generalist). Where an arm sits is a
+// property worth reporting, not an artefact to resolve by picking a target.
+const K_METRICS = [];
+for (const m of P_METRICS)
+  for (const [suf, lab] of [["all","all codes"], ["rare","rare codes"]])
+    K_METRICS.push({k:`${m.k}_${suf}`, label:`${m.label} · ${lab}`,
+                    key:m[suf], better:m.better, fmt:m.fmt});
+for (const m of K_METRICS) $("#ksel").append(new Option(m.label, m.k));
+$("#ksel").value = "pearson_all";
+$("#ksel").addEventListener("change", draw3);
+
+let showHosp3 = false;
+$("#khosptog").addEventListener("click", () => {
+  showHosp3 = !showHosp3;
+  $("#khosptog").setAttribute("aria-pressed", String(showHosp3));
+  $("#khosptog").textContent = showHosp3 ? "shown" : "hidden";
+  draw3();
+});
+
+function draw3() {
+  const km = K_METRICS.find(m => m.k === $("#ksel").value);
+  const svg = $("#plot3"); svg.textContent = "";
+  const own = TGT.primary, pool = TGT.alt;
+  if (!own || !pool) {
+    $("#hint3").textContent =
+      "Needs two test1 runs with different --real-scope; only one is loaded.";
+    return;
+  }
+  const W=720, H=470, P={t:26,r:40,b:60,l:80};
+  const iw=W-P.l-P.r, ih=H-P.t-P.b;
+
+  const pts = REGIMES.map(r => {
+    const o = own.regimes?.[r.id], c = pool.regimes?.[r.id];
+    return (o && c && o[km.key] != null && c[km.key] != null)
+      ? {...r, x:c[km.key], y:o[km.key]} : null;
+  }).filter(Boolean);
+  const marks = [];
+  if (showHosp3) for (const hid of HOSPS) for (const r of REGIMES) {
+    const o = own.per_hospital?.[hid]?.[r.id], c = pool.per_hospital?.[hid]?.[r.id];
+    if (o && c && o[km.key] != null && c[km.key] != null)
+      marks.push({hid, label:r.label, css:r.css, x:c[km.key], y:o[km.key]});
+  }
+  if (!pts.length) return;
+
+  const all = pts.concat(marks);
+  const lo0 = Math.min(...all.map(p=>Math.min(p.x,p.y))),
+        hi0 = Math.max(...all.map(p=>Math.max(p.x,p.y)));
+  const sp = (hi0-lo0)||Math.abs(hi0)||1;
+  const lo = lo0-sp*0.12, hi = hi0+sp*0.12;
+  const sx = v => P.l+(v-lo)/(hi-lo)*iw, sy = v => P.t+ih-(v-lo)/(hi-lo)*ih;
+
+  const g = el("g"); svg.append(g);
+  const GRID=cssv("--grid"), AXIS=cssv("--axis"), MUT=cssv("--ink-3"),
+        SEC=cssv("--ink-2"), PRI=cssv("--ink"), SURF=cssv("--surface");
+  for (const t of niceTicks(lo,hi)) {
+    if (t<lo||t>hi) continue;
+    g.append(el("line",{x1:P.l,x2:P.l+iw,y1:sy(t),y2:sy(t),stroke:GRID,"stroke-width":1}));
+    g.append(el("line",{x1:sx(t),x2:sx(t),y1:P.t,y2:P.t+ih,stroke:GRID,"stroke-width":1}));
+    const a=el("text",{x:P.l-11,y:sy(t)+4,"text-anchor":"end","font-size":11,fill:MUT,
+                       "font-family":"ui-monospace,Menlo,monospace"});
+    a.textContent=km.fmt(t); g.append(a);
+    const b=el("text",{x:sx(t),y:P.t+ih+21,"text-anchor":"middle","font-size":11,fill:MUT,
+                       "font-family":"ui-monospace,Menlo,monospace"});
+    b.textContent=km.fmt(t); g.append(b);
+  }
+  g.append(el("line",{x1:P.l,x2:P.l+iw,y1:P.t+ih,y2:P.t+ih,stroke:AXIS,"stroke-width":1}));
+  g.append(el("line",{x1:P.l,x2:P.l,y1:P.t,y2:P.t+ih,stroke:AXIS,"stroke-width":1}));
+  g.append(el("line",{x1:sx(lo),y1:sy(lo),x2:sx(hi),y2:sy(hi),stroke:cssv("--frontier"),
+                      "stroke-width":1.5,"stroke-dasharray":"5 4"}));
+
+  const up=el("text",{x:P.l+10,y:P.t+16,"font-size":10.5,fill:cssv("--frontier"),
+                      "font-weight":600});
+  up.textContent="above: fits its own site better  — specialist"; g.append(up);
+  const dn=el("text",{x:P.l+iw-10,y:P.t+ih-10,"text-anchor":"end","font-size":10.5,
+                      fill:cssv("--frontier"),"font-weight":600});
+  dn.textContent="below: fits the cohort better — generalist"; g.append(dn);
+
+  const xt=el("text",{x:P.l+iw/2,y:H-16,"text-anchor":"middle","font-size":12,fill:SEC});
+  xt.textContent=`${km.label} vs the POOLED cohort fold`; g.append(xt);
+  const yt=el("text",{x:19,y:P.t+ih/2,"text-anchor":"middle","font-size":12,fill:SEC,
+                      transform:`rotate(-90 19 ${P.t+ih/2})`});
+  yt.textContent=`${km.label} vs the hospital's OWN fold`; g.append(yt);
+
+  marks.forEach(m => { m.cx=sx(m.x); m.cy=sy(m.y);
+    g.append(el("circle",{cx:m.cx,cy:m.cy,r:3.4,fill:cssv(m.css),
+                          "fill-opacity":0.55,stroke:SURF,"stroke-width":1})); });
+  pts.forEach(p => { p.cx=sx(p.x); p.cy=sy(p.y);
+    g.append(el("circle",{cx:p.cx,cy:p.cy,r:7,fill:cssv(p.css),stroke:SURF,"stroke-width":2}));
+    const t=el("text",{x:p.cx,y:p.cy-14,"text-anchor":"middle","font-size":12,
+                       "font-weight":600,fill:PRI,"font-family":"ui-monospace,Menlo,monospace"});
+    t.textContent=p.label; g.append(t); });
+
+  pts.concat(marks).forEach(m => {
+    const hit=el("circle",{cx:m.cx,cy:m.cy,r:m.hid?9:15,fill:"transparent",
+                           style:"cursor:pointer",tabindex:0});
+    hit.setAttribute("role","img");
+    hit.setAttribute("aria-label",
+      `${m.label}${m.hid?" at hospital "+m.hid:""}. own fold ${km.fmt(m.y)}, `
+      + `pooled fold ${km.fmt(m.x)}.`);
+    const show=()=>{
+      const tip=$("#tip3");
+      tip.innerHTML=`<b>${m.label}${m.hid?" @ "+m.hid:""}</b>`
+        + row("own fold", km.fmt(m.y)) + row("pooled fold", km.fmt(m.x))
+        + row("own − pooled", km.fmt(m.y-m.x));
+      tip.style.opacity=1;
+      const wrap=$("#plot3").parentElement.getBoundingClientRect(),
+            box=$("#plot3").getBoundingClientRect();
+      const cl=(v,a,b)=>Math.max(a,Math.min(b,v));
+      const cx=box.left-wrap.left+(m.cx/720)*box.width,
+            cy=box.top-wrap.top+(m.cy/470)*box.height;
+      tip.style.left=cl(cx+15,4,Math.max(4,wrap.width-tip.offsetWidth-4))+"px";
+      tip.style.top =cl(cy-tip.offsetHeight/2,4,
+                        Math.max(4,wrap.height-tip.offsetHeight-4))+"px";
+    };
+    hit.addEventListener("mouseenter",show); hit.addEventListener("focus",show);
+    hit.addEventListener("mouseleave",()=>{$("#tip3").style.opacity=0;});
+    hit.addEventListener("blur",()=>{$("#tip3").style.opacity=0;});
+    g.append(hit);
+  });
+
+  const spec = pts.filter(p => km.better==="up" ? p.y>p.x : p.y<p.x).map(p=>p.label);
+  const gen  = pts.filter(p => km.better==="up" ? p.y<p.x : p.y>p.x).map(p=>p.label);
+  $("#hint3").innerHTML =
+    `Both axes are <b>${km.label}</b>; only the real fold each is scored against differs, so
+     the dashed diagonal is where a generator matches its own site exactly as well as it
+     matches the cohort. `
+    + (spec.length ? `<b>Specialists</b> (above): ${spec.map(x=>`<code>${x}</code>`).join(", ")}. ` : "")
+    + (gen.length ? `<b>Generalists</b> (below): ${gen.map(x=>`<code>${x}</code>`).join(", ")}. ` : "")
+    + `Neither side is better — which one you want depends on whether the synthetic data is
+       for one hospital or for the federation.`
+    + (showHosp3 ? " Small dots are individual hospitals." : "");
+}
+
+// --------------------------------------------------------------------------
+// Panel 4: the utility twin of panel 3. test2 trains one classifier per site for
+// the per-hospital arms but scores every arm on the POOLED eval fold, so an
+// arm's own-site performance is invisible by default. With test2's own_site
+// block the same rows can be split: height is that classifier on its own
+// hospital's eval patients, left-right is the same classifier on all eight
+// sites' patients at once.
+//
+// Only arms with a genuine per-site classifier appear. fedavg and centralized
+// train ONE classifier for the whole cohort, so they have no own-site
+// coordinate and are omitted rather than drawn at an invented position.
+const U_SERIES = [
+  {id:"local",      label:"tstr:local",     css:"--s-local"},
+  {id:"fedavg_ft",  label:"tstr:fedavg_ft", css:"--s-fedavg_ft"},
+  {id:"real_local", label:"real_local",     css:"--base-local"},
+];
+const U_METRICS = Y_METRICS.filter(m => !/f1_/.test(m.k));
+for (const m of U_METRICS) $("#usel").append(new Option(m.label, m.k));
+$("#usel").value = "tstr_recall5";
+$("#usel").addEventListener("change", draw4);
+
+function draw4() {
+  const um = U_METRICS.find(m => m.k === $("#usel").value);
+  const svg = $("#plot4"); svg.textContent = "";
+  const pts = [];
+  for (const hid of HOSPS) for (const sname of U_SERIES) {
+    const d = PH[hid]?.[sname.id];
+    if (!d) continue;
+    const x = d[um.k], y = d["own_" + um.k];
+    if (x == null || y == null) continue;
+    pts.push({hid, ...sname, x, y, n: d.own_n_val_patients});
+  }
+  if (!pts.length) {
+    $("#panel4").style.display = "none";
+    return;
+  }
+  $("#panel4").style.display = "";
+
+  const W=720,H=470,P={t:26,r:40,b:60,l:80}, iw=W-P.l-P.r, ih=H-P.t-P.b;
+  const lo0=Math.min(...pts.map(p=>Math.min(p.x,p.y))),
+        hi0=Math.max(...pts.map(p=>Math.max(p.x,p.y)));
+  const sp=(hi0-lo0)||Math.abs(hi0)||1, lo=lo0-sp*0.12, hi=hi0+sp*0.12;
+  const sx=v=>P.l+(v-lo)/(hi-lo)*iw, sy=v=>P.t+ih-(v-lo)/(hi-lo)*ih;
+
+  const g=el("g"); svg.append(g);
+  const GRID=cssv("--grid"),AXIS=cssv("--axis"),MUT=cssv("--ink-3"),
+        SEC=cssv("--ink-2"),SURF=cssv("--surface");
+  for (const t of niceTicks(lo,hi)) {
+    if (t<lo||t>hi) continue;
+    g.append(el("line",{x1:P.l,x2:P.l+iw,y1:sy(t),y2:sy(t),stroke:GRID,"stroke-width":1}));
+    g.append(el("line",{x1:sx(t),x2:sx(t),y1:P.t,y2:P.t+ih,stroke:GRID,"stroke-width":1}));
+    const a=el("text",{x:P.l-11,y:sy(t)+4,"text-anchor":"end","font-size":11,fill:MUT,
+                       "font-family":"ui-monospace,Menlo,monospace"});
+    a.textContent=um.fmt(t); g.append(a);
+    const b=el("text",{x:sx(t),y:P.t+ih+21,"text-anchor":"middle","font-size":11,fill:MUT,
+                       "font-family":"ui-monospace,Menlo,monospace"});
+    b.textContent=um.fmt(t); g.append(b);
+  }
+  g.append(el("line",{x1:P.l,x2:P.l+iw,y1:P.t+ih,y2:P.t+ih,stroke:AXIS,"stroke-width":1}));
+  g.append(el("line",{x1:P.l,x2:P.l,y1:P.t,y2:P.t+ih,stroke:AXIS,"stroke-width":1}));
+  g.append(el("line",{x1:sx(lo),y1:sy(lo),x2:sx(hi),y2:sy(hi),stroke:cssv("--frontier"),
+                      "stroke-width":1.5,"stroke-dasharray":"5 4"}));
+  const xt=el("text",{x:P.l+iw/2,y:H-16,"text-anchor":"middle","font-size":12,fill:SEC});
+  xt.textContent=`${um.label} — scored on ALL eight sites' eval patients`; g.append(xt);
+  const yt=el("text",{x:19,y:P.t+ih/2,"text-anchor":"middle","font-size":12,fill:SEC,
+                      transform:`rotate(-90 19 ${P.t+ih/2})`});
+  yt.textContent=`${um.label} — scored on its OWN site only`; g.append(yt);
+
+  pts.forEach(p => {
+    p.cx=sx(p.x); p.cy=sy(p.y);
+    g.append(el("circle",{cx:p.cx,cy:p.cy,r:4.6,fill:cssv(p.css),
+                          "fill-opacity":0.75,stroke:SURF,"stroke-width":1.2}));
+    const hit=el("circle",{cx:p.cx,cy:p.cy,r:10,fill:"transparent",
+                           style:"cursor:pointer",tabindex:0});
+    hit.setAttribute("role","img");
+    hit.setAttribute("aria-label",
+      `${p.label} at hospital ${p.hid}. own site ${um.fmt(p.y)}, pooled ${um.fmt(p.x)}.`);
+    const show=()=>{
+      const tip=$("#tip4");
+      tip.innerHTML=`<b>${p.label} @ ${p.hid}</b>`
+        + row("own site", um.fmt(p.y)) + row("pooled", um.fmt(p.x))
+        + row("own − pooled", um.fmt(p.y-p.x))
+        + row("own eval patients", num(p.n));
+      tip.style.opacity=1;
+      const wrap=$("#plot4").parentElement.getBoundingClientRect(),
+            box=$("#plot4").getBoundingClientRect();
+      const cl=(v,a,b)=>Math.max(a,Math.min(b,v));
+      const cx=box.left-wrap.left+(p.cx/720)*box.width,
+            cy=box.top-wrap.top+(p.cy/470)*box.height;
+      tip.style.left=cl(cx+15,4,Math.max(4,wrap.width-tip.offsetWidth-4))+"px";
+      tip.style.top =cl(cy-tip.offsetHeight/2,4,
+                        Math.max(4,wrap.height-tip.offsetHeight-4))+"px";
+    };
+    hit.addEventListener("mouseenter",show); hit.addEventListener("focus",show);
+    hit.addEventListener("mouseleave",()=>{$("#tip4").style.opacity=0;});
+    hit.addEventListener("blur",()=>{$("#tip4").style.opacity=0;});
+    g.append(hit);
+  });
+
+  const above = pts.filter(p => p.y > p.x).length;
+  $("#hint4").innerHTML =
+    `One point per hospital per arm — ${pts.length} in total. Both axes are <b>${um.label}</b>;
+     only which eval patients the classifier is scored on differs, so the diagonal is where a
+     site's classifier serves its own hospital exactly as well as it serves the cohort.
+     <b>${above} of ${pts.length}</b> sit above it. `
+    + U_SERIES.map(sr=>`<span class="item"><span class="dot" style="display:inline-block;`
+        + `background:var(${sr.css});vertical-align:middle;margin:0 4px"></span>`
+        + `<code>${sr.label}</code></span>`).join(" ")
+    + ` &nbsp;<code>fedavg</code> and <code>centralized</code> are absent: one classifier
+       serves the whole cohort, so they have no own-site coordinate.`
+    + ` Own-site numbers rest on 40–523 eval patients, so the smallest sites are noisy.`;
+}
+
+draw();
+draw2();
+draw3();
+draw4();
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+  draw(); draw2(); draw3(); draw4();
+});
+</script>

@@ -6,6 +6,7 @@ back up, including the person who wrote it.
 
 | file | what it is |
 |---|---|
+| [RECIPE.md](RECIPE.md) | **the standing procedure** — size band to rendered dashboard, and why each scoring control exists. Read this before running an experiment |
 | [CHEATSHEET.md](CHEATSHEET.md) | the numbers you keep needing: cohort sizes, what "rare" means, generator and classifier hyperparameters, baseline floors |
 | [TODO.md](TODO.md) | outstanding work, each item carrying the evidence that motivated it |
 | [eicu-hospitals.md](eicu-hospitals.md) | the eICU hospital size distribution — which sites exist and how big, for designing a cohort |
@@ -26,7 +27,11 @@ back up, including the person who wrote it.
 ## Regenerating
 
 `eicu-hospitals.md` comes from `utils/eicu_sizes.py`, which reads only
-`patient.csv` and takes seconds:
+`patient.csv` and takes seconds. It is a **survey, not a sizing tool**: it
+counts `patienthealthsystemstayid` with no task filters, so it runs higher than
+the post-task count a cohort is actually built from. To pick a size band, use
+`utils/hospital_sizes.py`, which applies the same filters as the builder and can
+verify itself against an existing manifest.
 
 ```bash
 export EICU_ROOT=/path/to/eicu-crd/2.0
@@ -39,7 +44,7 @@ sources per section, so it can be re-derived from `manifest.json`,
 
 ## A standing caution
 
-Numbers in these files are tied to a specific cohort — `strat8_random` unless
+Numbers in these files are tied to a specific cohort — `hilo8_random` unless
 stated otherwise. Rebuilding the cohort re-splits the data and redefines the
 rare-code set, which makes every recorded number here stale at once. Check the
 cohort name before trusting a figure.

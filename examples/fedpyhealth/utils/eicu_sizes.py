@@ -6,7 +6,15 @@ Counts **unique patients** (``patienthealthsystemstayid``), not unit stays --
 a patient can have several, and the cohort is built per patient.
 
 Reads only ``patient.csv``, so it is seconds rather than the minutes a full
-cohort build takes. Prints aggregate counts only; eICU hospital IDs are already
+cohort build takes.
+
+.. warning::
+   This is a **survey, not a sizing tool**. It counts
+   ``patienthealthsystemstayid`` and applies none of the task's filters, so its
+   numbers run higher than the post-task count a cohort is built from. To pick a
+   size band, use ``hospital_sizes.py``, which counts ``uniquepid``, drops stays
+   with no usable code and patients seen at more than one hospital, and can
+   verify itself against an existing cohort manifest. Prints aggregate counts only; eICU hospital IDs are already
 de-identified in the source, and no patient-level field is read beyond the stay
 and hospital identifiers needed to count.
 
@@ -25,7 +33,8 @@ import os
 import statistics as st
 from typing import Dict, List
 
-# Observed on hospital 420 in strat8_random: 3005 patients survived of 3876 in
+# Observed on hospital 420 (in the retired strat8_random): 3005 patients
+# survived of 3876 in
 # the raw table, once MIN_VISITS and the cross-hospital-patient drop applied.
 # A rule of thumb for sizing a cohort, not a guarantee.
 POST_TASK_SHRINK = 3005 / 3876
@@ -83,7 +92,7 @@ def main(argv=None) -> None:
     top = list(sizes.items())[:4]
     tot = sum(n for _, n in top)
     print(f"\ntop-4 total: {tot:,} raw, ~{int(tot * POST_TASK_SHRINK):,} post-task")
-    print("  (strat8_random, the current cohort, is 8,282 post-task in total)")
+    print("  (hilo8_random, the active cohort, is 12,156 post-task in total)")
     print("\nNOTE draw_bands() samples uniformly at random within a band, by "
           "design, so\n     that results generalise beyond the biggest sites. "
           "Maximising cohort size\n     means passing --hospitals explicitly "

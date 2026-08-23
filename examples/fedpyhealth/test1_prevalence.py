@@ -68,6 +68,37 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         "held out until the final numbers)")
     p.add_argument("--n-bootstraps", type=int, default=5,
                    help="bootstrap resamples over codes")
+    p.add_argument("--real-scope", choices=["hospital", "pooled"],
+                   default="hospital",
+                   help="what each hospital's synthetic set is scored AGAINST. "
+                        "'hospital' (default) compares synth[h] with that "
+                        "site's own test fold -- the natural question, but the "
+                        "real side is tiny at small sites (40 test patients at "
+                        "429, so prevalence resolves only to 1/40) and every "
+                        "site is measured against a different target. 'pooled' "
+                        "compares every site's synthetic set with the SAME "
+                        "cohort-wide test fold (2,430 patients, resolution "
+                        "1/2430), which asks a different question: how far is "
+                        "this site's generator from the cohort distribution. "
+                        "Note that fedavg and centralized share one generator, "
+                        "so under 'pooled' all eight of their per-hospital rows "
+                        "are the identical comparison and will be identical.")
+    p.add_argument("--rare-scope", choices=["hospital", "pooled"],
+                   default="hospital",
+                   help="which codes PrevVal_Rare_* scores. 'hospital' "
+                        "(default) uses each site's own rare set -- <=5% "
+                        "prevalence THERE -- so the tail is a different set of "
+                        "codes at every site (296 at 458, 103 at 429) and the "
+                        "per-hospital numbers are not strictly comparable. "
+                        "'pooled' uses one shared definition, the union of "
+                        "every site's rare set (548 codes, rare at >=1 "
+                        "hospital), intersected with the codes that site "
+                        "actually has in the scoring fold. The intersection is "
+                        "not optional: 79% of the pooled pool has zero "
+                        "prevalence at hospital 429 and 83% at 358, and scoring "
+                        "those would add hundreds of (real 0, synth ~0) points "
+                        "that agree trivially and inflate Pearson and R^2 "
+                        "while measuring nothing.")
     p.add_argument("--synth-cap", type=int, default=0,
                    help="score only the first N synthetic patients per "
                         "hospital (0 = all). Prevalence resolves only to "
@@ -204,6 +235,7 @@ def score_run(
     rare_by_hospital: Dict[str, List[str]],
     n_bootstraps: int = 5,
     synth_cap: int = 0,
+    pooled_real: "pd.DataFrame" = None,
 ) -> Dict[str, dict]:
     """Standalone entry point: score every hospital of one finished run.
 
@@ -213,6 +245,13 @@ def score_run(
             scoring fold, straight from the cohort cache.
         rare_by_hospital: Each hospital's rare codes.
         n_bootstraps: Bootstrap resamples over codes.
+        pooled_real: When given, every hospital's synthetic set is scored
+            against THIS frame instead of its own test fold. Changes the
+            question from "does site h's generator match site h" to "does it
+            match the cohort", and lifts the real side from as few as 40
+            patients to 2,430 -- which matters because prevalence resolves only
+            to 1/n_real, so a 40-patient fold cannot express anything below
+            0.025 no matter how much synthetic data it is compared with.
         synth_cap: Score only the first N synthetic patients per hospital;
             0 uses all of them. A synthetic set of size N can only express
             prevalences in multiples of 1/N, so an arm with more synthetic
@@ -237,14 +276,18 @@ def score_run(
                     "can meet it, or the comparison is not matched after all."
                 )
             synth = synth[:synth_cap]
-        val_df = pd.DataFrame(trajectories_to_records(val_traj)).astype(EVAL_SCHEMA)
+        val_df = (pooled_real if pooled_real is not None
+                  else pd.DataFrame(
+                      trajectories_to_records(val_traj)).astype(EVAL_SCHEMA))
         syn_df = pd.DataFrame(synthetic_to_records(synth)).astype(EVAL_SCHEMA)
         scores = prevalence_from_frames(
             val_df, syn_df, rare_by_hospital.get(hid), n_bootstraps, label=hid,
         )
         r2 = scores.get("PrevVal_All_Prevalence_R2", (float("nan"),))[0]
         rare_r2 = scores.get("PrevVal_Rare_Prevalence_R2", (float("nan"),))[0]
-        print(f"  [{hid}] {len(val_traj)} val patients, {len(synth)} synthetic"
+        n_real = (val_df["id"].nunique() if pooled_real is not None
+                  else len(val_traj))
+        print(f"  [{hid}] {n_real} val patients, {len(synth)} synthetic"
               f"  ->  all R2={r2:.4f}  rare R2={rare_r2:.4f}", flush=True)
         out[hid] = {k: list(v) for k, v in scores.items()}
     return out
@@ -259,6 +302,45 @@ def main(argv=None) -> None:
     manifest = load_manifest(args.cohort_cache)
     real = read_trajectories(args.cohort_cache, args.fold)
     rare_by_hospital = rare_codes(args.cohort_cache)
+    pooled_real = None
+    if args.real_scope == "pooled":
+        pooled_traj = {f"{hid}::{pid}": tr
+                       for hid, pats in real.items() for pid, tr in pats.items()}
+        pooled_real = pd.DataFrame(
+            trajectories_to_records(pooled_traj)).astype(EVAL_SCHEMA)
+        print(f"real scope: POOLED -- every arm's per-hospital synthetic set is "
+              f"scored against the\n  same {len(pooled_traj)}-patient "
+              f"cohort-wide {args.fold} fold (resolution 1/{len(pooled_traj)})")
+
+    if args.rare_scope == "pooled":
+        pooled = set(manifest["pooled_rare_codes"])
+        scoped = {}
+        if args.real_scope == "pooled":
+            # One target frame means one code set: intersect with what the
+            # POOLED fold holds, not with each site's own, or a hospital would
+            # be scored on codes its comparison target never contains.
+            present = set(pooled_real["visit_codes"].unique())
+            shared = sorted(pooled & present)
+            scoped = {hid: shared for hid in real}
+        else:
+            for hid, pats in real.items():
+                present = {c for tr in pats.values() for v in tr for c in v}
+                scoped[hid] = sorted(pooled & present)
+        target = ("the POOLED {} fold -- one identical code set for every "
+                  "hospital".format(args.fold) if args.real_scope == "pooled"
+                  else "each site's own {} fold -- so the set still differs "
+                       "per site".format(args.fold))
+        print(f"rare scope: POOLED -- one shared definition of rare "
+              f"({len(pooled)} codes, rare at >=1 hospital),\n  intersected "
+              f"with {target}:")
+        for hid in real:
+            print(f"  {hid}: {len(scoped[hid])} of {len(pooled)} present "
+                  f"(own rare set is {len(rare_by_hospital.get(hid, []))})")
+        rare_by_hospital = scoped
+    else:
+        print("rare scope: PER-HOSPITAL -- each site's own <=5% codes; the tail "
+              "is a different\n  set of codes at every site, so read "
+              "PrevVal_Rare_* within a hospital, not across")
     n_real = sum(len(v) for v in real.values())
     print(f"cohort '{manifest.get('cohort_name')}': {len(real)} hospitals, "
           f"{n_real} {args.fold} patients")
@@ -268,7 +350,7 @@ def main(argv=None) -> None:
         print(f"\n=== {name}  ({save_dir})", flush=True)
         results[name] = score_run(
             load_synthetic(save_dir), real, rare_by_hospital, args.n_bootstraps,
-            synth_cap=args.synth_cap,
+            synth_cap=args.synth_cap, pooled_real=pooled_real,
         )
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
@@ -279,6 +361,8 @@ def main(argv=None) -> None:
             "cohort_cache": args.cohort_cache,
             "cohort_name": manifest.get("cohort_name"),
             "fold": args.fold,
+            "rare_scope": args.rare_scope,
+            "real_scope": args.real_scope,
             "n_bootstraps": args.n_bootstraps,
             "synth_cap": args.synth_cap,
             "runs": results,

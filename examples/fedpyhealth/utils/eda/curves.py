@@ -80,12 +80,19 @@ def run(cfg: dict) -> dict:
             continue
         series, run_level = {}, {}
         for tag, vals in scal.items():
-            if len(vals) < cfg["min_points"]:
-                continue
             kind, _, who = tag.partition("/")
             if not kind.startswith("loss"):
                 continue
             phase = kind.replace("loss_", "")
+            # min_points exists to drop a job that died in its first epoch, but
+            # fedavg_ft's fine-tuning phase is legitimately SHORT -- ft_epochs is
+            # 2 by default, so `loss_ft/*` and `loss_val_ft/*` have exactly two
+            # points and were being filtered out as noise. That silently hid the
+            # per-hospital half of the regime, leaving a page that showed only
+            # the shared FedAvg phase and described fedavg_ft as if it trained
+            # one global model.
+            if not phase.endswith("ft") and len(vals) < cfg["min_points"]:
+                continue
             # The regimes validate differently, and conflating the two makes a
             # federated run look like it has no validation at all:
             #   local            loss_val/hospital_<id>  -- per site

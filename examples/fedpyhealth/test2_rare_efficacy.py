@@ -453,7 +453,32 @@ def recall_at_k(y_true: np.ndarray, y_prob: np.ndarray, k: int) -> float:
 def per_code_scores(
     y_true: np.ndarray, y_prob: np.ndarray, codes: Sequence[str]
 ) -> Dict[str, dict]:
-    """Average precision and AUROC for each code column independently."""
+    """Average precision, AUROC and two F1 variants per code column.
+
+    F1 needs a decision threshold, which AP and AUROC do not, and at these
+    prevalences the threshold IS the metric: the rarest scored code appears in
+    under 0.1% of patients, so no classifier here ever crosses 0.5 and a plain
+    ``f1_score(y, p > 0.5)`` is 0.0 for every arm -- true, and useless for
+    telling them apart. Two thresholds are reported instead, and they bracket
+    the honest answer:
+
+    ``f1_best``
+        The maximum F1 over every threshold on the precision-recall curve. This
+        is what a perfectly tuned operating point would give, and it is
+        OPTIMISTICALLY BIASED -- the threshold is chosen using the same labels
+        it is scored on, so it is an upper bound rather than an estimate of
+        held-out performance. Comparable across arms (all get the same
+        advantage), not quotable as "the F1 you would get".
+
+    ``f1_prev``
+        F1 at the threshold where the number of predicted positives equals the
+        number of true positives. No label peeking beyond the positive COUNT,
+        which is the standard unbiased choice for heavily imbalanced multilabel
+        problems, and the number to quote.
+
+    Both are ``nan`` for a one-class column, matching AP and AUROC: undefined,
+    not zero.
+    """
     from sklearn import metrics as skm
 
     out = {}
@@ -465,10 +490,20 @@ def per_code_scores(
             entry["average_precision"] = float(
                 skm.average_precision_score(col_true, col_prob))
             entry["roc_auc"] = float(skm.roc_auc_score(col_true, col_prob))
+            prec, rec, _ = skm.precision_recall_curve(col_true, col_prob)
+            denom = prec + rec
+            f1s = np.where(denom > 0, 2 * prec * rec / np.maximum(denom, 1e-12), 0.0)
+            entry["f1_best"] = float(np.max(f1s))
+            # Predict exactly n_pos positives: take the n_pos highest scores.
+            cut = np.partition(col_prob, -n_pos)[-n_pos]
+            entry["f1_prev"] = float(skm.f1_score(col_true, col_prob >= cut,
+                                                  zero_division=0))
         else:
-            # One-class column: both metrics are undefined, not zero.
+            # One-class column: every one of these is undefined, not zero.
             entry["average_precision"] = float("nan")
             entry["roc_auc"] = float("nan")
+            entry["f1_best"] = float("nan")
+            entry["f1_prev"] = float("nan")
         out[code] = entry
     return out
 
@@ -488,15 +523,20 @@ def aggregate(
         each validation-support band, each with the code count behind it.
     """
     def macro(codes: Sequence[str]) -> dict:
+        def mean_of(key: str) -> float:
+            vals = [scores[c][key] for c in codes
+                    if key in scores[c] and not np.isnan(scores[c][key])]
+            return float(np.mean(vals)) if vals else float("nan")
+
         aps = [scores[c]["average_precision"] for c in codes
                if not np.isnan(scores[c]["average_precision"])]
-        aucs = [scores[c]["roc_auc"] for c in codes
-                if not np.isnan(scores[c]["roc_auc"])]
         return {
             "n_codes": len(codes),
             "n_scored": len(aps),
             "ap_macro": float(np.mean(aps)) if aps else float("nan"),
-            "roc_auc_macro": float(np.mean(aucs)) if aucs else float("nan"),
+            "roc_auc_macro": mean_of("roc_auc"),
+            "f1_best_macro": mean_of("f1_best"),
+            "f1_prev_macro": mean_of("f1_prev"),
         }
 
     all_codes = sorted(scores)
@@ -665,6 +705,12 @@ def main(argv=None) -> None:
             for pats in per.values() for p, v in pats.items()}
     train_by_hospital = {hid: sorted(pats) for hid, pats in train_traj.items()}
     val_ids = sorted(p for pats in eval_traj.values() for p in pats)
+    # Which site each eval patient came from. The val set is POOLED -- every arm,
+    # including the per-hospital ones, is scored on all eight sites' patients at
+    # once -- so without this there is no way to ask how an arm does on its OWN
+    # site as distinct from the cohort. Scoring a subset needs no retraining:
+    # y_prob already covers every val row, so a per-site number is a row mask.
+    val_hospital = {p: hid for hid, pats in eval_traj.items() for p in pats}
     all_train = sorted(p for ids in train_by_hospital.values() for p in ids)
 
     # budget 0 = UNCAPPED: every arm trains on everything it has. That is the
@@ -771,6 +817,9 @@ def main(argv=None) -> None:
 
     # per-arm, per-code accumulators filled in across folds
     code_scores: Dict[str, Dict[str, dict]] = {a: {} for a in arms}
+    # Parallel accumulators for the own-site view; empty for arms without one.
+    own_code_scores: Dict[str, Dict[str, dict]] = {a: {} for a in arms}
+    own_fold_recall: Dict[str, list] = {a: [] for a in arms}
     fold_recall: Dict[str, List[Dict[str, float]]] = {a: [] for a in arms}
     diagnostics: Dict[str, dict] = {}
     degenerate: Dict[str, bool] = {a: True for a in arms}
@@ -845,6 +894,9 @@ def main(argv=None) -> None:
             if cached is not None:
                 code_scores[name].update(cached["code_scores"])
                 fold_recall[name].append(cached["recall"])
+                if cached.get("own_code_scores"):
+                    own_code_scores[name].update(cached["own_code_scores"])
+                    own_fold_recall[name].append(cached["own_recall"])
                 print(f"  [{name}] fold {f_i}: cached, training skipped",
                       flush=True)
                 continue
@@ -857,7 +909,29 @@ def main(argv=None) -> None:
             code_scores[name].update(scores)
             fold_recall[name].append(recall)
 
-            partial[cache_key] = {"code_scores": scores, "recall": recall}
+            # Own-site view, for arms that HAVE an own site. A per-hospital arm
+            # is trained on one site but scored on all eight; restricting to its
+            # own site's rows asks whether it serves the hospital that produced
+            # it, which is the question a site actually cares about. Shared-
+            # generator arms (fedavg, centralized, real_pooled, prior) have no
+            # own site and are skipped rather than given a meaningless one.
+            own_hid = arm_meta.get(name, {}).get("hospital")
+            own_scores = own_recall = None
+            if own_hid:
+                rows = np.array([val_hospital.get(r["patient_id"]) == own_hid
+                                 for r in val_records])
+                if rows.sum() > 0:
+                    own_scores = per_code_scores(
+                        y_true[rows], y_prob[rows], order)
+                    own_recall = {f"recall_at_{k}":
+                                  recall_at_k(y_true[rows], y_prob[rows], k)
+                                  for k in ks}
+                    own_code_scores[name].update(own_scores)
+                    own_fold_recall[name].append(own_recall)
+
+            partial[cache_key] = {"code_scores": scores, "recall": recall,
+                                  "own_code_scores": own_scores,
+                                  "own_recall": own_recall}
             save_partial(partial_path, signature, partial)
             print(f"  [{name}] fold {f_i}: {len(partial)}/{n_classifiers} "
                   f"classifiers done", flush=True)
@@ -907,6 +981,22 @@ def main(argv=None) -> None:
                 entry[key] = float(np.mean(
                     [f[key] for f in fold_recall[name] if not np.isnan(f[key])]
                     or [np.nan]))
+            # The same aggregation over this arm's OWN site's val rows only.
+            # Nested under "own_site" rather than merged, so a consumer that
+            # does not know about it cannot silently read a per-site number
+            # where it expected the pooled one. Absent for arms with no own
+            # site, which is how the page decides what it can plot.
+            if own_code_scores.get(name):
+                own = aggregate(own_code_scores[name], support, strict)
+                for k in ks:
+                    key = f"recall_at_{k}"
+                    own[key] = float(np.mean(
+                        [f[key] for f in own_fold_recall[name]
+                         if not np.isnan(f[key])] or [np.nan]))
+                own["n_val_patients"] = int(sum(
+                    1 for h in val_hospital.values()
+                    if h == arm_meta[name]["hospital"]))
+                entry["own_site"] = own
         results["arms"][name] = entry
 
     # Collapse the eight per-hospital classifiers of each family into a spread.

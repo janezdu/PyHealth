@@ -25,7 +25,7 @@ Both land in ``_outputs/results/runs/<run_name>.json``, which is what
 ``exp_log.py`` reads to build a sweep leaderboard.
 
     python examples/fedpyhealth/eval.py \\
-        --save-dir _outputs/fedavg_full_strat8_random_save
+        --save-dir _outputs/fedavg_full_hilo8_random_save
 
 Note the division of labour with the standalone tests: ``test1_prevalence.py``
 recomputes the prevalence half from ``synthetic.json`` and ``test2_rare_efficacy``

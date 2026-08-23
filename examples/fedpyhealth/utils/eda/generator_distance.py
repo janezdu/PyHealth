@@ -61,7 +61,7 @@ DEFAULTS = {
     # directories, whose names do not follow the regime convention.
     "runs": [],
     # run directory suffix, appended to each regime name
-    "suffix": "_full_strat8_random_save",
+    "suffix": "_full_hilo8_random_save",
     # directory holding the <regime><suffix> run dirs
     "outputs": "_outputs",
     # real fold the generators were trained on

@@ -85,10 +85,12 @@ GLOBAL_RARE_PREVALENCE_MAX = 0.01
 
 DEFAULT_BANDS = "0-199,200-499,500-1999,2000-"
 DEFAULT_PER_BAND = 2
-# Which cohort every job uses unless told otherwise. strat8_randsplit is the
-# plain 70/10/20 shuffle: same size-banded 8 hospitals, but the patient split
-# makes no rare-code coverage promise. See scripts/run_cohort.sh.
-DEFAULT_COHORT = os.environ.get("FEDCOHORT_NAME", "strat8_random")
+# Which cohort every job uses unless told otherwise. hilo8_random is the
+# active one: four sites >= 1500 post-task patients and four drawn from
+# 100-1499, split 70/10/20 at random. Prefer passing --cohort-cache
+# explicitly -- notes/RECIPE.md does -- so a job never depends on this
+# default silently pointing somewhere else.
+DEFAULT_COHORT = os.environ.get("FEDCOHORT_NAME", "hilo8_random")
 DEFAULT_CACHE_DIR = os.path.join(CACHE_ROOT, DEFAULT_COHORT)
 
 MANIFEST_FILE = "manifest.json"
@@ -1310,7 +1312,8 @@ def build_parser() -> argparse.ArgumentParser:
                         "This is the only source of those numbers -- "
                         "patient.csv counts are 1.2-1.7x higher, by a ratio "
                         "that varies per hospital")
-    p.add_argument("--name", default="strat8", help="cohort name, for the record")
+    p.add_argument("--name", default=DEFAULT_COHORT,
+                   help="cohort name, for the record")
     p.add_argument("--eicu-root", default=EICU_ROOT,
                    help="eICU CRD root (default: $EICU_ROOT)")
     p.add_argument("--hospitals",

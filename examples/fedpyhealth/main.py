@@ -139,6 +139,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
     train = sub.add_parser("train", parents=[common],
                            help="train one regime (train.py)")
+    train.add_argument("--after", default=None,
+                       help="colon-separated job ids to wait for "
+                            "(--dependency=afterok:...). Lets a real run be "
+                            "queued behind a smoke test so a broken code path "
+                            "fails in five minutes instead of after the queue "
+                            "wait plus a full training run.")
     train.add_argument("--regime", choices=REGIMES, default="fedavg")
     train.add_argument("--profile", choices=sorted(PROFILE_RESOURCES),
                        default="full")
@@ -489,6 +495,11 @@ NAME_AFFECTING = ("--n-rounds", "--local-epochs", "--ft-epochs", "--weighting",
                   "--metrics")
 
 
+#: Boolean train.py flags that must appear in the run name. The suffix has to
+#: match make_run_name() in train.py, since either side may build the name.
+NAME_AFFECTING_BOOL = {"--rare-upweight": "_rw"}
+
+
 def run_name_for(regime: str, profile: str, cohort_file: str,
                  passthrough: Sequence[str]) -> str:
     """Deterministic run name, so the launcher knows the save dir up front.
@@ -500,6 +511,13 @@ def run_name_for(regime: str, profile: str, cohort_file: str,
     """
     cohort = os.path.basename(str(cohort_file).rstrip("/"))
     name = f"{regime}_{profile}_{cohort}"
+    # Boolean flags that change what the run OPTIMISES need a name of their own,
+    # or the run silently overwrites the save_dir, checkpoints and results of the
+    # plain run it is meant to be compared against. NAME_AFFECTING below only
+    # covers valued flags, so this is handled separately.
+    for flag, suffix in NAME_AFFECTING_BOOL.items():
+        if flag in passthrough:
+            name += suffix
     for i, arg in enumerate(passthrough):
         if arg in NAME_AFFECTING and i + 1 < len(passthrough):
             name += f"_{arg.lstrip('-').replace('-', '')}{passthrough[i + 1]}"
@@ -640,7 +658,8 @@ def train_job(regime: str, profile: str, passthrough: Sequence[str],
         account=getattr(args, "account", None),
         cpus=getattr(args, "cpus", None),
     )
-    job_id = submit(f"fed-{regime}-{profile}", script, args.dry_run)
+    job_id = submit(f"fed-{regime}-{profile}", script, args.dry_run,
+                    depends_on=getattr(args, "after", None))
     record_run(job_id, run_name, args.dry_run)
     return job_id, run_name
 
@@ -654,10 +673,12 @@ def train_job(regime: str, profile: str, passthrough: Sequence[str],
 TRAIN_ONLY_VALUED = (
     "--config", "--weighting", "--ft-epochs", "--n-rounds", "--local-epochs",
     "--num-synth", "--synth-per-hospital", "--metrics", "--ckpt-every",
+    "--snapshot-every",
     "--tb-logdir", "--log-every-epochs", "--run-name", "--es-patience",
     "--es-min-steps", "--es-min-val-patients", "--es-fallback",
 )
-TRAIN_ONLY_BOOL = ("--resume", "--no-tb", "--no-early-stop")
+TRAIN_ONLY_BOOL = ("--resume", "--no-tb", "--no-early-stop",
+                   "--rare-upweight")
 
 
 def fold_for_tests(passthrough: Sequence[str]) -> Tuple[List[str], List[str]]:
@@ -694,6 +715,34 @@ def fold_for_tests(passthrough: Sequence[str]) -> Tuple[List[str], List[str]]:
                      _flag_value(passthrough, "--eval-fold") or "test"]
 
 
+def out_for_tests(which: str, passthrough: Sequence[str]) -> List[str]:
+    """Give the scoring job a cohort-specific ``--out``.
+
+    Both test scripts default to a bare, cohort-agnostic filename
+    (``test1_prevalence.json`` / ``test2_rare_efficacy.json``), so a run on ANY
+    cohort claims the same two paths. Scoring lo8_random silently overwrote the
+    hilo8_random results the dashboards are built from -- same data shape, no
+    error, and the loss was only visible by reading ``cohort_name`` out of the
+    JSON afterwards.
+
+    Naming the output after the cohort makes two cohorts' results coexist
+    instead of racing for one filename. An explicit ``--out`` from the user
+    always wins.
+
+    Returns:
+        ``["--out", path]``, or ``[]`` if the caller already passed ``--out``
+        or no cohort cache is identifiable.
+    """
+    if _flag_value(passthrough, "--out") is not None:
+        return []
+    cache = _flag_value(passthrough, "--cohort-cache") or DEFAULT_CACHE_DIR
+    cohort = os.path.basename(os.path.normpath(cache))
+    if not cohort:
+        return []
+    stem = {"test1": "test1_prevalence", "test2": "test2_rare_efficacy"}[which]
+    return ["--out", f"_outputs/results/tests/{stem}_{cohort}.json"]
+
+
 def test_job(which: str, passthrough: Sequence[str], args,
              depends_on: str = None) -> str:
     """Submit a scoring job. ``which`` is ``test1`` or ``test2``."""
@@ -701,8 +750,9 @@ def test_job(which: str, passthrough: Sequence[str], args,
                    "test2": "test2_rare_efficacy.py"}[which]
     res = TEST_RESOURCES[which]
     passthrough, fold_args = fold_for_tests(passthrough)
+    out_args = out_for_tests(which, passthrough)
     command = (f"python examples/fedpyhealth/{script_name} "
-               + " ".join(list(passthrough) + fold_args)).strip()
+               + " ".join(list(passthrough) + fold_args + out_args)).strip()
     script = render(
         job_name=f"fed-{which}",
         command=command,

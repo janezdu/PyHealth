@@ -138,10 +138,20 @@ function draw() {
   const keys = ordered(Object.keys(s)).filter(k => !hidden.has(k));
   const col = colourOf(Object.keys(s));
 
+  // fedavg_ft runs a per-hospital fine-tuning phase AFTER the last aggregation,
+  // logged separately (loss_ft / loss_val_ft). It belongs on the same timeline
+  // rather than in its own chart: the regime's budget is one continuous run of
+  // n_rounds*local_epochs shared passes followed by ft_epochs local ones, and
+  // the whole point of the arm is what each site does once it stops averaging.
+  // ftAt marks the handover so the shared and personalized halves stay legible.
   const lines = [];
+  let ftAt = null;
   for (const k of keys) {
-    if (show !== "val" && s[k].train) lines.push({k, kind: "train", v: s[k].train, css: col[k]});
-    if (show !== "train" && s[k].val) lines.push({k, kind: "val", v: s[k].val, css: col[k]});
+    const tr = s[k].ft ? (s[k].train || []).concat(s[k].ft) : s[k].train;
+    const va = s[k].val_ft ? (s[k].val || []).concat(s[k].val_ft) : s[k].val;
+    if (s[k].ft && s[k].train) ftAt = (s[k].train.length) / (tr.length - 1 || 1);
+    if (show !== "val" && tr) lines.push({k, kind: "train", v: tr, css: col[k]});
+    if (show !== "train" && va) lines.push({k, kind: "val", v: va, css: col[k]});
   }
   const all = lines.flatMap(l => l.v).filter(v => v > 0);
   const svg = $("plot");
@@ -163,6 +173,13 @@ function draw() {
     g += `<line class="grid" x1="${P.l}" x2="${P.l + iw}" y1="${Y(val)}" y2="${Y(val)}"/>`;
     g += `<text class="tick" x="${P.l - 9}" y="${Y(val) + 4}" text-anchor="end">`
        + `${val < 0.001 ? val.toExponential(0) : val}</text>`;
+  }
+  if (ftAt != null) {
+    const x = P.l + ftAt * iw;
+    g += `<line x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${P.t}" y2="${P.t + ih}" `
+       + `stroke="${cssv('--stop')}" stroke-width="1.2" stroke-dasharray="3 3"/>`;
+    g += `<text class="lab" x="${(x + 5).toFixed(1)}" y="${P.t + 12}" `
+       + `fill="${cssv('--stop')}">fine-tuning starts</text>`;
   }
   for (const l of lines) {
     const d = l.v.map((v, i) => `${i ? "L" : "M"}${X(i, l.v.length).toFixed(1)},${Y(v).toFixed(1)}`).join("");
@@ -240,10 +257,14 @@ function renderLegend(s, col) {
 
 function renderNote(r, s, keys) {
   const pooled = r.val_scope === "pooled";
+  const hasFt = keys.some(k => s[k].ft);
   const noVal = keys.filter(k => s[k].best_idx == null);
   const clean = keys.filter(k => s[k].stopped_after_best > 0);
   $("note").innerHTML = `<b>${$("run").value}</b> — ${keys.length} hospitals. `
-    + (pooled
+    + (pooled && hasFt
+      ? `Validation is <b>cohort-wide</b> during the federated rounds — one global model serves every site, so the same val line is drawn for all of them and only the train curves differ. After the dashed rule each hospital <b>fine-tunes its own copy</b> on its own data, and from there both curves are that hospital's alone. `
+      : "")
+    + (pooled && !hasFt
       ? `This regime trains one global model, so validation is a single <b>cohort-wide</b> curve over all val patients — the same line is drawn for every hospital, and only the train curves differ. `
       : "")
     + (clean.length && !pooled

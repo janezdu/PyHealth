@@ -1,7 +1,7 @@
 #!/bin/bash
 # How much of a training step is spent formatting input rather than learning?
 #
-#   sbatch examples/fedpyhealth/scripts/bench_encode.sbatch
+#   sbatch examples/fedpyhealth/scripts/sbatch/bench_encode.sbatch
 #
 # Before the multi-hot rewrite this reported, at batch 128 on an A100:
 #   encode 13.887 s/batch (84.5%)   fwd+bwd 2.553 s/batch (15.5%)

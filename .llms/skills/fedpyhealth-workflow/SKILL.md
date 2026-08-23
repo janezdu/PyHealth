@@ -46,22 +46,41 @@ Scoring runs on the **val** fold during development. Test is not read by any scr
 export EICU_ROOT=/path/to/eicu-crd/2.0
 export FEDCOHORT_CACHE=/fast/scratch/fedcohort   # optional; defaults under _outputs/
 
-# 1. build both cohort caches once (~1-2h, one job)
-sbatch examples/fedpyhealth/scripts/run_cohort.sh
+# 1. pick hospitals (local, ~2 min, no SLURM)
+python examples/fedpyhealth/utils/hospital_sizes.py --bands 100-1499 --per-band 8 --seed 1
 
-# builds strat8 (rare-code stratified) and strat8_random (plain shuffle) over
-# the same 8 hospitals, then prints the coverage report for each
+# 2. build the cache -- LOCAL PYTHON, never sbatch. It reads CSVs and writes
+#    Parquet; no model, no GPU, and Delta rejects zero-GPU jobs under a
+#    *-delta-gpu account, so an sbatch wrapper must book an idle GPU.
+python examples/fedpyhealth/utils/cohort.py --name <cohort> \
+    --hospitals <ids from step 1> --split random --seed 1 \
+    --out "$FEDCOHORT_CACHE/<cohort>"
+# --report REPLACES the build, it does not follow it -- run it separately:
+python examples/fedpyhealth/utils/cohort.py --report --out "$FEDCOHORT_CACHE/<cohort>"
 
-# 2. train against the cache
-python examples/fedpyhealth/main.py train --profile tiny --dry-run   # inspect first
-python examples/fedpyhealth/main.py all --profile full
+# 3. train the four regimes (+ a chained smoke scoring)
+python examples/fedpyhealth/main.py all --profile full \
+    --config examples/fedpyhealth/sweeps/b128.yaml \
+    --cohort-cache "$FEDCOHORT_CACHE/<cohort>"
 
-# 3. score the saved runs (CPU-cheap: reads the cache, not eICU)
-python examples/fedpyhealth/main.py test1 --run fedavg=_outputs/<run_name>_save
-python examples/fedpyhealth/main.py test2 --run fedavg=_outputs/<run_name>_save
+# 4. score it properly -- the scoring main.py chains has every control OFF and
+#    is a smoke check, not a result. THIS is what produces publishable numbers.
+COHORT=<cohort> sbatch examples/fedpyhealth/scripts/score_cohort.sh
+
+# 5. render
+python examples/fedpyhealth/eda.py fidelity --config examples/fedpyhealth/viz/<cohort>.yaml
 ```
 
-Use `$FEDCOHORT_CACHE/strat8` unless the user explicitly asks for another. Keep the same cache directory across training and evaluation so sample assignment stays identical across regimes.
+The active cohorts are `hilo8_random` (12,156 patients, 4 large + 4 small) and
+`lo8_random` (3,832, all small). **`strat8` / `strat8_random` are retired** --
+two of their sites held only ~115 patients. Keep the same cache directory across
+training and evaluation so sample assignment stays identical across regimes.
+
+**Read `examples/fedpyhealth/notes/RECIPE.md` before running an experiment.** It
+is the standing procedure and explains every control in step 4 -- why synthetic
+is capped at 8,000/hospital, why Test 1 runs against both real targets, and why
+the classifier budget is matched. `notes/CHEATSHEET.md` holds the reference
+numbers.
 
 ## Writing a SLURM job script for this cluster
 

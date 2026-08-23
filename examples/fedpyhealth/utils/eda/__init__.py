@@ -35,8 +35,8 @@ from utils.eda.common import SHARED_DEFAULTS
 
 #: Analysis names, in the order ``--all`` runs them: cheap and dependency-free
 #: first, so a broken cohort cache surfaces before an hour of parquet reads.
-ANALYSES = ("curves", "prevalence_curve", "lengths", "generator_distance",
-            "drift")
+ANALYSES = ("curves", "fidelity", "prevalence_curve", "lengths",
+            "generator_distance", "drift")
 
 _MODULES: Dict[str, object] = {}
 

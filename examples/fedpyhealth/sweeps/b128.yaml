@@ -1,0 +1,10 @@
+# batch_size 128. The standing choice for every cohort.
+#
+# PROFILES["full"] defaults to 256, but every result in this project so far
+# was produced at 128. The rare-upweighting experiment is a comparison against
+# those runs, so batch size has to be held fixed or a difference in the result
+# could be either the weighting or the batch size and there would be no way to
+# tell. The encode rewrite also removed the throughput reason for preferring
+# 256: measured steady state is 0.195 ms/patient at 128 against 0.187 at 256.
+profile: full
+batch_size: 128

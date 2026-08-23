@@ -12,7 +12,7 @@ and it rebuilds each generator from its ``.pt`` checkpoint, samples, and writes
 run's synthetic output becomes a ~13-minute job instead of a re-train.
 
     python examples/fedpyhealth/generate.py \\
-        --save-dir _outputs/local_full_strat8_random_save \\
+        --save-dir _outputs/local_full_hilo8_random_save \\
         --synth-per-hospital 4000
 
 What lives where, per regime:

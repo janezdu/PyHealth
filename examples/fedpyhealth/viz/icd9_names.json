@@ -123,6 +123,14 @@
 "name": "Malignant neoplasm of bronchus and lung, unspecified",
 "system": "ICD9CM"
 },
+"170.9": {
+"name": "Malignant neoplasm of bone and articular cartilage, site unspecified",
+"system": "ICD9CM"
+},
+"171.9": {
+"name": "Malignant neoplasm of connective and other soft tissue, site unspecified",
+"system": "ICD9CM"
+},
 "172.9": {
 "name": "Melanoma of skin, site unspecified",
 "system": "ICD9CM"
@@ -245,6 +253,10 @@
 },
 "205.11": {
 "name": "Chronic myeloid leukemia, in remission",
+"system": "ICD9CM"
+},
+"212.7": {
+"name": "Benign neoplasm of heart",
 "system": "ICD9CM"
 },
 "238.7": {
@@ -407,6 +419,14 @@
 "name": "Hypopotassemia",
 "system": "ICD9CM"
 },
+"276.9": {
+"name": "Electrolyte and fluid disorders not elsewhere classified",
+"system": "ICD9CM"
+},
+"277.02": {
+"name": "Cystic fibrosis with pulmonary manifestations",
+"system": "ICD9CM"
+},
 "278.00": {
 "name": "Obesity, unspecified",
 "system": "ICD9CM"
@@ -525,6 +545,10 @@
 },
 "294.10": {
 "name": "Dementia in conditions classified elsewhere without behavioral disturbance",
+"system": "ICD9CM"
+},
+"294.8": {
+"name": "Other persistent mental disorders due to conditions classified elsewhere",
 "system": "ICD9CM"
 },
 "294.9": {
@@ -727,6 +751,10 @@
 "name": "Unspecified essential hypertension",
 "system": "ICD9CM"
 },
+"402.01": {
+"name": "Malignant hypertensive heart disease with heart failure",
+"system": "ICD9CM"
+},
 "402.91": {
 "name": "Unspecified hypertensive heart disease with heart failure",
 "system": "ICD9CM"
@@ -757,6 +785,10 @@
 },
 "410.51": {
 "name": "Acute myocardial infarction of other lateral wall, initial episode of care",
+"system": "ICD9CM"
+},
+"410.61": {
+"name": "True posterior wall infarction, initial episode of care",
 "system": "ICD9CM"
 },
 "410.70": {
@@ -813,6 +845,10 @@
 },
 "420.90": {
 "name": "Acute pericarditis, unspecified",
+"system": "ICD9CM"
+},
+"420.91": {
+"name": "Acute idiopathic pericarditis",
 "system": "ICD9CM"
 },
 "421.0": {
@@ -987,6 +1023,10 @@
 "name": "Heart failure, unspecified",
 "system": "ICD9CM"
 },
+"429.79": {
+"name": "Certain sequelae of myocardial infarction, not elsewhere classified, other",
+"system": "ICD9CM"
+},
 "430": {
 "name": "Subarachnoid hemorrhage",
 "system": "ICD9CM"
@@ -1017,6 +1057,10 @@
 },
 "436": {
 "name": "Acute, but ill-defined, cerebrovascular disease",
+"system": "ICD9CM"
+},
+"437.2": {
+"name": "Hypertensive encephalopathy",
 "system": "ICD9CM"
 },
 "437.3": {
@@ -1095,6 +1139,10 @@
 "name": "Atheroembolism of other site",
 "system": "ICD9CM"
 },
+"446.4": {
+"name": "Wegener's granulomatosis",
+"system": "ICD9CM"
+},
 "446.5": {
 "name": "Giant cell arteritis",
 "system": "ICD9CM"
@@ -1153,6 +1201,10 @@
 },
 "466.0": {
 "name": "Acute bronchitis",
+"system": "ICD9CM"
+},
+"466.19": {
+"name": "Acute bronchiolitis due to other infectious organisms",
 "system": "ICD9CM"
 },
 "478.22": {
@@ -1257,6 +1309,10 @@
 },
 "511.9": {
 "name": "Unspecified pleural effusion",
+"system": "ICD9CM"
+},
+"512.0": {
+"name": "Spontaneous tension pneumothorax",
 "system": "ICD9CM"
 },
 "512.1": {
@@ -1437,6 +1493,10 @@
 },
 "567.23": {
 "name": "Spontaneous bacterial peritonitis",
+"system": "ICD9CM"
+},
+"567.38": {
+"name": "Other retroperitoneal abscess",
 "system": "ICD9CM"
 },
 "567.9": {
@@ -1639,6 +1699,10 @@
 "name": "Pemphigus",
 "system": "ICD9CM"
 },
+"695.1": {
+"name": "Erythema multiforme",
+"system": "ICD9CM"
+},
 "707.00": {
 "name": "Pressure ulcer, unspecified site",
 "system": "ICD9CM"
@@ -1837,6 +1901,10 @@
 },
 "789.60": {
 "name": "Abdominal tenderness, unspecified site",
+"system": "ICD9CM"
+},
+"790.4": {
+"name": "Nonspecific elevation of levels of transaminase or lactic acid dehydrogenase [LDH]",
 "system": "ICD9CM"
 },
 "790.5": {
@@ -2191,6 +2259,10 @@
 "name": "Injury to celiac and mesenteric arteries, unspecified",
 "system": "ICD9CM"
 },
+"904.0": {
+"name": "Injury to common femoral artery",
+"system": "ICD9CM"
+},
 "935.1": {
 "name": "Foreign body in esophagus",
 "system": "ICD9CM"
@@ -2251,6 +2323,10 @@
 "name": "Poisoning by benzodiazepine-based tranquilizers",
 "system": "ICD9CM"
 },
+"972.1": {
+"name": "Poisoning by cardiotonic glycosides and drugs of similar action",
+"system": "ICD9CM"
+},
 "977.9": {
 "name": "Poisoning by unspecified drug or medicinal substance",
 "system": "ICD9CM"
@@ -2269,6 +2345,10 @@
 },
 "995.0": {
 "name": "Other anaphylactic reaction",
+"system": "ICD9CM"
+},
+"995.2": {
+"name": "Other and unspecified adverse effect of drug, medicinal and biological substance",
 "system": "ICD9CM"
 },
 "995.90": {
@@ -2307,12 +2387,24 @@
 "name": "Complications of transplanted liver",
 "system": "ICD9CM"
 },
+"996.83": {
+"name": "Complications of transplanted heart",
+"system": "ICD9CM"
+},
+"996.84": {
+"name": "Complications of transplanted lung",
+"system": "ICD9CM"
+},
 "996.85": {
 "name": "Complications of transplanted bone marrow",
 "system": "ICD9CM"
 },
 "996.86": {
 "name": "Complications of transplanted pancreas",
+"system": "ICD9CM"
+},
+"997.02": {
+"name": "Iatrogenic cerebrovascular infarction or hemorrhage",
 "system": "ICD9CM"
 },
 "997.09": {
@@ -2325,6 +2417,10 @@
 },
 "997.79": {
 "name": "Vascular complications of other vessels",
+"system": "ICD9CM"
+},
+"998.0": {
+"name": "Postoperative shock",
 "system": "ICD9CM"
 },
 "998.11": {

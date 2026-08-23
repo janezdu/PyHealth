@@ -1,4 +1,4 @@
-# EDA config -- the standing settings for the frozen strat8_random cohort.
+# EDA config -- the standing settings for the active cohort (hilo8_random).
 #
 #   cd examples/fedpyhealth
 #   python eda.py --all --config configs/eda.yaml
@@ -16,14 +16,19 @@
 analyses: [prevalence_curve, lengths]
 
 # ---- shared ---------------------------------------------------------------
-# cohort_cache: leave unset to use utils/cohort.py's DEFAULT_CACHE_DIR (the
-# frozen strat8_random cache). Set it to point at a different frozen cohort.
+# cohort_cache: set explicitly rather than relying on DEFAULT_CACHE_DIR, whose
+# $FEDCOHORT_NAME default still names the retired strat8_random. Point it at
+# whichever frozen cohort you mean -- $FEDCOHORT_CACHE/lo8_random for the
+# all-small cohort.
+cohort_cache: ${FEDCOHORT_CACHE}/hilo8_random
 out: _outputs/eda          # CSV/JSON artifacts; gitignored
 html: true                 # render the viz/ pages
 
 # Which fold's support decides the scored code list. Must match test2's --fold
-# so the EDA and the result it explains describe the same codes.
-code_fold: val
+# so the EDA and the result it explains describe the same codes. The recipe
+# scores on TEST (notes/RECIPE.md stage 3), so this is test, not the val the
+# test scripts still default to on their own.
+code_fold: test
 min_positives: 1
 
 # ---- per analysis ---------------------------------------------------------
@@ -42,7 +47,7 @@ prevalence_curve:
 
 generator_distance:
   outputs: _outputs
-  suffix: _full_strat8_random_save
+  suffix: _full_hilo8_random_save
   real_fold: train
   # true restricts the prevalence vector to pooled rare codes, so the head
   # codes every generator gets right stop dominating the distances.
@@ -50,5 +55,5 @@ generator_distance:
   # runs: ["ft25=_outputs/ftsweep_e25_lr3e-4_save", ...]   # sweep dirs
 
 drift:
-  save_dir: _outputs/fedavg_ft_full_strat8_random_save
+  save_dir: _outputs/fedavg_ft_full_hilo8_random_save
   top_layers: 12

@@ -304,7 +304,21 @@ class HALOModel(nn.Module):
         ehr_masks=None,
         past=None,
         pos_loss_weight=None,
+        sample_weights=None,
     ):
+        """Args:
+            sample_weights: Optional ``(batch,)`` tensor scaling each patient's
+                contribution to the loss. Multiplies whatever ``pos_loss_weight``
+                already does, so the two compose: ``pos_loss_weight`` says which
+                CODES matter more, ``sample_weights`` says which PATIENTS do.
+                NOT self-normalising: ``BCELoss`` with ``reduction="mean"``
+                divides by the ELEMENT COUNT, not by the sum of weights, so
+                scaling every weight by c scales the loss and its gradient by c
+                too. Normalise the weights to mean 1 unless you intend to change
+                the effective learning rate along with the weighting -- otherwise
+                a weighted run is not comparable to an unweighted one and the
+                difference cannot be attributed to the weighting.
+        """
         hidden_states = self.transformer(input_visits, position_ids, past)
         code_logits = self.ehr_head(hidden_states, input_visits)
         sig = nn.Sigmoid()
@@ -317,6 +331,13 @@ class HALOModel(nn.Module):
                     code_probs.shape, device=code_probs.device
                 )
                 loss_weights = loss_weights + (pos_loss_weight - 1) * shift_labels
+            if sample_weights is not None:
+                # (batch,) -> (batch, 1, 1) so it scales every position and code
+                # of that patient equally. Built here rather than by the caller
+                # so the caller never has to know the label tensor's shape.
+                w = sample_weights.to(code_probs.device).view(-1, 1, 1)
+                loss_weights = w.expand_as(code_probs).clone() \
+                    if loss_weights is None else loss_weights * w
             if ehr_masks is not None:
                 code_probs = code_probs * ehr_masks
                 shift_labels = shift_labels * ehr_masks
@@ -569,7 +590,9 @@ class HALO(BaseModel):
         return torch.device(device)
 
     def train_model(self, train_dataset, val_dataset=None, device=None,
-                    on_epoch_end: Callable[[int, float], None] = None) -> None:
+                    on_epoch_end: Callable[[int, float], None] = None,
+                    sample_weight_fn: Callable[[dict], "torch.Tensor"] = None
+                    ) -> None:
         """Train the HALO model with a custom loop.
 
         Named ``train_model`` (not ``train``) to avoid shadowing
@@ -581,6 +604,14 @@ class HALO(BaseModel):
         Args:
             train_dataset: ``SampleDataset`` for training.
             val_dataset: Optional ``SampleDataset`` for validation.
+            sample_weight_fn: Optional ``batch -> (batch_size,)`` tensor giving
+                each patient's weight in the loss. Called once per batch on the
+                raw collated batch, so it can key off any field the dataset
+                carries. ``None`` (or returning ``None``) trains unweighted,
+                which is the default and leaves existing callers unchanged.
+                Validation is deliberately NOT weighted: val loss is a
+                model-selection signal and has to stay comparable to runs that
+                weighted differently, or across a change in the weighting rule.
             device: Device to train on, e.g. ``"cuda"``, ``"cuda:1"``, or
                 ``"cpu"``. If ``None`` (default), uses CUDA when available and
                 falls back to CPU.
@@ -621,6 +652,16 @@ class HALO(BaseModel):
                 visits = batch["visits"].to(self.device)
                 batch_ehr, batch_mask = self._encode_visits(visits)
 
+                # The weighting POLICY lives in the caller, not here: this loop
+                # only knows that some patients may count for more than others.
+                # Derived from the batch rather than carried as a dataset field,
+                # so no cached dataset has to be rebuilt to try a new rule.
+                sw = None
+                if sample_weight_fn is not None:
+                    sw = sample_weight_fn(batch)
+                    if sw is not None:
+                        sw = sw.to(self.device)
+
                 optimizer.zero_grad()
                 loss, _, _ = self.halo_model(
                     batch_ehr,
@@ -628,6 +669,7 @@ class HALO(BaseModel):
                     ehr_labels=batch_ehr,
                     ehr_masks=batch_mask,
                     pos_loss_weight=self.config.pos_loss_weight,
+                    sample_weights=sw,
                 )
                 loss.backward()
                 optimizer.step()

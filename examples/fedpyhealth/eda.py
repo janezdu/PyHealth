@@ -23,7 +23,7 @@ Usage
 
     python eda.py                              # prevalence_curve + lengths
     python eda.py --list                       # what exists, and what it costs
-    python eda.py drift --save-dir _outputs/fedavg_ft_full_strat8_random_save
+    python eda.py drift --save-dir _outputs/fedavg_ft_full_hilo8_random_save
     python eda.py --all --config configs/eda.yaml
     python eda.py lengths --data-fold test --mask-folds 8
 
@@ -47,6 +47,7 @@ are GPU-type, and Delta refuses a no-GPU job under one)::
 """
 
 import argparse
+import os
 import sys
 
 from utils.eda import ANALYSES, check_keys, load, resolve
@@ -119,7 +120,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         "convention")
     g.add_argument("--suffix",
                    help="run directory suffix, appended to each regime name "
-                        "(default: _full_strat8_random_save)")
+                        "(default: _full_hilo8_random_save)")
     g.add_argument("--outputs",
                    help="directory holding the <regime><suffix> run dirs "
                         "(default: _outputs)")
@@ -149,6 +150,28 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _expand(value):
+    """Expand ``$VAR`` / ``${VAR}`` in every string, recursively.
+
+    Data paths differ per machine and are credentialed, so a config has to be
+    able to say ``${FEDCOHORT_CACHE}/hilo8_random`` rather than baking someone's
+    scratch path into a committed file (see .llms/rules/03-data-safety.md).
+    Without this the reference survives as a literal and the analysis fails on a
+    path that does not exist -- or worse, silently reads the wrong directory.
+
+    An undefined variable is left as written, which ``os.path.expandvars``
+    already does; the caller's "no such file" error then still names the
+    unexpanded text, which is the readable failure.
+    """
+    if isinstance(value, str):
+        return os.path.expandvars(value)
+    if isinstance(value, dict):
+        return {k: _expand(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_expand(v) for v in value]
+    return value
+
+
 def _load_yaml(path: str) -> dict:
     """Load the config YAML into a dict (empty file -> {})."""
     import yaml  # lazy: only needed when --config is used
@@ -158,7 +181,7 @@ def _load_yaml(path: str) -> dict:
         raise SystemExit(
             f"config {path} must be a mapping of key: value, got "
             f"{type(cfg).__name__}.")
-    return cfg
+    return _expand(cfg)
 
 
 def _cli_overrides(args: argparse.Namespace) -> dict:

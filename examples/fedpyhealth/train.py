@@ -226,10 +226,29 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                    help="resume from the on-disk checkpoint if present (all "
                         "four regimes checkpoint; local keeps one file per "
                         "hospital and skips the ones already finished)")
+    p.add_argument("--rare-upweight", action="store_true", default=None,
+                   help="weight each patient's loss by the rarity of the codes "
+                        "they carry AT THEIR OWN HOSPITAL: w = 1 + sum of "
+                        "1/local_prevalence over that site's rare codes the "
+                        "patient has, capped at the site's 99th percentile and "
+                        "normalised to mean 1. Applies to every regime, keyed "
+                        "on patient_id, so the pooled centralized arm still "
+                        "weights each patient by their own site's view. Off by "
+                        "default; run_name gets a _rw suffix so weighted and "
+                        "unweighted runs never share a save_dir.")
     p.add_argument("--ckpt-every", type=int, default=None,
                    help="checkpoint frequency, in rounds for fedavg/fedavg_ft "
                         "and in epochs for centralized/local (1=every one); the "
                         "last is always checkpointed (default: 1)")
+    p.add_argument("--snapshot-every", type=int, default=None,
+                   help="centralized only: ALSO keep a numbered, never-"
+                        "overwritten copy of the weights every N epochs "
+                        "(centralized_epoch<NNNN>.pt). --ckpt-every rewrites one "
+                        "rolling file, which is right for resuming and useless "
+                        "for asking what the model looked like earlier -- and "
+                        "that question is the only way to test whether long "
+                        "training degrades SAMPLING while val loss keeps "
+                        "falling. Costs ~25 MB per snapshot.")
     p.add_argument("--tb-logdir",
                    help="TensorBoard log dir (default: <save_dir>/tb). "
                         "Logs per-hospital train-loss curves.")
@@ -285,6 +304,10 @@ def make_run_name(cfg: dict) -> str:
     # never clobber the sample-weighted ones (sample weighting keeps the old name).
     if cfg.get("weighting", "sample") == "uniform":
         name += "_uniform"
+    # Rare-upweighting changes what the generator optimises, so it must not
+    # share a save_dir, a checkpoint or a results row with the plain run.
+    if cfg.get("rare_upweight"):
+        name += "_rw"
     return name
 
 
@@ -341,6 +364,8 @@ def build_config(argv: List[str] = None) -> dict:
         "regime": args.regime, "weighting": args.weighting,
         "resume": args.resume, "cohort_cache": args.cohort_cache,
         "ckpt_every": args.ckpt_every,
+        "snapshot_every": args.snapshot_every,
+        "rare_upweight": args.rare_upweight,
         "tb_logdir": args.tb_logdir, "no_tb": args.no_tb,
         "log_every_epochs": args.log_every_epochs,
         "n_rounds": args.n_rounds, "local_epochs": args.local_epochs,
@@ -362,6 +387,8 @@ def build_config(argv: List[str] = None) -> dict:
     cfg.setdefault("resume", False)
     cfg.setdefault("cohort_cache", DEFAULT_CACHE_DIR)
     cfg.setdefault("ckpt_every", 1)
+    cfg.setdefault("snapshot_every", 0)      # 0 = keep no numbered snapshots
+    cfg.setdefault("rare_upweight", False)
     cfg.setdefault("tb_logdir", None)
     cfg.setdefault("no_tb", False)
     cfg.setdefault("log_every_epochs", 1)
@@ -711,6 +738,7 @@ def run_fedavg(
     split_sha: str = None,
     val_dataset=None,
     stopper: "EarlyStopper" = None,
+    sample_weight_fn=None,
 ) -> object:
     """Train ``model`` with FedAvg across ``clients`` for ``n_rounds`` rounds.
 
@@ -798,7 +826,8 @@ def run_fedavg(
                     writer.add_scalar(f"loss_train/hospital_{cid}", mean_loss, step)
 
             model.train_model(clients[cid], val_dataset=None, device=device,
-                              on_epoch_end=_on_epoch_end)
+                              on_epoch_end=_on_epoch_end,
+                              sample_weight_fn=sample_weight_fn)
             snapshots.append(_snapshot(model))
             weights.append(1.0 if weighting == "uniform" else float(sizes[cid]))
             log(f"  round {r + 1}/{n_rounds}  client {cid}  (n={sizes[cid]}) done")
@@ -832,12 +861,29 @@ def run_fedavg(
     # Restoring the best global state is the half of early stopping that is
     # easy to leave out: without it the run stops early AND keeps the worse
     # weights it stopped on, which is strictly worse than not stopping.
+    #
+    # Two things the obvious version gets wrong, both because `best_step` counts
+    # rounds within THIS invocation -- a resumed run builds a fresh stopper, so
+    # its counter restarts at zero and is NOT a round number in the run's own
+    # timeline:
+    #
+    #   * the checkpoint is stamped with the FULL budget, not with the best
+    #     step. Early stopping means the remaining rounds are deliberately not
+    #     wanted, so a resume must skip them rather than train them again. On a
+    #     resumed run, stamping `best_step` also moves the checkpoint BACKWARDS
+    #     -- a run resuming at round 32 and finishing 18 more would record 18 in
+    #     place of 50, and the next resume would redo 32 rounds it already had.
+    #     This matches train_centralized, which stamps total_epochs for the same
+    #     reason.
+    #   * the log reports the ABSOLUTE round, so "best at round 37" means round
+    #     37 of the experiment rather than the 5th round of whatever the last
+    #     job happened to run.
     if stopper is not None and stopper.best_state is not None:
+        best_round = start_round + stopper.best_step
         model.load_state_dict(stopper.best_state)
         if ckpt_path:
-            _save_ckpt(ckpt_path, stopper.best_step, stopper.best_state,
-                       fingerprint)
-        log(f"FedAvg: restored best global (round {stopper.best_step}, val "
+            _save_ckpt(ckpt_path, n_rounds, stopper.best_state, fingerprint)
+        log(f"FedAvg: restored best global (round {best_round}/{n_rounds}, val "
             f"{stopper.best_score:.4f})")
 
     return model
@@ -876,7 +922,9 @@ def train_centralized(model, pooled_train, device: str = "cpu", writer=None,
                       total_epochs: int = None, ckpt_path: str = None,
                       ckpt_every: int = 1, resume: bool = False,
                       fingerprint: dict = None, val_dataset=None,
-                      stopper: "EarlyStopper" = None) -> object:
+                      stopper: "EarlyStopper" = None,
+                      snapshot_every: int = 0,
+                      sample_weight_fn=None) -> object:
     """Train ONE model on the pooled (all-hospital) train data. Returns it.
 
     Checkpointing is epoch-granular rather than round-granular (there are no
@@ -916,6 +964,16 @@ def train_centralized(model, pooled_train, device: str = "cpu", writer=None,
         if ckpt_path and (done % ckpt_every == 0 or done == total_epochs):
             _save_ckpt(ckpt_path, done, _snapshot(model), fingerprint,
                        key="completed_epochs")
+        # A numbered copy that nothing later overwrites. The rolling checkpoint
+        # answers "where do I resume"; this answers "what did the model look
+        # like at epoch N", which is the only way to compare SAMPLING behaviour
+        # across training when the loss curve is flat.
+        if ckpt_path and snapshot_every and done % snapshot_every == 0:
+            snap = os.path.join(os.path.dirname(ckpt_path),
+                                f"centralized_epoch{done:04d}.pt")
+            _save_ckpt(snap, done, _snapshot(model), fingerprint,
+                       key="completed_epochs")
+            log(f"  snapshot -> {snap}")
 
         if val_dataset is None or stopper is None:
             log(f"  centralized  epoch {done}/{total_epochs}  "
@@ -935,7 +993,8 @@ def train_centralized(model, pooled_train, device: str = "cpu", writer=None,
     # the remaining epoch count rather than the original budget.
     model._epochs = total_epochs - start_epoch
     model.train_model(pooled_train, val_dataset=None, device=device,
-                      on_epoch_end=_on_epoch_end)
+                      on_epoch_end=_on_epoch_end,
+                      sample_weight_fn=sample_weight_fn)
     if stopper is not None:
         log(f"Centralized: {stopper.summary()}")
         if stopper.best_state is not None:
@@ -994,6 +1053,7 @@ def train_local(
     fingerprint: dict = None,
     val_clients: Dict[str, object] = None,
     es_cfg: dict = None,
+    sample_weight_fn=None,
 ) -> Dict[str, object]:
     """Train an INDEPENDENT model per hospital on its own data (no averaging).
 
@@ -1058,7 +1118,8 @@ def train_local(
 
         m._epochs = epochs - start_epoch
         m.train_model(train_subset, val_dataset=None, device=device,
-                      on_epoch_end=_on_epoch_end)
+                      on_epoch_end=_on_epoch_end,
+                      sample_weight_fn=sample_weight_fn)
         if stopper is not None:
             log(f"  {hid}: {stopper.summary()}")
             if stopper.best_state is not None:
@@ -1082,6 +1143,7 @@ def finetune_local(
     fingerprint: dict = None,
     val_clients: Dict[str, object] = None,
     es_cfg: dict = None,
+    sample_weight_fn=None,
 ) -> Dict[str, object]:
     """FedAvg + fine-tuning: personalize the shared global model per hospital.
 
@@ -1142,7 +1204,8 @@ def finetune_local(
             return False if stop else None
 
         m.train_model(train_subset, val_dataset=None, device=device,
-                      on_epoch_end=_on_epoch_end)
+                      on_epoch_end=_on_epoch_end,
+                      sample_weight_fn=sample_weight_fn)
         if stopper is not None:
             log(f"  {hid}: {stopper.summary()}")
             # The warm start means epoch 0 can already be the best the site
@@ -1406,6 +1469,24 @@ if __name__ == "__main__":
     # client_synth[hid] = the synthetic set scored against hospital `hid` in the
     # per-client eval (STEP 7). For fedavg/centralized that's the single global
     # model's output (shared by all); for local it's that hospital's OWN model.
+    # Rare-upweighting, built ONCE from the train fold and shared by every
+    # regime, so the four arms differ only in how they train -- not in what
+    # they consider rare. Keyed on patient_id, which every regime's batches
+    # carry, so the pooled centralized arm weights each patient by their own
+    # hospital's view exactly as the federated clients do.
+    sample_weight_fn = None
+    if cfg["rare_upweight"]:
+        from utils.rare_weights import make_weight_fn, patient_weights
+        print("\nRare-upweighting: w = 1 + sum(rare_threshold / "
+              "local_prevalence) over each patient's\n  own-site rare codes, "
+              "capped at 20x the no-rare-code baseline, normalised to mean 1 "
+              "per site")
+        pw = patient_weights(cache, fold="train")
+        sample_weight_fn = make_weight_fn(pw, device=device)
+        print(f"  {len(pw)} patients weighted")
+    else:
+        print("\nRare-upweighting: OFF -- every patient counts equally")
+
     client_synth: Dict[str, List[Dict]] = {}
     try:
         if regime == "local":
@@ -1416,7 +1497,8 @@ if __name__ == "__main__":
                                  total_epochs=total_epochs, ckpt_dir=save_dir,
                                  ckpt_every=cfg["ckpt_every"],
                                  resume=cfg["resume"], fingerprint=fingerprint,
-                                 val_clients=client_vals, es_cfg=es_cfg)
+                                 val_clients=client_vals, es_cfg=es_cfg,
+                                 sample_weight_fn=sample_weight_fn)
             num_params = sum(p.numel()
                              for p in next(iter(models.values())).parameters())
             print(f"Each model: {num_params} parameters")
@@ -1441,11 +1523,13 @@ if __name__ == "__main__":
                     ckpt_path=os.path.join(save_dir, "centralized_state.pt"),
                     ckpt_every=cfg["ckpt_every"], resume=cfg["resume"],
                     fingerprint=fingerprint,
+                    snapshot_every=cfg["snapshot_every"],
                     val_dataset=pooled_val if es_cfg else None,
                     stopper=(EarlyStopper(cfg["es_patience"],
                                           cfg["es_min_delta"],
                                           cfg["es_min_steps"])
-                             if es_cfg else None))
+                             if es_cfg else None),
+                    sample_weight_fn=sample_weight_fn)
             else:  # fedavg or fedavg_ft -- both start with a FedAvg run
                 print(f"Regime: {regime} -- {len(clients)} clients, "
                       f"{cfg['local_epochs']} local epochs x {fed_rounds} rounds"
@@ -1470,7 +1554,8 @@ if __name__ == "__main__":
                            stopper=(EarlyStopper(cfg["es_patience"],
                                                  cfg["es_min_delta"],
                                                  cfg["es_min_steps"])
-                                    if es_cfg else None))
+                                    if es_cfg else None),
+                           sample_weight_fn=sample_weight_fn)
             # STEP 5: generate synthetic patients from the single global/server
             # model. For fedavg_ft this stays the SHARED global model's output, so
             # the global eval (STEP 6) is directly comparable to plain fedavg.
@@ -1497,7 +1582,8 @@ if __name__ == "__main__":
                     global_state, lambda: build_model(cfg["ft_epochs"]),
                     clients, device=device, writer=writer,
                     ckpt_dir=save_dir, fingerprint=fingerprint,
-                    val_clients=client_vals, es_cfg=es_cfg)
+                    val_clients=client_vals, es_cfg=es_cfg,
+                    sample_weight_fn=sample_weight_fn)
                 _, client_synth = generate_local(
                     ft_models, sizes, cfg["num_synth"],
                     cfg["synth_per_hospital"], device=device)
