@@ -161,3 +161,5 @@ examples/fedpyhealth/cohorts/*.json
 # Legacy selection record (ids + size stats, no patient ids). Predates the
 # naming scheme; keeps its name because sweep configs and run names cite it.
 !examples/fedpyhealth/cohorts/standard_8.json
+# Overleaf/GitHub paper repo (separate git repo)
+/paper/
