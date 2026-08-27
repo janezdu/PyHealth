@@ -305,8 +305,17 @@ class HALOModel(nn.Module):
         past=None,
         pos_loss_weight=None,
         sample_weights=None,
+        irm_scale=None,
     ):
         """Args:
+            irm_scale: Optional scalar tensor multiplying the output logits --
+                the dummy classifier ``w`` of IRMv1. Left at ``None`` (i.e. 1.0)
+                this changes nothing. Pass a ``requires_grad=True`` scalar and
+                differentiate the returned loss with respect to it to get
+                ``grad_{w|w=1} R``, whose square is the IRM penalty. It scales
+                the LOGITS, not the parameters: IRM's ``w`` is a classifier
+                stacked on the representation, and scaling ``theta`` instead
+                would be a different (and much less meaningful) quantity.
             sample_weights: Optional ``(batch,)`` tensor scaling each patient's
                 contribution to the loss. Multiplies whatever ``pos_loss_weight``
                 already does, so the two compose: ``pos_loss_weight`` says which
@@ -321,6 +330,8 @@ class HALOModel(nn.Module):
         """
         hidden_states = self.transformer(input_visits, position_ids, past)
         code_logits = self.ehr_head(hidden_states, input_visits)
+        if irm_scale is not None:
+            code_logits = code_logits * irm_scale
         sig = nn.Sigmoid()
         code_probs = sig(code_logits)
         if ehr_labels is not None:
@@ -589,10 +600,81 @@ class HALO(BaseModel):
             return torch.device("cuda" if torch.cuda.is_available() else "cpu")
         return torch.device(device)
 
+    def _irm_terms(self, batch_ehr, batch_mask, sample_weights=None):
+        """Risk and unbiased IRMv1 penalty for one batch.
+
+        IRMv1 penalises how far the dummy classifier ``w=1`` is from optimal for
+        this environment: ``P = (d/dw R(w * logits))^2`` at ``w = 1``. Zero
+        penalty in every environment at once means one classifier is
+        simultaneously optimal everywhere, which is the invariance IRM wants.
+
+        **Why the batch is split in half.** The naive estimator squares a
+        minibatch gradient, and ``E[g^2] != (E[g])^2`` -- the gap is the
+        gradient's variance, so the naive penalty is biased UPWARD by exactly
+        the minibatch noise, and the model can minimise it by making its
+        gradients noisy rather than by becoming invariant. Two disjoint halves
+        give independent estimates ``g1``, ``g2`` whose product is unbiased for
+        ``(E[g])^2``. This is what the IRM reference implementation does, and
+        skipping it is the usual reason an IRM run does nothing.
+
+        The estimator stays unbiased but gets noisier as the batch shrinks, and
+        it is a PRODUCT of two estimates, so it can come out negative. That is
+        expected, not a bug -- it means the two halves disagreed on the sign,
+        i.e. there is no reliable gradient to penalise. Do not clamp it; the
+        noise averages out across batches and clamping would reintroduce the
+        upward bias the split exists to remove.
+
+        Args:
+            batch_ehr: Encoded multi-hot visits, ``(batch, n_ctx, vocab)``.
+            batch_mask: Visit mask from ``_encode_visits``.
+            sample_weights: Optional ``(batch,)`` per-patient weights.
+
+        Returns:
+            ``(risk, penalty)`` -- both scalar tensors carrying grad. ``risk``
+            is the mean of the two halves' losses, which equals the full-batch
+            loss over the samples used (both halves are padded to the same
+            shape, so ``BCELoss``'s element-count mean matches).
+
+        Raises:
+            ValueError: If the batch holds fewer than 2 patients, which cannot
+                be split.
+        """
+        n = int(batch_ehr.shape[0])
+        if n < 2:
+            raise ValueError(
+                f"IRM needs at least 2 patients per batch to split, got {n}. "
+                "Lower --batch-size so the smallest hospital still fills a "
+                "batch, or drop --irm for this run."
+            )
+        half = n // 2   # an odd batch drops one patient; halves must match
+        risks, grads = [], []
+        for sl in (slice(0, half), slice(half, 2 * half)):
+            w = torch.ones(1, device=batch_ehr.device, requires_grad=True)
+            sw = None if sample_weights is None else sample_weights[sl]
+            loss, _, _ = self.halo_model(
+                batch_ehr[sl],
+                position_ids=None,
+                ehr_labels=batch_ehr[sl],
+                ehr_masks=batch_mask[sl],
+                pos_loss_weight=self.config.pos_loss_weight,
+                sample_weights=sw,
+                irm_scale=w,
+            )
+            # create_graph=True keeps the penalty differentiable w.r.t. theta --
+            # without it the penalty is a constant and contributes no gradient,
+            # which fails silently. It makes the backward second-order and is
+            # the main cost of turning IRM on.
+            grads.append(torch.autograd.grad(loss, [w], create_graph=True)[0])
+            risks.append(loss)
+        risk = (risks[0] + risks[1]) / 2
+        penalty = (grads[0] * grads[1]).sum()
+        return risk, penalty
+
+
     def train_model(self, train_dataset, val_dataset=None, device=None,
                     on_epoch_end: Callable[[int, float], None] = None,
-                    sample_weight_fn: Callable[[dict], "torch.Tensor"] = None
-                    ) -> None:
+                    sample_weight_fn: Callable[[dict], "torch.Tensor"] = None,
+                    irm_rho=0.0) -> None:
         """Train the HALO model with a custom loop.
 
         Named ``train_model`` (not ``train``) to avoid shadowing
@@ -604,6 +686,24 @@ class HALO(BaseModel):
         Args:
             train_dataset: ``SampleDataset`` for training.
             val_dataset: Optional ``SampleDataset`` for validation.
+            irm_rho: IRMv1 penalty weight -- a float, or a callable
+                ``epoch -> float`` when it varies across the epochs of ONE call.
+                Both forms exist because the regimes call this differently:
+                FedAvg calls it once per client per round and resolves the round
+                schedule itself (a float), while centralized/local call it once
+                for the whole run and need the warmup resolved per epoch here
+                (a callable). ``0.0`` (default) trains the plain
+                risk and costs nothing. Above zero each step optimises
+                ``risk + irm_rho * penalty`` (see :meth:`_irm_terms`), which
+                needs a second-order backward and roughly doubles step cost.
+                Resolve any warmup SCHEDULE in the caller and pass the value for
+                this round: keeping the schedule out of here means the model
+                holds no training-progress state, which matters because FedAvg
+                builds a fresh optimizer and calls this once per client per
+                round, so anything counted here would reset 400 times.
+                After each epoch ``self.last_irm`` holds that epoch's mean
+                ``{"risk", "penalty", "rho"}`` -- read it from ``on_epoch_end``
+                to log the two terms as separate curves.
             sample_weight_fn: Optional ``batch -> (batch_size,)`` tensor giving
                 each patient's weight in the loss. Called once per batch on the
                 raw collated batch, so it can key off any field the dataset
@@ -645,9 +745,11 @@ class HALO(BaseModel):
 
         global_loss = 1e10
         for epoch in tqdm(range(self._epochs), desc="Epochs"):
+            rho = float(irm_rho(epoch)) if callable(irm_rho) else float(irm_rho)
             self.halo_model.train()
             batch_iter = tqdm(train_loader, desc=f"Epoch {epoch}", leave=False)
             epoch_loss_sum, epoch_batches = 0.0, 0
+            epoch_risk_sum, epoch_penalty_sum = 0.0, 0.0
             for batch in batch_iter:
                 visits = batch["visits"].to(self.device)
                 batch_ehr, batch_mask = self._encode_visits(visits)
@@ -663,19 +765,45 @@ class HALO(BaseModel):
                         sw = sw.to(self.device)
 
                 optimizer.zero_grad()
-                loss, _, _ = self.halo_model(
-                    batch_ehr,
-                    position_ids=None,
-                    ehr_labels=batch_ehr,
-                    ehr_masks=batch_mask,
-                    pos_loss_weight=self.config.pos_loss_weight,
-                    sample_weights=sw,
-                )
+                if rho > 0.0:
+                    risk, penalty = self._irm_terms(batch_ehr, batch_mask, sw)
+                    loss = risk + rho * penalty
+                    # Rescale once rho is large. IRMv1's rho jumps by orders of
+                    # magnitude after warmup, and without this the whole loss --
+                    # risk included -- is scaled up with it, which is an
+                    # unannounced learning-rate increase. Dividing keeps the
+                    # gradient magnitude comparable to the rho=1 regime, so the
+                    # only thing rho changes is the BALANCE between the terms.
+                    if rho > 1.0:
+                        loss = loss / rho
+                    epoch_risk_sum += risk.item()
+                    epoch_penalty_sum += penalty.item()
+                else:
+                    risk, _, _ = self.halo_model(
+                        batch_ehr,
+                        position_ids=None,
+                        ehr_labels=batch_ehr,
+                        ehr_masks=batch_mask,
+                        pos_loss_weight=self.config.pos_loss_weight,
+                        sample_weights=sw,
+                    )
+                    loss = risk
+                    epoch_risk_sum += risk.item()
                 loss.backward()
                 optimizer.step()
                 epoch_loss_sum += loss.item()
                 epoch_batches += 1
                 batch_iter.set_postfix(loss=f"{loss.item():.4f}")
+
+            # The two IRM terms, kept APART rather than reported as their
+            # sum. rho cannot be tuned without seeing their relative magnitude,
+            # and IRM's characteristic failure -- the penalty going to zero by
+            # making the model useless -- is invisible in the total. Set before
+            # the callback so a logger can read them off the model.
+            n_b = max(1, epoch_batches)
+            self.last_irm = {"risk": epoch_risk_sum / n_b,
+                             "penalty": epoch_penalty_sum / n_b,
+                             "rho": rho}
 
             if on_epoch_end is not None:
                 # Returning False is a stop request -- this is what lets a

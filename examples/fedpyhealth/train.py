@@ -236,6 +236,35 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         "weights each patient by their own site's view. Off by "
                         "default; run_name gets a _rw suffix so weighted and "
                         "unweighted runs never share a save_dir.")
+    p.add_argument("--irm-rho", type=float, default=None,
+                   help="IRMv1 penalty weight. 0 (default) trains the plain "
+                        "risk. Above 0 each client optimises risk + rho * "
+                        "penalty, where the penalty is the squared gradient of "
+                        "its own loss w.r.t. a dummy classifier fixed at 1.0 -- "
+                        "zero when w=1 is already optimal for that ENVIRONMENT, "
+                        "and environments here are hospitals. The penalty is "
+                        "per-environment and summed, so it is fully separable "
+                        "and FedAvg needs NO extra communication: only each "
+                        "client's local loss changes. Needs a second-order "
+                        "backward, so expect ~2x step cost. Typical post-warmup "
+                        "values are 1e2-1e4; it needs a sweep. run_name gets an "
+                        "_irm suffix.")
+    p.add_argument("--irm-warmup", type=int, default=None,
+                   help="rounds (fedavg) or epochs (centralized/local) to hold "
+                        "rho at 1.0 before jumping to --irm-rho. IRM cannot be "
+                        "trained by switching a large penalty on at step 0: the "
+                        "model takes the trivial invariant solution and never "
+                        "fits the data, which then looks like 'IRM does "
+                        "nothing'. Default 0 applies rho immediately -- set it "
+                        "to roughly a third of the budget for a real run.")
+    p.add_argument("--irm-unweighted-envs", action="store_true", default=None,
+                   help="documentation flag, on by design and not yet "
+                        "switchable: the IRM penalty is summed across "
+                        "hospitals UNWEIGHTED, so a 142-patient site has the "
+                        "same voice as an 1,832-patient one. That is "
+                        "deliberate -- IRM is about environments, not samples -- "
+                        "and it deviates from --weighting sample, which governs "
+                        "only the FedAvg aggregation.")
     p.add_argument("--ckpt-every", type=int, default=None,
                    help="checkpoint frequency, in rounds for fedavg/fedavg_ft "
                         "and in epochs for centralized/local (1=every one); the "
@@ -308,6 +337,10 @@ def make_run_name(cfg: dict) -> str:
     # share a save_dir, a checkpoint or a results row with the plain run.
     if cfg.get("rare_upweight"):
         name += "_rw"
+    # Same reasoning for IRM, plus rho in the name: a rho sweep is the point of
+    # the experiment, so two rho values must not land on one save_dir.
+    if cfg.get("irm_rho", 0.0) > 0:
+        name += f"_irm{cfg['irm_rho']:g}"
     return name
 
 
@@ -372,6 +405,7 @@ def build_config(argv: List[str] = None) -> dict:
         "num_synth": args.num_synth, "metrics": args.metrics,
         "synth_per_hospital": args.synth_per_hospital,
         "ft_epochs": args.ft_epochs, "run_name": args.run_name,
+        "irm_rho": args.irm_rho, "irm_warmup": args.irm_warmup,
         "early_stop": args.early_stop, "es_patience": args.es_patience,
         "es_min_steps": args.es_min_steps,
         "es_min_val_patients": args.es_min_val_patients,
@@ -389,6 +423,8 @@ def build_config(argv: List[str] = None) -> dict:
     cfg.setdefault("ckpt_every", 1)
     cfg.setdefault("snapshot_every", 0)      # 0 = keep no numbered snapshots
     cfg.setdefault("rare_upweight", False)
+    cfg.setdefault("irm_rho", 0.0)
+    cfg.setdefault("irm_warmup", 0)
     cfg.setdefault("tb_logdir", None)
     cfg.setdefault("no_tb", False)
     cfg.setdefault("log_every_epochs", 1)
@@ -723,6 +759,61 @@ def _save_ckpt(path: str, completed: int, global_state, fingerprint: dict,
     os.replace(tmp, path)
 
 
+def irm_rho_at(step: int, rho: float, warmup: int) -> float:
+    """IRMv1's penalty weight for one round/epoch, with the paper's warmup.
+
+    IRM cannot be trained by simply switching a large penalty on: at a big
+    ``rho`` the penalty dominates from step zero, the model finds the trivial
+    invariant solution (predict the same thing everywhere) and never fits the
+    data at all. The published recipe trains at ``rho ~ 1`` for a warmup period
+    -- long enough to reach a useful representation -- then jumps to the large
+    value. A run that "shows IRM does nothing" without warmup usually never
+    fitted in the first place.
+
+    The jump is deliberately a STEP, not a ramp, matching the reference
+    implementation. Ramping conflates "the penalty grew" with "training
+    progressed" and makes the loss curve unreadable at exactly the point you
+    need to see it.
+
+    Args:
+        step: Completed rounds (FedAvg) or epochs (centralized/local).
+        rho: The post-warmup penalty weight.
+        warmup: Steps to hold at 1.0 first. ``0`` applies ``rho`` immediately.
+
+    Returns:
+        The penalty weight to pass to ``train_model(irm_rho=...)``.
+    """
+    if rho <= 0.0:
+        return 0.0
+    return 1.0 if step < warmup else rho
+
+
+def log_irm(writer, model, step: int, tag: str) -> None:
+    """Write this epoch's risk and penalty as two separate curves.
+
+    Never their sum. ``rho`` is the one IRM hyperparameter that genuinely needs
+    a sweep and it cannot be set without seeing the two terms' relative
+    magnitude; and IRM's characteristic failure -- the penalty driven to zero by
+    a model that has stopped fitting anything -- is invisible in the total,
+    which just looks like it is going down.
+
+    ``irm_penalty`` can be NEGATIVE. The estimator is a product of two
+    independent half-batch gradients, so a sign disagreement between halves
+    reads as negative: that means "no reliable gradient here", not a bug. Expect
+    it to be common at the small sites.
+
+    No-ops when the run is not using IRM, so every regime can call it blind.
+    """
+    if writer is None:
+        return
+    irm = getattr(model, "last_irm", None)
+    if not irm or irm.get("rho", 0.0) <= 0.0:
+        return
+    writer.add_scalar(f"irm_risk/{tag}", irm["risk"], step)
+    writer.add_scalar(f"irm_penalty/{tag}", irm["penalty"], step)
+    writer.add_scalar("irm_rho", irm["rho"], step)
+
+
 def run_fedavg(
     model,
     clients: Dict[str, object],
@@ -739,6 +830,8 @@ def run_fedavg(
     val_dataset=None,
     stopper: "EarlyStopper" = None,
     sample_weight_fn=None,
+    irm_rho: float = 0.0,
+    irm_warmup: int = 0,
 ) -> object:
     """Train ``model`` with FedAvg across ``clients`` for ``n_rounds`` rounds.
 
@@ -824,10 +917,14 @@ def run_fedavg(
                 if (epoch + 1) % log_every_epochs == 0 or epoch + 1 == local_epochs:
                     step = r * local_epochs + epoch
                     writer.add_scalar(f"loss_train/hospital_{cid}", mean_loss, step)
+                    # Per hospital: which SITES are non-invariant is itself a
+                    # result on a cohort with a 13x size spread.
+                    log_irm(writer, model, step, f"hospital_{cid}")
 
             model.train_model(clients[cid], val_dataset=None, device=device,
                               on_epoch_end=_on_epoch_end,
-                              sample_weight_fn=sample_weight_fn)
+                              sample_weight_fn=sample_weight_fn,
+                              irm_rho=irm_rho_at(r, irm_rho, irm_warmup))
             snapshots.append(_snapshot(model))
             weights.append(1.0 if weighting == "uniform" else float(sizes[cid]))
             log(f"  round {r + 1}/{n_rounds}  client {cid}  (n={sizes[cid]}) done")
@@ -924,7 +1021,9 @@ def train_centralized(model, pooled_train, device: str = "cpu", writer=None,
                       fingerprint: dict = None, val_dataset=None,
                       stopper: "EarlyStopper" = None,
                       snapshot_every: int = 0,
-                      sample_weight_fn=None) -> object:
+                      sample_weight_fn=None,
+                      irm_rho: float = 0.0,
+                      irm_warmup: int = 0) -> object:
     """Train ONE model on the pooled (all-hospital) train data. Returns it.
 
     Checkpointing is epoch-granular rather than round-granular (there are no
@@ -982,6 +1081,7 @@ def train_centralized(model, pooled_train, device: str = "cpu", writer=None,
         vl = val_loss(model, val_dataset, device)
         if writer is not None:
             writer.add_scalar("loss_val/pooled", vl, done - 1)
+            log_irm(writer, model, done - 1, "pooled")
         stop = stopper.step(vl, state=lambda: _snapshot(model))
         log(f"  centralized  epoch {done}/{total_epochs}  loss={mean_loss:.4f}"
             f"  val={vl:.4f}  (best {stopper.best_score:.4f} @ "
@@ -994,7 +1094,11 @@ def train_centralized(model, pooled_train, device: str = "cpu", writer=None,
     model._epochs = total_epochs - start_epoch
     model.train_model(pooled_train, val_dataset=None, device=device,
                       on_epoch_end=_on_epoch_end,
-                      sample_weight_fn=sample_weight_fn)
+                      sample_weight_fn=sample_weight_fn,
+                      # start_epoch offset so a RESUMED run does not restart the
+                      # warmup it already finished and re-enter the rho=1 regime.
+                      irm_rho=lambda e: irm_rho_at(start_epoch + e, irm_rho,
+                                                   irm_warmup))
     if stopper is not None:
         log(f"Centralized: {stopper.summary()}")
         if stopper.best_state is not None:
@@ -1054,6 +1158,8 @@ def train_local(
     val_clients: Dict[str, object] = None,
     es_cfg: dict = None,
     sample_weight_fn=None,
+    irm_rho: float = 0.0,
+    irm_warmup: int = 0,
 ) -> Dict[str, object]:
     """Train an INDEPENDENT model per hospital on its own data (no averaging).
 
@@ -1104,6 +1210,7 @@ def train_local(
             if writer is not None:
                 writer.add_scalar(f"loss_train/hospital_{hid}", mean_loss,
                                   done - 1)
+                log_irm(writer, m, done - 1, f"hospital_{hid}")
                 log_gpu(writer, done - 1, tag="gpu_local")
             if path and (done % ckpt_every == 0 or done == epochs):
                 _save_ckpt(path, done, _snapshot(m), fingerprint,
@@ -1119,7 +1226,9 @@ def train_local(
         m._epochs = epochs - start_epoch
         m.train_model(train_subset, val_dataset=None, device=device,
                       on_epoch_end=_on_epoch_end,
-                      sample_weight_fn=sample_weight_fn)
+                      sample_weight_fn=sample_weight_fn,
+                      irm_rho=lambda e, s0=start_epoch: irm_rho_at(
+                          s0 + e, irm_rho, irm_warmup))
         if stopper is not None:
             log(f"  {hid}: {stopper.summary()}")
             if stopper.best_state is not None:
@@ -1144,6 +1253,8 @@ def finetune_local(
     val_clients: Dict[str, object] = None,
     es_cfg: dict = None,
     sample_weight_fn=None,
+    irm_rho: float = 0.0,
+    irm_warmup: int = 0,
 ) -> Dict[str, object]:
     """FedAvg + fine-tuning: personalize the shared global model per hospital.
 
@@ -1194,6 +1305,7 @@ def finetune_local(
                           stopper=stopper, use_val=use_val):
             if writer is not None:
                 writer.add_scalar(f"loss_ft/hospital_{hid}", mean_loss, epoch)
+                log_irm(writer, m, epoch, f"ft_{hid}")
                 log_gpu(writer, epoch, tag="gpu_ft")
             if stopper is None:
                 return None
@@ -1205,7 +1317,10 @@ def finetune_local(
 
         m.train_model(train_subset, val_dataset=None, device=device,
                       on_epoch_end=_on_epoch_end,
-                      sample_weight_fn=sample_weight_fn)
+                      sample_weight_fn=sample_weight_fn,
+                      # Fine-tuning runs AFTER the last aggregation, so warmup
+                      # is already long over -- rho applies from step 0 here.
+                      irm_rho=irm_rho)
         if stopper is not None:
             log(f"  {hid}: {stopper.summary()}")
             # The warm start means epoch 0 can already be the best the site
@@ -1498,7 +1613,8 @@ if __name__ == "__main__":
                                  ckpt_every=cfg["ckpt_every"],
                                  resume=cfg["resume"], fingerprint=fingerprint,
                                  val_clients=client_vals, es_cfg=es_cfg,
-                                 sample_weight_fn=sample_weight_fn)
+                                 sample_weight_fn=sample_weight_fn,
+                                 irm_rho=cfg["irm_rho"], irm_warmup=cfg["irm_warmup"])
             num_params = sum(p.numel()
                              for p in next(iter(models.values())).parameters())
             print(f"Each model: {num_params} parameters")
@@ -1529,7 +1645,8 @@ if __name__ == "__main__":
                                           cfg["es_min_delta"],
                                           cfg["es_min_steps"])
                              if es_cfg else None),
-                    sample_weight_fn=sample_weight_fn)
+                    sample_weight_fn=sample_weight_fn,
+                    irm_rho=cfg["irm_rho"], irm_warmup=cfg["irm_warmup"])
             else:  # fedavg or fedavg_ft -- both start with a FedAvg run
                 print(f"Regime: {regime} -- {len(clients)} clients, "
                       f"{cfg['local_epochs']} local epochs x {fed_rounds} rounds"
@@ -1555,7 +1672,8 @@ if __name__ == "__main__":
                                                  cfg["es_min_delta"],
                                                  cfg["es_min_steps"])
                                     if es_cfg else None),
-                           sample_weight_fn=sample_weight_fn)
+                           sample_weight_fn=sample_weight_fn,
+                           irm_rho=cfg["irm_rho"], irm_warmup=cfg["irm_warmup"])
             # STEP 5: generate synthetic patients from the single global/server
             # model. For fedavg_ft this stays the SHARED global model's output, so
             # the global eval (STEP 6) is directly comparable to plain fedavg.
@@ -1583,7 +1701,8 @@ if __name__ == "__main__":
                     clients, device=device, writer=writer,
                     ckpt_dir=save_dir, fingerprint=fingerprint,
                     val_clients=client_vals, es_cfg=es_cfg,
-                    sample_weight_fn=sample_weight_fn)
+                    sample_weight_fn=sample_weight_fn,
+                    irm_rho=cfg["irm_rho"], irm_warmup=cfg["irm_warmup"])
                 _, client_synth = generate_local(
                     ft_models, sizes, cfg["num_synth"],
                     cfg["synth_per_hospital"], device=device)

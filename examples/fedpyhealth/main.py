@@ -491,8 +491,12 @@ def with_cohort(passthrough: Sequence[str], cohort_cache: str) -> List[str]:
 # count. Left out, a re-run with a bigger --num-synth finds the checkpoint,
 # skips training entirely, and only regenerates. This also matches train.py's
 # own make_run_name, which does not encode it either.
+# --irm-rho is here because a rho SWEEP is the point of the IRM experiment:
+# two rho values landing on one save_dir would clobber each other's checkpoints,
+# and the whole comparison is between them. --irm-warmup is not, since it is
+# held fixed within a sweep; add it if that stops being true.
 NAME_AFFECTING = ("--n-rounds", "--local-epochs", "--ft-epochs", "--weighting",
-                  "--metrics")
+                  "--metrics", "--irm-rho")
 
 
 #: Boolean train.py flags that must appear in the run name. The suffix has to
@@ -671,6 +675,7 @@ def train_job(regime: str, profile: str, passthrough: Sequence[str],
 # that died the moment they started, hours later, with the training already
 # done. Strip them instead.
 TRAIN_ONLY_VALUED = (
+    "--irm-rho", "--irm-warmup",
     "--config", "--weighting", "--ft-epochs", "--n-rounds", "--local-epochs",
     "--num-synth", "--synth-per-hospital", "--metrics", "--ckpt-every",
     "--snapshot-every",
@@ -678,7 +683,7 @@ TRAIN_ONLY_VALUED = (
     "--es-min-steps", "--es-min-val-patients", "--es-fallback",
 )
 TRAIN_ONLY_BOOL = ("--resume", "--no-tb", "--no-early-stop",
-                   "--rare-upweight")
+                   "--rare-upweight", "--irm-unweighted-envs")
 
 
 def fold_for_tests(passthrough: Sequence[str]) -> Tuple[List[str], List[str]]:
