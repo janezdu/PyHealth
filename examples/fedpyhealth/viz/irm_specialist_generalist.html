@@ -1,0 +1,723 @@
+<title>Invariance Penalty Results</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=Public+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+
+<style>
+:root {
+  color-scheme: light;
+  --surface-0: #f4f5f3;
+  --surface-1: #fcfcfb;
+  --surface-2: #eceeeb;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #7c7b76;
+  --rule: #d8dad6;
+  --grid: #e6e8e4;
+  /* fedavg cyan and fedavg_ft deep blue: the federated family reads as one cool
+     group, but far enough apart to clear the discriminability floor (normal
+     deltaE 20.7). Pushing fedavg bluer without also darkening fedavg_ft put the
+     pair at deltaE 8-13, i.e. two series a reader cannot separate. */
+  --m-fedavg:      #12a5c4;   /* cyan       */
+  --m-fedavg_ft:   #1c5cab;   /* deep blue  */
+  --m-centralized: #0a6b2f;   /* dark green */
+  --m-local:       #eda100;   /* yellow     */
+  --arrow: #a9aca6;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --surface-0: #131313;
+    --surface-1: #1a1a19;
+    --surface-2: #242423;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #94938b;
+    --rule: #33332f;
+    --grid: #2b2b29;
+    --m-fedavg:      #2bb5d4;
+    --m-fedavg_ft:   #3d7fd6;
+    /* Dark green lightened only as far as the dark band allows. The cyan sits at
+       lightness 0.716 against a 0.67 ceiling -- deliberate: every step that fits
+       the band puts cyan within deltaE 11 of the blue beside it, and two
+       indistinguishable series is the worse defect. */
+    --m-centralized: #35a55e;
+    --m-local:       #c98500;
+    --arrow: #55554f;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-0: #131313;
+  --surface-1: #1a1a19;
+  --surface-2: #242423;
+  --text-primary: #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted: #94938b;
+  --rule: #33332f;
+  --grid: #2b2b29;
+  --m-fedavg:    #2bb5d4;
+  --m-fedavg_ft:   #3d7fd6;
+  /* Dark green lightened only as far as the dark band allows. The cyan sits at
+     lightness 0.716 against a 0.67 ceiling -- deliberate: every step that fits
+     the band puts cyan within deltaE 11 of the blue beside it, and two
+     indistinguishable series is the worse defect. */
+  --m-centralized: #35a55e;
+  --m-local:     #c98500;
+  --arrow: #55554f;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--surface-0);
+  color: var(--text-primary);
+  font-family: "Public Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+.wrap {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 56px 24px 96px;
+  display: flex;
+  flex-direction: column;
+  gap: 40px;
+}
+.eyebrow {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin: 0 0 10px;
+}
+h1 {
+  font-family: "Newsreader", Georgia, serif;
+  font-weight: 500;
+  font-size: clamp(30px, 4.4vw, 46px);
+  line-height: 1.12;
+  letter-spacing: -0.015em;
+  margin: 0 0 14px;
+  text-wrap: balance;
+}
+.standfirst {
+  font-size: 17px;
+  color: var(--text-secondary);
+  max-width: 62ch;
+  margin: 0;
+}
+h2 {
+  font-family: "Newsreader", Georgia, serif;
+  font-weight: 500;
+  font-size: 25px;
+  letter-spacing: -0.01em;
+  margin: 0 0 6px;
+  text-wrap: balance;
+}
+.sub { color: var(--text-secondary); font-size: 15px; margin: 0 0 20px; max-width: 68ch; }
+section { display: flex; flex-direction: column; }
+
+.panel {
+  background: var(--surface-1);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 26px 26px 20px;
+}
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 18px;
+}
+.seg { display: inline-flex; border: 1px solid var(--rule); border-radius: 3px; overflow: hidden; }
+.seg button {
+  font-family: "Public Sans", sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 6px 14px;
+  border: 0;
+  background: var(--surface-1);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.seg button + button { border-left: 1px solid var(--rule); }
+.seg button[aria-pressed="true"] { background: var(--surface-2); color: var(--text-primary); }
+.seg button:focus-visible, select:focus-visible { outline: 2px solid var(--m-fedavg_ft); outline-offset: -2px; }
+.field { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-secondary); }
+.field select {
+  font-family: "Public Sans", sans-serif; font-size: 13px; font-weight: 500;
+  padding: 6px 10px; border: 1px solid var(--rule); border-radius: 3px;
+  background: var(--surface-1); color: var(--text-primary);
+}
+
+.condset { border: 0; margin: 12px 0 4px; padding: 0; }
+.condset legend { font-size: 11.5px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--text-muted); padding: 0 0 8px; }
+#condrow { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 7px; cursor: pointer;
+  font-size: 13px; padding: 5px 11px; border-radius: 3px;
+  border: 1px solid var(--rule); background: var(--surface-1);
+  color: var(--text-muted);
+}
+.chip input { position: absolute; opacity: 0; width: 0; height: 0; }
+.chip[data-on="true"] { background: var(--surface-2); color: var(--text-primary); }
+.chip:has(input:focus-visible) { outline: 2px solid var(--m-fedavg_ft); outline-offset: 1px; }
+.chip svg { flex: none; }
+.legend { display: flex; flex-wrap: wrap; gap: 16px; margin: 0 0 4px; padding: 0; list-style: none; }
+.legend li { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: var(--text-secondary); }
+.swatch { width: 11px; height: 11px; border-radius: 50%; flex: none; }
+
+.figwrap { overflow-x: auto; }
+svg { display: block; max-width: 100%; height: auto; }
+.axis-label { font-family: "Public Sans", sans-serif; font-size: 12px; fill: var(--text-secondary); }
+.tick { font-family: "IBM Plex Mono", monospace; font-size: 10.5px; fill: var(--text-muted); }
+.ptlabel { font-family: "Public Sans", sans-serif; font-size: 11.5px; font-weight: 500; fill: var(--text-primary); }
+
+figcaption { font-size: 13.5px; color: var(--text-secondary); margin-top: 16px; max-width: 72ch; }
+
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+caption { text-align: left; font-size: 13px; color: var(--text-muted); padding-bottom: 10px; }
+th, td { padding: 8px 12px; text-align: right; border-bottom: 1px solid var(--rule); }
+th:first-child, td:first-child { text-align: left; }
+thead th { font-size: 11.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted); font-weight: 600; }
+td.num { font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; }
+td.arm { display: flex; align-items: center; gap: 8px; }
+.up { color: var(--text-primary); font-weight: 600; }
+.tablewrap { overflow-x: auto; }
+
+.callout {
+  border-left: 2px solid var(--m-local);
+  padding: 2px 0 2px 18px;
+  color: var(--text-secondary);
+  font-size: 15px;
+  max-width: 70ch;
+}
+.callout strong { color: var(--text-primary); }
+ul.notes { padding-left: 20px; color: var(--text-secondary); font-size: 15px; max-width: 72ch; margin: 0; }
+ul.notes li { margin-bottom: 10px; }
+ul.notes strong { color: var(--text-primary); }
+code { font-family: "IBM Plex Mono", monospace; font-size: 0.9em; background: var(--surface-2); padding: 1px 5px; border-radius: 2px; }
+hr { border: 0; border-top: 1px solid var(--rule); margin: 0; }
+@media (prefers-reduced-motion: no-preference) {
+  .mark { transition: r 120ms ease; }
+}
+</style>
+
+<div class="wrap">
+
+<header>
+  <p class="eyebrow">hilo8_random · 8 eICU hospitals · HALO</p>
+  <h1>Does an invariance penalty move a generator along the specialist&ndash;generalist axis?</h1>
+  <p class="standfirst">
+    Each hospital is an IRM environment. Every client adds the squared gradient of
+    its own loss with respect to a dummy classifier pinned at 1.0, summed
+    unweighted so a 142-patient site counts as much as an 1,832-patient one.
+    Every arm below trains the same 100 epochs, so the comparison is budget-matched
+    on both sides. At &rho;&nbsp;=&nbsp;10&sup2; the penalty improves both axes on
+    both arms it was run on.
+  </p>
+</header>
+
+<section>
+  <h2>The two targets</h2>
+  <p class="sub">
+    Every arm is scored twice against real code prevalences: against
+    <em>its own hospital's</em> test fold, and against the pooled cohort fold.
+    Up is a better specialist, right is a better generalist. Arrows run from the
+    unpenalised run to its IRM counterpart. The view opens on the unpenalised
+    runs and &rho;&nbsp;=&nbsp;10&sup2; only; the other &rho; values and the
+    late-start run are one click away.
+  </p>
+
+  <div class="panel">
+    <div class="controls">
+      <label class="field">
+        <span>Metric</span>
+        <select id="metric">
+          <option value="pearson" selected>Pearson</option>
+          <option value="r2">R&sup2; vs identity</option>
+          <option value="rmse">RMSE</option>
+        </select>
+      </label>
+      <div class="seg" role="group" aria-label="Code set">
+        <button type="button" data-set="all" aria-pressed="true">All codes</button>
+        <button type="button" data-set="rare" aria-pressed="false">Rare codes</button>
+      </div>
+    </div>
+
+    <ul class="legend" aria-label="Method">
+      <li><span class="swatch" style="background:var(--m-fedavg)"></span> fedavg</li>
+      <li><span class="swatch" style="background:var(--m-fedavg_ft)"></span> fedavg_ft</li>
+      <li><span class="swatch" style="background:var(--m-centralized)"></span> centralized</li>
+      <li><span class="swatch" style="background:var(--m-local)"></span> local</li>
+    </ul>
+    <fieldset class="condset">
+      <legend>Condition &mdash; click to show or hide</legend>
+      <div id="condrow"></div>
+    </fieldset>
+
+    <div class="figwrap">
+      <svg id="scatter" viewBox="0 0 780 560" role="img"
+           aria-label="Scatter of specialist versus generalist Pearson correlation for each training arm, with and without the IRM penalty."></svg>
+    </div>
+    <figcaption id="cap"></figcaption>
+  </div>
+</section>
+
+<section>
+  <h2>Why <code>centralized</code> was down there</h2>
+  <p class="sub">
+    Codes emitted per synthetic visit, against the real cohort's 11.5. Pearson is
+    a correlation, so it cannot see a uniform scale shift &mdash; an arm emitting a
+    third of the real codes still scores well. What it does see is
+    <em>saturation</em>: at 25 codes a visit the common codes pin near 100%
+    prevalence, the differences between codes compress, and the rank ordering
+    Pearson measures falls apart.
+  </p>
+  <div class="panel">
+    <div class="figwrap">
+      <svg id="density" viewBox="0 0 780 300" role="img"
+           aria-label="Codes emitted per synthetic visit by each run, against the real cohort value of 11.5."></svg>
+    </div>
+    <figcaption>
+      The unpenalised <code>centralized</code> generator emits more than twice the
+      real code density, and training it longer makes that worse &mdash; 22.1 at
+      epoch 37, 25.2 at epoch 100. Every other arm, penalised or not, sits near
+      3.5&ndash;4.2. So the penalty does not gently improve <code>centralized</code>;
+      it drags it onto the behaviour every other arm already had. Note that this
+      lands it 3&times; <em>under</em> the real density, which is the same error the
+      other arms carry &mdash; invisible to Pearson, and not fixed by IRM.
+    </figcaption>
+  </div>
+</section>
+
+<section>
+  <h2>What moved</h2>
+  <p class="sub">
+    Pearson correlation between synthetic and real code prevalence. Only
+    <code>fedavg</code> and <code>centralized</code> were run with IRM;
+    <code>local</code> and <code>fedavg_ft</code> are the unpenalised reference
+    points that define the axis.
+  </p>
+  <div class="panel tablewrap">
+    <table>
+      <caption id="tcap">Specialist = each site's own test fold; generalist = the pooled cohort fold. Bold marks an improvement over that arm's unpenalised run.</caption>
+      <thead>
+        <tr>
+          <th scope="col">Arm</th><th scope="col">Condition</th>
+          <th scope="col">Spec. all</th><th scope="col">Spec. rare</th>
+          <th scope="col">Gen. all</th><th scope="col">Gen. rare</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+</section>
+
+<hr>
+
+<section>
+  <h2>Reading it</h2>
+  <div class="callout">
+    <strong>The budget confound is ruled out, and the effect grew.</strong>
+    The original baseline early-stopped at epoch 37, so the first version of this
+    comparison gave the IRM arms 63 extra epochs. Re-run at a matched 100 epochs,
+    <code>centralized</code> gets <em>worse</em> (0.580 &rarr; 0.527 specialist),
+    not better &mdash; so the longer budget was never the advantage. The other three
+    arms move by less than 0.02. The gap IRM closes is therefore larger than it
+    first appeared: 0.527 &rarr; 0.823.
+  </div>
+  <div class="callout" style="margin-top:18px;border-left-color:var(--m-centralized)">
+    <strong>Starting late does not work.</strong> Holding &rho;&nbsp;=&nbsp;10&sup2;
+    but delaying it to epoch 68 leaves <code>centralized</code> at R&sup2;
+    &minus;18.5 and RMSE 0.055, against &minus;53.1 / 0.092 unpenalised and
+    +0.31 / 0.013 when the same &rho; starts at epoch 17. Thirty-two epochs of
+    penalty only partly undoes sixty-eight epochs of saturation, so the penalty
+    is preventing the runaway rather than repairing it. <em>When</em> it starts
+    matters more than how large it is.
+  </div>
+  <div class="callout" style="margin-top:18px;border-left-color:var(--m-fedavg)">
+    <strong>&rho; is a threshold, not a dial.</strong> At 10&sup2;, 10&#8308; and
+    10&#8309; the generator lands at 3.80, 3.82 and 3.82 codes per visit &mdash;
+    indistinguishable. Once the penalty is large enough to stop the runaway, more
+    of it changes nothing. The informative sweep is <em>downward</em>, to find
+    where it stops working.
+  </div>
+</section>
+
+<section>
+  <h2>Before this is a result</h2>
+  <ul class="notes">
+    <li><strong>One seed, two &rho; values.</strong> No repeats, no confidence
+      intervals. The <code>centralized</code> jump is large enough to survive
+      most noise; the <code>fedavg</code> movements are not.</li>
+    <li><strong>The budgets are not matched.</strong> The baseline
+      <code>fedavg</code> early-stopped at round 34; the IRM runs were given
+      <code>--no-early-stop</code> and trained all 50. The IRM arms therefore had
+      ~16 more rounds. A <code>--no-early-stop</code> baseline is the missing
+      control, and it is cheap &mdash; these runs take about seven minutes.</li>
+    <li><strong>&rho; is bracketed, not tuned.</strong> 10² and 10⁴ were chosen to
+      straddle a plausible range. 10² is better or equal nearly everywhere, so the
+      useful next sweep is downward, not upward.</li>
+    <li><strong>Utility is unchanged.</strong> Rare-code TSTR average precision
+      sits at 0.0100&ndash;0.0108 across all six runs &mdash; inside noise. IRM moved
+      prevalence fidelity and did not move downstream classifier quality.</li>
+  </ul>
+</section>
+
+</div>
+
+<script>
+const PTS = [{"cond": "baseline","condLabel": "no IRM","arm": "fedavg","s_pearson_all": 0.84778,"g_pearson_all": 0.96773,"s_pearson_rare": 0.73872,"g_pearson_rare": 0.94715,"s_r2_all": 0.16906,"g_r2_all": 0.53407,"s_r2_rare": -0.47753,"g_r2_rare": 0.44781,"s_rmse_all": 0.01302,"g_rmse_all": 0.00916,"s_rmse_rare": 0.02505,"g_rmse_rare": 0.01033},{"cond": "baseline","condLabel": "no IRM","arm": "centralized","s_pearson_all": 0.52689,"g_pearson_all": 0.70173,"s_pearson_rare": 0.39482,"g_pearson_rare": 0.62054,"s_r2_all": -53.13032,"g_r2_all": -43.94157,"s_r2_rare": -68.5338,"g_r2_rare": -76.09157,"s_rmse_all": 0.09181,"g_rmse_all": 0.09143,"s_rmse_rare": 0.14685,"g_rmse_rare": 0.11577},{"cond": "baseline","condLabel": "no IRM","arm": "fedavg_ft","s_pearson_all": 0.89082,"g_pearson_all": 0.9558,"s_pearson_rare": 0.79237,"g_pearson_rare": 0.94018,"s_r2_all": 0.39729,"g_r2_all": 0.06902,"s_r2_rare": 0.02674,"g_r2_rare": -0.31594,"s_rmse_all": 0.01573,"g_rmse_all": 0.01303,"s_rmse_rare": 0.02575,"g_rmse_rare": 0.01587},{"cond": "baseline","condLabel": "no IRM","arm": "local","s_pearson_all": 0.93458,"g_pearson_all": 0.87166,"s_pearson_rare": 0.9053,"g_pearson_rare": 0.80431,"s_r2_all": 0.68927,"g_r2_all": 0.47438,"s_r2_rare": 0.48503,"g_r2_rare": 0.19735,"s_rmse_all": 0.00904,"g_rmse_all": 0.01011,"s_rmse_rare": 0.01376,"g_rmse_rare": 0.01147},{"cond": "irm100","condLabel": "IRM ρ=10²","arm": "fedavg","s_pearson_all": 0.86536,"g_pearson_all": 0.98107,"s_pearson_rare": 0.75287,"g_pearson_rare": 0.96617,"s_r2_all": 0.48276,"g_r2_all": 0.85667,"s_r2_rare": 0.16363,"g_r2_rare": 0.82624,"s_rmse_all": 0.0113,"g_rmse_all": 0.00511,"s_rmse_rare": 0.01976,"g_rmse_rare": 0.00571},{"cond": "irm100","condLabel": "IRM ρ=10²","arm": "centralized","s_pearson_all": 0.82257,"g_pearson_all": 0.99303,"s_pearson_rare": 0.71284,"g_pearson_rare": 0.98731,"s_r2_all": 0.30734,"g_r2_all": 0.85063,"s_r2_rare": 0.12529,"g_r2_rare": 0.81345,"s_rmse_all": 0.01254,"g_rmse_all": 0.00575,"s_rmse_rare": 0.02003,"g_rmse_rare": 0.00563},{"cond": "irm10000","condLabel": "IRM ρ=10⁴","arm": "fedavg","s_pearson_all": 0.81441,"g_pearson_all": 0.97481,"s_pearson_rare": 0.69153,"g_pearson_rare": 0.96968,"s_r2_all": 0.5745,"g_r2_all": 0.93025,"s_r2_rare": 0.19219,"g_r2_rare": 0.90221,"s_rmse_all": 0.00896,"g_rmse_all": 0.00341,"s_rmse_rare": 0.01682,"g_rmse_rare": 0.00423},{"cond": "irm10000","condLabel": "IRM ρ=10⁴","arm": "centralized","s_pearson_all": 0.83556,"g_pearson_all": 0.99172,"s_pearson_rare": 0.71314,"g_pearson_rare": 0.98689,"s_r2_all": 0.36645,"g_r2_all": 0.90719,"s_r2_rare": 0.20534,"g_r2_rare": 0.8698,"s_rmse_all": 0.01222,"g_rmse_all": 0.00455,"s_rmse_rare": 0.0188,"g_rmse_rare": 0.00473},{"cond": "irm100000","condLabel": "IRM ρ=10⁵","arm": "centralized","s_pearson_all": 0.82883,"g_pearson_all": 0.98835,"s_pearson_rare": 0.7225,"g_pearson_rare": 0.98213,"s_r2_all": 0.43805,"g_r2_all": 0.83661,"s_r2_rare": -0.02219,"g_r2_rare": 0.79337,"s_rmse_all": 0.01308,"g_rmse_all": 0.00645,"s_rmse_rare": 0.02046,"g_rmse_rare": 0.00621},{"cond": "irmlate","condLabel": "IRM ρ=10² late","arm": "centralized","s_pearson_all": 0.70317,"g_pearson_all": 0.87594,"s_pearson_rare": 0.52643,"g_pearson_rare": 0.83032,"s_r2_all": -18.49896,"g_r2_all": -13.69451,"s_r2_rare": -26.91846,"g_r2_rare": -20.00858,"s_rmse_all": 0.0545,"g_rmse_all": 0.05298,"s_rmse_rare": 0.0875,"g_rmse_rare": 0.06265}];
+// Synthetic visit density against the real cohort. This is the diagnostic that
+// explains the fidelity numbers: Pearson is a correlation, so it is blind to a
+// uniform scale shift -- an arm can emit a third of the real codes per visit and
+// still score well. What it is NOT blind to is SATURATION, which is what 25
+// codes a visit does to a 921-code vocabulary.
+const DENSITY = [
+{"label":"centralized \u00b7 no IRM","arm":"centralized","cpv":25.17},
+{"label":"centralized \u00b7 \u03c1=10\u00b2","arm":"centralized","cpv":3.80},
+{"label":"centralized \u00b7 \u03c1=10\u2074","arm":"centralized","cpv":3.82},
+{"label":"centralized \u00b7 \u03c1=10\u2075","arm":"centralized","cpv":3.82},
+{"label":"fedavg \u00b7 no IRM","arm":"fedavg","cpv":4.20},
+{"label":"fedavg \u00b7 \u03c1=10\u00b2","arm":"fedavg","cpv":3.85},
+{"label":"fedavg_ft \u00b7 no IRM","arm":"fedavg_ft","cpv":3.72},
+{"label":"local \u00b7 no IRM","arm":"local","cpv":3.47}
+];
+const REAL_CPV = 11.50;
+// Colour carries the METHOD, so an arm keeps its identity across conditions and
+// the eye can follow one method through the figure. The CONDITION rides on mark
+// style instead -- hollow / filled / filled-square -- which keeps identity off
+// colour alone and satisfies the CVD relief rule for the two low-contrast hues.
+const COLOR = {fedavg:"var(--m-fedavg)", fedavg_ft:"var(--m-fedavg_ft)",
+               centralized:"var(--m-centralized)", local:"var(--m-local)"};
+const SHAPE = {baseline:"hollow", irm100:"filled", irm10000:"square",
+               irm100000:"diamond", irmlate:"triangle"};
+// Pearson and R2 are better HIGH; RMSE is better LOW. The plot keeps the raw
+// value on both axes rather than negating RMSE -- flipping a metric's sign to
+// make every chart point the same way is how a reader ends up misreading one.
+// The axis labels state the direction instead, and it changes with the metric.
+const METRIC = {
+  pearson: {label: "Pearson", better: "high",
+            blurb: "Correlation between synthetic and real prevalence. Scale-invariant, so it cannot see an arm emitting a third of the real codes."},
+  r2:      {label: "R\u00b2 vs identity", better: "high", floor: -1.5,
+            blurb: "Fit against the identity line, so unlike Pearson it punishes being off in ABSOLUTE prevalence. Values below the axis floor are pinned to the edge and labelled."},
+  rmse:    {label: "RMSE", better: "low",
+            blurb: "Root mean squared prevalence error. Lower is better, so on this metric the good corner is bottom-left."}
+};
+let metric = "pearson";
+// Default view shows only the unpenalised runs and rho=10^2. The full set --
+// three rho values plus a late start, on two arms -- puts eight arrows through
+// one corner and the movement stops being readable. The rest stay one click
+// away rather than being dropped.
+const CONDS = [
+  {key: "baseline",  label: "no IRM",              on: true},
+  {key: "irm100",    label: "IRM \u03c1=10\u00b2",      on: true},
+  {key: "irm10000",  label: "IRM \u03c1=10\u2074",      on: false},
+  {key: "irm100000", label: "IRM \u03c1=10\u2075",      on: false},
+  {key: "irmlate",   label: "\u03c1=10\u00b2, late start", on: false}
+];
+const shown = new Set(CONDS.filter(c => c.on).map(c => c.key));
+const visible = () => PTS.filter(p => shown.has(p.cond));
+const ORDER = ["baseline","irm100","irm10000","irm100000","irmlate"];
+const NS = "http://www.w3.org/2000/svg";
+const fmtTick = v => Math.abs(v) < 0.1 && v !== 0 ? v.toFixed(3) : v.toFixed(2);
+let codeSet = "all";
+
+const raw = (p, side) => p[`${side}_${metric}_${codeSet}`];
+// R2 is unbounded below and the unpenalised centralized run sits near -53, which
+// would compress every other point into one pixel. Clamp to the metric floor and
+// mark the clamped points so a pinned dot is never mistaken for a real value.
+const clampV = v => {
+  const f = METRIC[metric].floor;
+  return (f != null && v < f) ? f : v;
+};
+const isClamped = p => {
+  const f = METRIC[metric].floor;
+  return f != null && (raw(p, "s") < f || raw(p, "g") < f);
+};
+const xOf = p => clampV(raw(p, "g"));
+const yOf = p => clampV(raw(p, "s"));
+
+function el(name, attrs, text) {
+  const n = document.createElementNS(NS, name);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  if (text != null) n.textContent = text;
+  return n;
+}
+
+function draw() {
+  const svg = document.getElementById("scatter");
+  svg.textContent = "";
+  const W = 780, H = 560, m = {t: 18, r: 26, b: 56, l: 62};
+  const V = visible();
+  if (!V.length) {
+    svg.appendChild(el("text", {x: W / 2, y: H / 2, "text-anchor": "middle",
+      class: "axis-label"}, "No conditions selected."));
+    document.getElementById("cap").textContent =
+      "Select at least one condition above.";
+    return;
+  }
+  const xs = V.map(xOf), ys = V.map(yOf);
+  const lo = Math.min(...xs, ...ys), hi = Math.max(...xs, ...ys);
+  const pad = (hi - lo) * 0.12 || 0.05;
+  // Domain follows the DATA, not a hardcoded [0,1]. R2 is unbounded below (the
+  // unpenalised centralized run clamps to the floor at -1.5) and RMSE lives near
+  // 0.01, so flooring at zero pushed half the points off the plot entirely.
+  // 1 is a real ceiling for Pearson and R2 but not for RMSE, so only cap those.
+  const capped = metric === "pearson" || metric === "r2";
+  const d0 = lo - pad, d1 = capped ? Math.min(1.02, hi + pad) : hi + pad;
+  const sx = v => m.l + (v - d0) / (d1 - d0) * (W - m.l - m.r);
+  const sy = v => H - m.b - (v - d0) / (d1 - d0) * (H - m.t - m.b);
+
+  // Gridlines and ticks on a shared scale — both axes are the same metric, so
+  // one tick sequence serves both and the diagonal below is meaningful.
+  const span = d1 - d0;
+  const step = span > 1.5 ? 0.5 : span > 0.45 ? 0.1
+             : span > 0.08 ? 0.05 : span > 0.02 ? 0.01 : 0.005;
+  const first = Math.ceil(d0 / step) * step;
+  for (let v = first; v <= d1 + 1e-9; v += step) {
+    const t = Math.round(v * 1000) / 1000;
+    svg.appendChild(el("line", {x1: sx(t), y1: m.t, x2: sx(t), y2: H - m.b,
+      stroke: "var(--grid)", "stroke-width": 1}));
+    svg.appendChild(el("line", {x1: m.l, y1: sy(t), x2: W - m.r, y2: sy(t),
+      stroke: "var(--grid)", "stroke-width": 1}));
+    svg.appendChild(el("text", {x: sx(t), y: H - m.b + 18, "text-anchor": "middle",
+      class: "tick"}, fmtTick(t)));
+    svg.appendChild(el("text", {x: m.l - 10, y: sy(t) + 3.5, "text-anchor": "end",
+      class: "tick"}, fmtTick(t)));
+  }
+
+  // y = x: above it the arm is a better specialist than generalist, below the
+  // reverse. The reference is the point of the whole figure.
+  svg.appendChild(el("line", {x1: sx(d0), y1: sy(d0), x2: sx(d1), y2: sy(d1),
+    stroke: "var(--rule)", "stroke-width": 1.5, "stroke-dasharray": "5 5"}));
+  const midv = (d0 + d1) / 2;
+  svg.appendChild(el("text", {x: sx(midv) + 6, y: sy(midv) - 8,
+    class: "tick", transform: `rotate(-45 ${sx(midv) + 6} ${sy(midv) - 8})`},
+    "equal on both targets"));
+
+  const M = METRIC[metric];
+  const dir = M.better === "high" ? "→ better" : "← better";
+  svg.appendChild(el("text", {x: (m.l + W - m.r) / 2, y: H - 12,
+    "text-anchor": "middle", class: "axis-label"},
+    `Generalist · ${M.label} vs the pooled cohort fold  (${dir})`));
+  const yl = el("text", {x: 0, y: 0, "text-anchor": "middle", class: "axis-label",
+    transform: `translate(16 ${(m.t + H - m.b) / 2}) rotate(-90)`});
+  yl.textContent = `Specialist · ${M.label} vs each site's own fold  (${dir})`;
+  svg.appendChild(yl);
+
+  // Arrows baseline -> each IRM condition, per arm.
+  const defs = el("defs", {});
+  const mk = el("marker", {id: "ah", viewBox: "0 0 10 10", refX: "8", refY: "5",
+    markerWidth: "6", markerHeight: "6", orient: "auto-start-reverse"});
+  mk.appendChild(el("path", {d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--arrow)"}));
+  defs.appendChild(mk);
+  svg.appendChild(defs);
+
+  const base = {};
+  V.filter(p => p.cond === "baseline").forEach(p => base[p.arm] = p);
+  V.filter(p => p.cond !== "baseline").forEach(p => {
+    const b = base[p.arm];
+    if (!b) return;
+    const x1 = sx(xOf(b)), y1 = sy(yOf(b)), x2 = sx(xOf(p)), y2 = sy(yOf(p));
+    const dx = x2 - x1, dy = y2 - y1, L = Math.hypot(dx, dy) || 1;
+    const off = 11;                      // stop short so marks stay legible
+    svg.appendChild(el("line", {
+      x1: x1 + dx / L * off, y1: y1 + dy / L * off,
+      x2: x2 - dx / L * off, y2: y2 - dy / L * off,
+      stroke: COLOR[p.arm], "stroke-width": 1.5, opacity: 0.55,
+      "marker-end": "url(#ah)"}));
+  });
+
+  // Marks last, so they sit above the arrows. A 2px surface ring separates
+  // overlapping points.
+  ORDER.forEach(c => V.filter(p => p.cond === c).forEach(p => {
+    const cx = sx(xOf(p)), cy = sy(yOf(p));
+    const g = el("g", {});
+    const col = COLOR[p.arm], sh = SHAPE[p.cond];
+    if (sh === "diamond") {
+      g.appendChild(el("path", {d: `M ${cx} ${cy-8} L ${cx+8} ${cy} L ${cx} ${cy+8} L ${cx-8} ${cy} Z`,
+        fill: col, stroke: "var(--surface-1)", "stroke-width": 2, class: "mark"}));
+    } else if (sh === "triangle") {
+      g.appendChild(el("path", {d: `M ${cx} ${cy-8} L ${cx+7.5} ${cy+6} L ${cx-7.5} ${cy+6} Z`,
+        fill: col, stroke: "var(--surface-1)", "stroke-width": 2, class: "mark"}));
+    } else if (sh === "square") {
+      g.appendChild(el("rect", {x: cx - 6.5, y: cy - 6.5, width: 13, height: 13,
+        rx: 2, fill: col, stroke: "var(--surface-1)", "stroke-width": 2,
+        class: "mark"}));
+    } else if (sh === "hollow") {
+      g.appendChild(el("circle", {cx, cy, r: 7, fill: "var(--surface-1)",
+        stroke: col, "stroke-width": 2.5, class: "mark"}));
+    } else {
+      g.appendChild(el("circle", {cx, cy, r: 7, fill: col,
+        stroke: "var(--surface-1)", "stroke-width": 2, class: "mark"}));
+    }
+    const ti = el("title", {});
+    ti.textContent = `${p.arm} — ${p.condLabel}\nspecialist ${yOf(p).toFixed(3)} · generalist ${xOf(p).toFixed(3)}`;
+    g.appendChild(ti);
+    svg.appendChild(g);
+  }));
+
+  // Direct labels on the unpenalised points only — labelling all eight collides,
+  // and the arrows already say which IRM point belongs to which arm.
+  V.filter(p => p.cond === "baseline").forEach(p => {
+    const cx = sx(xOf(p)), cy = sy(yOf(p));
+    const left = xOf(p) > (d0 + d1) / 2;
+    svg.appendChild(el("text", {x: cx + (left ? -12 : 12), y: cy + 4,
+      "text-anchor": left ? "end" : "start", class: "ptlabel"}, p.arm));
+  });
+
+  const clamped = V.filter(isClamped).length;
+  document.getElementById("cap").textContent =
+    METRIC[metric].blurb
+    + (codeSet === "all" ? "  All 921 vocabulary codes."
+                         : "  The 548 pooled rare codes — those rare at any one site.")
+    + (clamped ? `  ${clamped} point${clamped > 1 ? "s sit" : " sits"} below the `
+                 + `axis floor and ${clamped > 1 ? "are" : "is"} pinned to the edge, `
+                 + `labelled with the true value.` : "");
+}
+
+function table() {
+  const tb = document.getElementById("tbody");
+  tb.textContent = "";
+  ["fedavg", "centralized", "fedavg_ft", "local"].forEach(arm => {
+    ORDER.forEach(c => {
+      const p = PTS.find(q => q.arm === arm && q.cond === c);
+      if (!p || !shown.has(c)) return;
+      const tr = document.createElement("tr");
+      const a = document.createElement("td");
+      a.className = "arm";
+      const sw = document.createElement("span");
+      sw.className = "swatch";
+      sw.style.background = COLOR[arm];
+      a.append(sw, document.createTextNode(arm));
+      tr.appendChild(a);
+      const cd = document.createElement("td");
+      cd.textContent = p.condLabel;
+      cd.style.textAlign = "left";
+      tr.appendChild(cd);
+      const b = PTS.find(q => q.arm === arm && q.cond === "baseline");
+      [["s", "all"], ["s", "rare"], ["g", "all"], ["g", "rare"]].forEach(([side, cs]) => {
+        const k = `${side}_${metric}_${cs}`;
+        const v = p[k];
+        const td = document.createElement("td");
+        td.className = "num";
+        // RMSE lives near 0.01 and needs more places than a correlation does.
+        td.textContent = metric === "rmse" ? v.toFixed(4)
+                       : Math.abs(v) >= 10 ? v.toFixed(1) : v.toFixed(3);
+        if (b && p.cond !== "baseline") {
+          const better = METRIC[metric].better === "high" ? v > b[k] : v < b[k];
+          if (better) td.classList.add("up");
+        }
+        tr.appendChild(td);
+      });
+      tb.appendChild(tr);
+    });
+  });
+}
+
+document.getElementById("metric").addEventListener("change", e => {
+  metric = e.target.value;
+  draw();
+  table();
+});
+
+document.querySelectorAll(".seg button").forEach(b => {
+  b.addEventListener("click", () => {
+    codeSet = b.dataset.set;
+    document.querySelectorAll(".seg button").forEach(o =>
+      o.setAttribute("aria-pressed", String(o === b)));
+    draw();
+  });
+});
+
+function drawDensity() {
+  const svg = document.getElementById("density");
+  svg.textContent = "";
+  const W = 780, H = 300, m = {t: 14, r: 24, b: 44, l: 176};
+  const max = Math.max(REAL_CPV, ...DENSITY.map(d => d.cpv)) * 1.08;
+  const sx = v => m.l + v / max * (W - m.l - m.r);
+  const band = (H - m.t - m.b) / DENSITY.length;
+
+  for (let v = 0; v <= max; v += 5) {
+    svg.appendChild(el("line", {x1: sx(v), y1: m.t, x2: sx(v), y2: H - m.b,
+      stroke: "var(--grid)", "stroke-width": 1}));
+    svg.appendChild(el("text", {x: sx(v), y: H - m.b + 17, "text-anchor": "middle",
+      class: "tick"}, String(v)));
+  }
+
+  // The real value is the reference the bars are read against, so it is a rule
+  // across the whole plot rather than another bar competing with them.
+  svg.appendChild(el("line", {x1: sx(REAL_CPV), y1: m.t - 4, x2: sx(REAL_CPV),
+    y2: H - m.b, stroke: "var(--text-secondary)", "stroke-width": 1.5,
+    "stroke-dasharray": "4 4"}));
+  svg.appendChild(el("text", {x: sx(REAL_CPV) + 7, y: m.t + 9, class: "ptlabel"},
+    "real  11.5"));
+
+  DENSITY.forEach((d, i) => {
+    const y = m.t + i * band + band * 0.18, h = band * 0.64;
+    const g = el("g", {});
+    g.appendChild(el("rect", {x: m.l, y, width: Math.max(2, sx(d.cpv) - m.l),
+      height: h, rx: 3, fill: COLOR[d.arm]}));
+    g.appendChild(el("text", {x: m.l - 12, y: y + h / 2 + 4, "text-anchor": "end",
+      class: "tick", "font-size": "11.5"}, d.label));
+    g.appendChild(el("text", {x: sx(d.cpv) + 8, y: y + h / 2 + 4,
+      class: "tick", "font-size": "11.5"}, d.cpv.toFixed(2)));
+    svg.appendChild(g);
+  });
+
+  svg.appendChild(el("text", {x: (m.l + W - m.r) / 2, y: H - 10,
+    "text-anchor": "middle", class: "axis-label"},
+    "codes emitted per synthetic visit"));
+}
+
+const SHAPE_SVG = {
+  baseline:  '<circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="2"/>',
+  irm100:    '<circle cx="8" cy="8" r="6" fill="currentColor"/>',
+  irm10000:  '<rect x="2.5" y="2.5" width="11" height="11" rx="2" fill="currentColor"/>',
+  irm100000: '<path d="M8 1.5 L14.5 8 L8 14.5 L1.5 8 Z" fill="currentColor"/>',
+  irmlate:   '<path d="M8 2 L14.5 13 L1.5 13 Z" fill="currentColor"/>'
+};
+
+function buildChips() {
+  const row = document.getElementById("condrow");
+  row.textContent = "";
+  CONDS.forEach(c => {
+    // A real checkbox inside the label, visually replaced by the chip: the
+    // control stays keyboard-reachable and announces its checked state, which a
+    // div with a click handler would not.
+    const lab = document.createElement("label");
+    lab.className = "chip";
+    lab.dataset.on = String(shown.has(c.key));
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = shown.has(c.key);
+    const mark = document.createElementNS(NS, "svg");
+    mark.setAttribute("width", "16");
+    mark.setAttribute("height", "16");
+    mark.setAttribute("aria-hidden", "true");
+    mark.innerHTML = SHAPE_SVG[c.key];
+    const txt = document.createElement("span");
+    txt.textContent = c.label;
+    box.addEventListener("change", () => {
+      if (box.checked) shown.add(c.key); else shown.delete(c.key);
+      // The baseline is what every arrow starts from; without it the arrows
+      // have no origin and the plot silently loses them. Keep it selectable
+      // but say why the view changed rather than just dropping the arrows.
+      lab.dataset.on = String(box.checked);
+      draw();
+      table();
+    });
+    lab.append(box, mark, txt);
+    row.appendChild(lab);
+  });
+}
+
+buildChips();
+draw();
+table();
+drawDensity();
+</script>

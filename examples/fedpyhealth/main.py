@@ -494,14 +494,20 @@ def with_cohort(passthrough: Sequence[str], cohort_cache: str) -> List[str]:
 # --irm-rho is here because a rho SWEEP is the point of the IRM experiment:
 # two rho values landing on one save_dir would clobber each other's checkpoints,
 # and the whole comparison is between them. --irm-warmup is not, since it is
-# held fixed within a sweep; add it if that stops being true.
+# now also name-affecting: sweeping WHEN the penalty starts is a
+# planned axis, and two warmups at one rho would otherwise collide.
 NAME_AFFECTING = ("--n-rounds", "--local-epochs", "--ft-epochs", "--weighting",
-                  "--metrics", "--irm-rho")
+                  "--metrics", "--irm-rho", "--irm-warmup",
+                  "--adapter", "--adapter-mu")
 
 
 #: Boolean train.py flags that must appear in the run name. The suffix has to
 #: match make_run_name() in train.py, since either side may build the name.
-NAME_AFFECTING_BOOL = {"--rare-upweight": "_rw"}
+# --no-early-stop changes how LONG a run trains, not just how it trains: the
+# hilo8 centralized baseline stopped at epoch 37 of 100, so a full-budget run
+# is a different model and must not share its save_dir. Without this suffix the
+# control run would overwrite the very baseline it is meant to be compared to.
+NAME_AFFECTING_BOOL = {"--rare-upweight": "_rw", "--no-early-stop": "_nes"}
 
 
 def run_name_for(regime: str, profile: str, cohort_file: str,
@@ -676,6 +682,7 @@ def train_job(regime: str, profile: str, passthrough: Sequence[str],
 # done. Strip them instead.
 TRAIN_ONLY_VALUED = (
     "--irm-rho", "--irm-warmup",
+    "--adapter", "--adapter-rank", "--adapter-mu",
     "--config", "--weighting", "--ft-epochs", "--n-rounds", "--local-epochs",
     "--num-synth", "--synth-per-hospital", "--metrics", "--ckpt-every",
     "--snapshot-every",

@@ -236,6 +236,27 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         "weights each patient by their own site's view. Off by "
                         "default; run_name gets a _rw suffix so weighted and "
                         "unweighted runs never share a save_dir.")
+    p.add_argument("--adapter", default=None,
+                   choices=["none", "lora_attn", "last_mlp", "lora_head"],
+                   help="parameter-efficient LOCAL fine-tuning for fedavg_ft. "
+                        "'none' (default) is the existing full fine-tune: all "
+                        "6.17M weights per hospital. 'lora_attn' trains LoRA on "
+                        "q,v of every attention block (33K, 0.5%%); 'last_mlp' "
+                        "trains the final block's feedforward in full (524K, "
+                        "8.5%%); 'lora_head' trains LoRA on the autoregressive "
+                        "code head (38K, 0.6%%), masked so it cannot break "
+                        "within-visit causality. The trunk is frozen either way, "
+                        "so the federated signal survives. Only affects the "
+                        "fine-tuning stage -- the FedAvg rounds before it, and "
+                        "any IRM penalty on them, are untouched.")
+    p.add_argument("--adapter-rank", type=int, default=None,
+                   help="LoRA rank (default 8). Ignored by --adapter last_mlp.")
+    p.add_argument("--adapter-mu", type=float, default=None,
+                   help="FedProx-style L2 on the adapter parameters, applied "
+                        "during fine-tuning only. With a frozen trunk an adapter "
+                        "of zero IS the federated global, so this is a proximal "
+                        "term: mu controls how far a site may personalise away "
+                        "from the shared model. 0 (default) is off.")
     p.add_argument("--irm-rho", type=float, default=None,
                    help="IRMv1 penalty weight. 0 (default) trains the plain "
                         "risk. Above 0 each client optimises risk + rho * "
@@ -341,6 +362,18 @@ def make_run_name(cfg: dict) -> str:
     # the experiment, so two rho values must not land on one save_dir.
     if cfg.get("irm_rho", 0.0) > 0:
         name += f"_irm{cfg['irm_rho']:g}"
+    # Full-budget runs are a different model from early-stopped ones (the
+    # hilo8 centralized baseline stopped at 37 of 100 epochs), so they get
+    # their own save_dir rather than overwriting the baseline.
+    if cfg.get("early_stop") is False:
+        name += "_nes"
+    # The adapter changes WHICH weights fine-tuning moves, so an adapter run is
+    # a different model from the full fine-tune and needs its own save_dir. mu
+    # is in the name too: sweeping it is the point.
+    if cfg.get("adapter", "none") != "none":
+        name += f"_{cfg['adapter']}r{cfg.get('adapter_rank', 8)}"
+        if cfg.get("adapter_mu", 0.0) > 0:
+            name += f"_mu{cfg['adapter_mu']:g}"
     return name
 
 
@@ -406,6 +439,8 @@ def build_config(argv: List[str] = None) -> dict:
         "synth_per_hospital": args.synth_per_hospital,
         "ft_epochs": args.ft_epochs, "run_name": args.run_name,
         "irm_rho": args.irm_rho, "irm_warmup": args.irm_warmup,
+        "adapter": args.adapter, "adapter_rank": args.adapter_rank,
+        "adapter_mu": args.adapter_mu,
         "early_stop": args.early_stop, "es_patience": args.es_patience,
         "es_min_steps": args.es_min_steps,
         "es_min_val_patients": args.es_min_val_patients,
@@ -423,6 +458,9 @@ def build_config(argv: List[str] = None) -> dict:
     cfg.setdefault("ckpt_every", 1)
     cfg.setdefault("snapshot_every", 0)      # 0 = keep no numbered snapshots
     cfg.setdefault("rare_upweight", False)
+    cfg.setdefault("adapter", "none")
+    cfg.setdefault("adapter_rank", 8)
+    cfg.setdefault("adapter_mu", 0.0)
     cfg.setdefault("irm_rho", 0.0)
     cfg.setdefault("irm_warmup", 0)
     cfg.setdefault("tb_logdir", None)
@@ -776,7 +814,11 @@ def irm_rho_at(step: int, rho: float, warmup: int) -> float:
     need to see it.
 
     Args:
-        step: Completed rounds (FedAvg) or epochs (centralized/local).
+        step: Completed EPOCHS. FedAvg converts its round counter at the call
+            site (round * local_epochs) so one --irm-warmup value means the same
+            point in training for every regime. Before this conversion existed,
+            --irm-warmup 17 engaged fedavg at epoch 34 and centralized at epoch
+            17, and the two arms were not comparable on when the penalty began.
         rho: The post-warmup penalty weight.
         warmup: Steps to hold at 1.0 first. ``0`` applies ``rho`` immediately.
 
@@ -924,7 +966,11 @@ def run_fedavg(
             model.train_model(clients[cid], val_dataset=None, device=device,
                               on_epoch_end=_on_epoch_end,
                               sample_weight_fn=sample_weight_fn,
-                              irm_rho=irm_rho_at(r, irm_rho, irm_warmup))
+                              # warmup is in EPOCHS everywhere; convert to
+                              # rounds here so --irm-warmup means the same
+                              # point in training for every regime.
+                              irm_rho=irm_rho_at(
+                                  r * local_epochs, irm_rho, irm_warmup))
             snapshots.append(_snapshot(model))
             weights.append(1.0 if weighting == "uniform" else float(sizes[cid]))
             log(f"  round {r + 1}/{n_rounds}  client {cid}  (n={sizes[cid]}) done")
@@ -1255,6 +1301,9 @@ def finetune_local(
     sample_weight_fn=None,
     irm_rho: float = 0.0,
     irm_warmup: int = 0,
+    adapter: str = "none",
+    adapter_rank: int = 8,
+    adapter_mu: float = 0.0,
 ) -> Dict[str, object]:
     """FedAvg + fine-tuning: personalize the shared global model per hospital.
 
@@ -1296,6 +1345,18 @@ def finetune_local(
             f"(n={len(train_subset)})")
         m = build_model()
         m.load_state_dict(global_state)  # warm start from the federated global
+        # Adapter AFTER load_state_dict: apply_adapter wraps modules, which
+        # changes parameter names, and a wrapped model will not accept the
+        # trunk's plain state dict. Order matters and getting it wrong raises
+        # a key mismatch rather than failing quietly.
+        if adapter != "none":
+            from pyhealth.models.generators.adapters import apply_adapter
+            trainable = apply_adapter(m.halo_model, adapter, adapter_rank)
+            n_tr = sum(p.numel() for p in trainable)
+            n_all = sum(p.numel() for p in m.halo_model.parameters())
+            log(f"  {hid}: adapter {adapter} r={adapter_rank} -- training "
+                f"{n_tr:,} of {n_all:,} params ({100 * n_tr / n_all:.2f}%)"
+                + (f", mu={adapter_mu:g}" if adapter_mu else ""))
 
         val_ds = (val_clients or {}).get(hid)
         stopper, use_val = make_site_stopper(
@@ -1320,7 +1381,12 @@ def finetune_local(
                       sample_weight_fn=sample_weight_fn,
                       # Fine-tuning runs AFTER the last aggregation, so warmup
                       # is already long over -- rho applies from step 0 here.
-                      irm_rho=irm_rho)
+                      # The IRM penalty is deliberately NOT extended to adapter
+                      # runs: IRM enforces invariance across sites and local
+                      # adaptation deliberately breaks it, so applying both to
+                      # the same weights would have them pull against each other.
+                      irm_rho=0.0 if adapter != "none" else irm_rho,
+                      adapter_mu=adapter_mu)
         if stopper is not None:
             log(f"  {hid}: {stopper.summary()}")
             # The warm start means epoch 0 can already be the best the site
@@ -1702,7 +1768,9 @@ if __name__ == "__main__":
                     ckpt_dir=save_dir, fingerprint=fingerprint,
                     val_clients=client_vals, es_cfg=es_cfg,
                     sample_weight_fn=sample_weight_fn,
-                    irm_rho=cfg["irm_rho"], irm_warmup=cfg["irm_warmup"])
+                    irm_rho=cfg["irm_rho"], irm_warmup=cfg["irm_warmup"],
+                    adapter=cfg["adapter"], adapter_rank=cfg["adapter_rank"],
+                    adapter_mu=cfg["adapter_mu"])
                 _, client_synth = generate_local(
                     ft_models, sizes, cfg["num_synth"],
                     cfg["synth_per_hospital"], device=device)

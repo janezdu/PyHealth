@@ -674,7 +674,7 @@ class HALO(BaseModel):
     def train_model(self, train_dataset, val_dataset=None, device=None,
                     on_epoch_end: Callable[[int, float], None] = None,
                     sample_weight_fn: Callable[[dict], "torch.Tensor"] = None,
-                    irm_rho=0.0) -> None:
+                    irm_rho=0.0, adapter_mu: float = 0.0) -> None:
         """Train the HALO model with a custom loop.
 
         Named ``train_model`` (not ``train``) to avoid shadowing
@@ -731,7 +731,17 @@ class HALO(BaseModel):
         print(f"Training on: {device}")
 
         os.makedirs(self.save_dir, exist_ok=True)
-        optimizer = torch.optim.Adam(self.halo_model.parameters(), lr=self._lr)
+        # Only what is unfrozen. Identical to optimising every parameter when
+        # nothing is frozen, but an adapter run freezes the trunk and handing
+        # Adam frozen tensors would build moment buffers for 6M parameters that
+        # never move -- and would silently train them if anything later flipped
+        # requires_grad back on.
+        trainable = [p for p in self.halo_model.parameters() if p.requires_grad]
+        if not trainable:
+            raise ValueError(
+                "no trainable parameters: every weight is frozen. An adapter "
+                "variant must leave something with requires_grad=True.")
+        optimizer = torch.optim.Adam(trainable, lr=self._lr)
 
         checkpoint_path = os.path.join(self.save_dir, "halo_model")
         if os.path.exists(checkpoint_path):
@@ -789,6 +799,15 @@ class HALO(BaseModel):
                     )
                     loss = risk
                     epoch_risk_sum += risk.item()
+                if adapter_mu > 0.0:
+                    # FedProx, specialised to a frozen trunk: a LoRA delta of
+                    # zero IS the federated global, so L2 on the trainable
+                    # parameters is exactly ||theta - theta_global||^2 and mu
+                    # sets how far a site may personalise away from the shared
+                    # model. See adapters.adapter_l2 for why last_mlp is the
+                    # exception.
+                    from pyhealth.models.generators.adapters import adapter_l2
+                    loss = loss + (adapter_mu / 2.0) * adapter_l2(self.halo_model)
                 loss.backward()
                 optimizer.step()
                 epoch_loss_sum += loss.item()
