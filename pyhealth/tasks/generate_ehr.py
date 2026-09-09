@@ -4,7 +4,7 @@ This is the shared task for every generator in
 :mod:`pyhealth.models.generators` (HALO, MedGAN, CorGAN, PromptEHR, ...). It
 extracts, for each patient, the ordered list of visits where each visit is the
 list of medical codes recorded in that admission. The single input feature
-``visits`` is processed by :class:`~pyhealth.processors.NestedSequenceProcessor`;
+``visits`` is processed by :class:`~pyhealth.processors.NestedMultiHotProcessor`;
 there is no prediction label, so ``output_schema`` is empty.
 
 :class:`EHRGeneration` holds all the extraction logic; dataset-specific
@@ -66,7 +66,7 @@ import logging
 from typing import Callable, Dict, List, Optional, Type, Union
 
 from pyhealth.data.data import Patient
-from pyhealth.processors import NestedSequenceProcessor
+from pyhealth.processors import NestedMultiHotProcessor
 
 from .base_task import BaseTask
 
@@ -86,7 +86,7 @@ class EHRGeneration(BaseTask):
 
     Args:
         task_name: Name of the task.
-        input_schema: ``{"visits": NestedSequenceProcessor}``.
+        input_schema: ``{"visits": NestedMultiHotProcessor}``.
         output_schema: empty (generative task, no labels).
         event_type: Event type to pull per admission. Default
             ``"diagnoses_icd"``.
@@ -96,7 +96,7 @@ class EHRGeneration(BaseTask):
     """
 
     task_name: str = "ehr_generation"
-    input_schema: Dict[str, Union[str, Type]] = {"visits": NestedSequenceProcessor}
+    input_schema: Dict[str, Union[str, Type]] = {"visits": NestedMultiHotProcessor}
     output_schema: Dict[str, Union[str, Type]] = {}
 
     event_type: str = "diagnoses_icd"
@@ -221,10 +221,14 @@ def to_evaluation_dataframe(
 def decode_dataset(sample_dataset, feature_key: str = "visits") -> List[Dict]:
     """Decode a processed EHRGeneration ``SampleDataset`` back into records.
 
-    Inverts the :class:`~pyhealth.processors.NestedSequenceProcessor` encoding
+    Inverts the :class:`~pyhealth.processors.NestedMultiHotProcessor` encoding
     using its vocabulary (skipping ``<pad>``/``<unk>``), yielding one
     ``{"visits": [[code_str, ...], ...]}`` record per sample. Use this to build
     the real train/test frames that ``evaluate_synthetic_ehr`` compares against.
+
+    Codes come back in vocabulary order, not the order they were charted in,
+    and repeats collapse -- the multi-hot form records presence, not sequence
+    or count within a visit.
 
     Args:
         sample_dataset: A ``SampleDataset`` produced by :class:`EHRGeneration`.
@@ -241,11 +245,15 @@ def decode_dataset(sample_dataset, feature_key: str = "visits") -> List[Dict]:
     for i in range(len(sample_dataset)):
         sample = sample_dataset[i]
         visits: List[List[str]] = []
-        for row in sample[feature_key].tolist():
+        # Each row is a multi-hot vector over the vocabulary, so the codes
+        # present are its non-zero columns. (Reading the values as indices --
+        # which the index-based encoding required -- would see only 0s and 1s
+        # here and decode every visit as empty.)
+        for row in sample[feature_key]:
             codes = [
-                index_to_code[int(idx)]
-                for idx in row
-                if index_to_code.get(int(idx)) not in (None, "<pad>", "<unk>")
+                index_to_code[int(col)]
+                for col in row.nonzero().flatten().tolist()
+                if index_to_code.get(int(col)) not in (None, "<pad>", "<unk>")
             ]
             if codes:
                 visits.append(codes)
