@@ -63,7 +63,8 @@ Note:
 """
 
 import logging
-from typing import Callable, Dict, List, Optional, Type, Union
+from collections.abc import Callable
+from typing import ClassVar
 
 from pyhealth.data.data import Patient
 from pyhealth.processors import NestedMultiHotProcessor
@@ -93,19 +94,29 @@ class EHRGeneration(BaseTask):
         code_attr: Event attribute holding the code string. Default
             ``"icd9_code"``.
         min_visits: Minimum qualifying visits to keep a patient. Default 2.
+
+    Examples:
+        >>> from pyhealth.datasets import MIMIC3Dataset
+        >>> from pyhealth.tasks import EHRGeneration
+        >>> ds = MIMIC3Dataset(root="...", tables=["diagnoses_icd"], dev=True)
+        >>> samples = ds.set_task(EHRGeneration())
+        >>> samples[0]["visits"].shape  # (num_visits, vocab_size) multi-hot
+        torch.Size([3, 512])
     """
 
     task_name: str = "ehr_generation"
-    input_schema: Dict[str, Union[str, Type]] = {"visits": NestedMultiHotProcessor}
-    output_schema: Dict[str, Union[str, Type]] = {}
+    input_schema: ClassVar[dict[str, str | type]] = {
+        "visits": NestedMultiHotProcessor
+    }
+    output_schema: ClassVar[dict[str, str | type]] = {}
 
     event_type: str = "diagnoses_icd"
     code_attr: str = "icd9_code"
     min_visits: int = 2
 
-    def __call__(self, patient: Patient) -> List[Dict]:
+    def __call__(self, patient: Patient) -> list[dict]:
         """Extract the per-visit code sequence for a patient."""
-        visits: List[List[str]] = []
+        visits: list[list[str]] = []
         admissions = patient.get_events(event_type="admissions")
         for admission in admissions:
             events = patient.get_events(
@@ -167,7 +178,7 @@ class EHRGenerationMIMIC4(EHRGeneration):
 # ----------------------------------------------------------------------------
 def to_evaluation_dataframe(
     records,
-    label_fn: Optional[Callable[[Dict], int]] = None,
+    label_fn: Callable[[dict], int] | None = None,
     subject_col: str = "id",
     visit_col: str = "time",
     code_col: str = "visit_codes",
@@ -197,6 +208,15 @@ def to_evaluation_dataframe(
     Returns:
         ``pandas.DataFrame`` with columns
         ``[subject_col, visit_col, code_col, label_col]``.
+
+    Examples:
+        >>> from pyhealth.tasks.generate_ehr import to_evaluation_dataframe
+        >>> records = [{"visits": [["4019", "25000"], ["4019"]]}]
+        >>> to_evaluation_dataframe(records)
+           id  time visit_codes  labels
+        0   0     0        4019       0
+        1   0     0       25000       0
+        2   0     1        4019       0
     """
     import pandas as pd
 
@@ -218,7 +238,7 @@ def to_evaluation_dataframe(
     )
 
 
-def decode_dataset(sample_dataset, feature_key: str = "visits") -> List[Dict]:
+def decode_dataset(sample_dataset, feature_key: str = "visits") -> list[dict]:
     """Decode a processed EHRGeneration ``SampleDataset`` back into records.
 
     Inverts the :class:`~pyhealth.processors.NestedMultiHotProcessor` encoding
@@ -237,14 +257,20 @@ def decode_dataset(sample_dataset, feature_key: str = "visits") -> List[Dict]:
 
     Returns:
         List of ``{"visits": [[code_str, ...], ...]}`` records.
+
+    Examples:
+        >>> from pyhealth.tasks.generate_ehr import decode_dataset
+        >>> records = decode_dataset(samples)
+        >>> records[0]["visits"][0]
+        ['4019', '25000']
     """
     processor = sample_dataset.input_processors[feature_key]
     index_to_code = {idx: code for code, idx in processor.code_vocab.items()}
 
-    records: List[Dict] = []
+    records: list[dict] = []
     for i in range(len(sample_dataset)):
         sample = sample_dataset[i]
-        visits: List[List[str]] = []
+        visits: list[list[str]] = []
         # Each row is a multi-hot vector over the vocabulary, so the codes
         # present are its non-zero columns. (Reading the values as indices --
         # which the index-based encoding required -- would see only 0s and 1s

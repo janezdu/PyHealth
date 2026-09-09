@@ -3,7 +3,7 @@
 This example demonstrates:
 1. Loading MIMIC-III data
 2. Applying the EHRGenerationMIMIC3 task (per-visit ICD-9 code sequences)
-3. Creating a SampleDataset with a NestedSequenceProcessor
+3. Creating a SampleDataset with a NestedMultiHotProcessor
 4. Training the HALO generator with its custom training loop
 5. Generating synthetic patients
 6. Evaluating the synthetic data with the generative metrics suite
@@ -34,6 +34,7 @@ if __name__ == "__main__":
     sample = sample_dataset[0]
     print("\nSample structure:")
     print(f"  Patient ID: {sample['patient_id']}")
+    # (num_visits, vocab_size) multi-hot -- there is no padded inner axis.
     print(f"  Visits tensor shape: {tuple(sample['visits'].shape)}")
 
     # STEP 3: Split dataset by patient
@@ -85,12 +86,15 @@ if __name__ == "__main__":
     }
 
     def real_subset_to_records(subset):
+        # NestedMultiHotProcessor encodes each patient as a dense
+        # (num_visits, vocab_size) multi-hot tensor, so the set of codes in a
+        # visit is the set of *nonzero column indices* -- not the tensor
+        # values themselves.
         for sample in subset:
             pid = str(sample["patient_id"])
-            visits_tensor = sample["visits"]
-            for t, visit in enumerate(visits_tensor.tolist()):
-                for idx in visit:
-                    code = index_to_code.get(int(idx))
+            for t, visit in enumerate(sample["visits"]):
+                for idx in visit.nonzero(as_tuple=True)[0].tolist():
+                    code = index_to_code.get(idx)
                     if code in (None, "<pad>", "<unk>"):
                         continue
                     yield {"id": pid, "time": t, "visit_codes": code, "labels": 0}
