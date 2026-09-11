@@ -36,7 +36,7 @@ Results land in ``_outputs/results/tests/test1_prevalence.json``.
 import argparse
 import json
 import os
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Optional
 
 import pandas as pd
 
@@ -67,7 +67,17 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                    help="real fold to score against (default: val -- keep test "
                         "held out until the final numbers)")
     p.add_argument("--n-bootstraps", type=int, default=5,
-                   help="bootstrap resamples over codes")
+                   help="bootstrap resamples over codes. 5 is low for COMPARING "
+                        "runs: the per-run bootstrap std on specialist R^2 is "
+                        "~0.22 on hilo8, so a 5-resample mean carries a "
+                        "standard error near 0.10. Raise it (200 cuts that to "
+                        "~0.016) when a difference between arms is the point.")
+    p.add_argument("--bootstrap-seed", type=int, default=0,
+                   help="seed for the bootstrap resampling, so a rescore of the "
+                        "same synthetic data reproduces. Default 0. Pass -1 to "
+                        "leave it unseeded, which is what every result written "
+                        "before this flag existed used. Seeding buys "
+                        "reproducibility, not precision -- see --n-bootstraps.")
     p.add_argument("--real-scope", choices=["hospital", "pooled"],
                    default="hospital",
                    help="what each hospital's synthetic set is scored AGAINST. "
@@ -169,6 +179,7 @@ def prevalence_from_frames(
     rare_codes: Iterable[str] = None,
     n_bootstraps: int = 5,
     label: str = "global",
+    seed: Optional[int] = None,
 ) -> Dict[str, tuple]:
     """Score one real/synthetic frame pair, All and (optionally) Rare.
 
@@ -185,14 +196,15 @@ def prevalence_from_frames(
 
     out: Dict[str, tuple] = {}
     out.update(_prefixed(
-        compute_prevalence_metrics(val_df, syn_df, n_bootstraps=n_bootstraps),
+        compute_prevalence_metrics(val_df, syn_df, n_bootstraps=n_bootstraps,
+                                   seed=seed),
         "PrevVal_All_",
     ))
     if rare_codes:
         out.update(_prefixed(
             compute_prevalence_metrics(
                 val_df, syn_df, n_bootstraps=n_bootstraps,
-                code_subset=list(rare_codes),
+                code_subset=list(rare_codes), seed=seed,
             ),
             "PrevVal_Rare_",
         ))
@@ -208,6 +220,7 @@ def evaluate_rare_prevalence(
     rare_codes: List[str] = None,
     n_bootstraps: int = 5,
     label: str = "global",
+    seed: Optional[int] = None,
 ) -> Dict[str, tuple]:
     """In-run entry point: score a hospital straight from live objects.
 
@@ -218,6 +231,7 @@ def evaluate_rare_prevalence(
         rare_codes: This hospital's rare codes. Falsy skips the rare variant.
         n_bootstraps: Bootstrap resamples over codes.
         label: Tag used in log lines.
+        seed: Bootstrap seed; None leaves the draw unseeded.
 
     Returns:
         ``{metric_name: (mean, std)}``.
@@ -226,7 +240,8 @@ def evaluate_rare_prevalence(
         real_subset_to_records(val_subset, index_to_code)
     ).astype(EVAL_SCHEMA)
     syn_df = pd.DataFrame(synthetic_to_records(synthetic)).astype(EVAL_SCHEMA)
-    return prevalence_from_frames(val_df, syn_df, rare_codes, n_bootstraps, label)
+    return prevalence_from_frames(val_df, syn_df, rare_codes, n_bootstraps,
+                                  label, seed=seed)
 
 
 def score_run(
@@ -236,6 +251,7 @@ def score_run(
     n_bootstraps: int = 5,
     synth_cap: int = 0,
     pooled_real: "pd.DataFrame" = None,
+    seed: Optional[int] = None,
 ) -> Dict[str, dict]:
     """Standalone entry point: score every hospital of one finished run.
 
@@ -245,6 +261,8 @@ def score_run(
             scoring fold, straight from the cohort cache.
         rare_by_hospital: Each hospital's rare codes.
         n_bootstraps: Bootstrap resamples over codes.
+        seed: Bootstrap seed, shared by every hospital in the run so all arms
+            are resampled identically. None leaves the draw unseeded.
         pooled_real: When given, every hospital's synthetic set is scored
             against THIS frame instead of its own test fold. Changes the
             question from "does site h's generator match site h" to "does it
@@ -282,6 +300,7 @@ def score_run(
         syn_df = pd.DataFrame(synthetic_to_records(synth)).astype(EVAL_SCHEMA)
         scores = prevalence_from_frames(
             val_df, syn_df, rare_by_hospital.get(hid), n_bootstraps, label=hid,
+            seed=seed,
         )
         r2 = scores.get("PrevVal_All_Prevalence_R2", (float("nan"),))[0]
         rare_r2 = scores.get("PrevVal_Rare_Prevalence_R2", (float("nan"),))[0]
@@ -350,6 +369,7 @@ def main(argv=None) -> None:
         print(f"\n=== {name}  ({save_dir})", flush=True)
         results[name] = score_run(
             load_synthetic(save_dir), real, rare_by_hospital, args.n_bootstraps,
+            seed=None if args.bootstrap_seed < 0 else args.bootstrap_seed,
             synth_cap=args.synth_cap, pooled_real=pooled_real,
         )
 
@@ -364,6 +384,8 @@ def main(argv=None) -> None:
             "rare_scope": args.rare_scope,
             "real_scope": args.real_scope,
             "n_bootstraps": args.n_bootstraps,
+            "bootstrap_seed": (None if args.bootstrap_seed < 0
+                               else args.bootstrap_seed),
             "synth_cap": args.synth_cap,
             "runs": results,
         }, fh, indent=2)

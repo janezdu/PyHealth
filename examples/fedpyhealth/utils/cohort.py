@@ -238,6 +238,40 @@ def load_clients(cache_dir: str, folds: Sequence[str] = FOLDS,
     }
 
 
+def mix_synthetic(real_patients: Dict[str, list], synthetic: List[dict],
+                  hid: str, processor, name: str):
+    """One ``SampleDataset`` over a client's REAL patients plus generated ones.
+
+    Built as a single dataset rather than a ``ConcatDataset`` for two reasons.
+    ``get_dataloader`` calls ``set_shuffle``, which only a ``SampleDataset``
+    has; and routing the synthetic patients through the same pinned processor
+    is what guarantees they are encoded identically to the real ones. A
+    separately-built synthetic dataset could silently disagree on the vocabulary
+    and the mixture would be training on two different encodings.
+
+    Args:
+        real_patients: ``{patient_id: visits}`` for this hospital's train fold.
+        synthetic: ``[{"patient_id", "visits"}, ...]`` from ``model.generate``.
+            Patients whose generation produced no visits are dropped -- an empty
+            record is not a training signal, and counting it would overstate how
+            much synthetic data the mixture actually holds.
+        hid: Hospital id, used only to tag the samples.
+        processor: The cohort's pinned processor. Never refitted.
+        name: Dataset name, for logging.
+
+    Returns:
+        A ``SampleDataset`` holding both, with synthetic ids prefixed ``syn_``
+        so the two are separable after the fact.
+    """
+    merged = dict(real_patients)
+    kept = 0
+    for i, p in enumerate(synthetic):
+        if p.get("visits"):
+            merged[f"syn_{i}"] = p["visits"]
+            kept += 1
+    return _to_sample_dataset({hid: merged}, processor, name), kept
+
+
 def load_synthetic(save_dir: str) -> Dict[str, List[dict]]:
     """Read a finished run's per-hospital synthetic patients.
 
@@ -467,6 +501,30 @@ def code_prevalence(manifest: dict, folds: Sequence[str] = FOLDS
                    for h in manifest["hospitals"])
     return {c: sum(support[f].get(c, 0) for f in folds) / max(1, n_cohort)
             for c in manifest["pooled_rare_codes"]}
+
+
+def fold_support(traj: Dict[str, Dict[str, list]]) -> Dict[str, int]:
+    """Patients carrying each code in one fold, counted from the cache.
+
+    ``manifest["pooled_rare_support"]`` only covers the rare list, so any pool
+    that reaches outside it -- ``--code-pool common`` or ``all`` -- has to count
+    its own support before it can threshold on ``--min-positives`` or band the
+    results. Counted per PATIENT, not per visit, matching the manifest: the
+    label is set membership ("does this patient carry the code"), so a code
+    charted twenty times in one stay is still one positive.
+
+    Args:
+        traj: ``{hospital: {patient: [[code, ...], ...]}}`` for one fold.
+
+    Returns:
+        ``{code: n_patients}`` over every hospital in ``traj``.
+    """
+    counts: Dict[str, int] = {}
+    for patients in traj.values():
+        for visits in patients.values():
+            for code in {c for visit in visits for c in visit}:
+                counts[code] = 1 + counts.get(code, 0)
+    return counts
 
 
 def scored_codes(manifest: dict, fold: str, min_positives: int = 1

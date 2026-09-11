@@ -58,6 +58,8 @@ class HALOConfig:
         n_layer: int = 12,
         n_head: int = 12,
         layer_norm_epsilon: float = 1e-5,
+        dropout: float = 0.0,
+        latent_dim: int = 0,
         initializer_range: float = 0.02,
         batch_size: int = 48,
         epoch: int = 50,
@@ -67,6 +69,19 @@ class HALOConfig:
         self.total_vocab_size = total_vocab_size
         self.code_vocab_size = code_vocab_size
         self.label_vocab_size = label_vocab_size
+        # 0.0 reproduces the model as it was before dropout existed, exactly.
+        # Anything above 0 is a DIFFERENT model: it changes training for every
+        # regime, so every result already on the board was produced at 0.0 and
+        # is not comparable to a dropout run.
+        self.dropout = dropout
+        # 0 disables the latent entirely and the model is unchanged. Above 0,
+        # z ~ N(0, I) of this width is projected into the embedding at POSITION
+        # 1 -- the slot HALO reserves for a conditioning label, which this port
+        # leaves empty. Not an arbitrary position: the fine head pairs
+        # history[t] with input_visits[t+1], so the hidden state at position 1
+        # is exactly what predicts visit 1, and 79% of this cohort's patients
+        # have only visit 1.
+        self.latent_dim = latent_dim
         self.special_vocab_size = special_vocab_size
         self.n_positions = n_positions
         self.n_ctx = n_ctx
@@ -128,6 +143,11 @@ class Attention(nn.Module):
         self.scale = scale
         self.c_attn = Conv1D(n_state * 3, nx)
         self.c_proj = Conv1D(n_state, nx)
+        # getattr, not config.dropout: a HALOConfig pickled before this field
+        # existed still loads, and the tiny test configs do not define it.
+        p_drop = getattr(config, "dropout", 0.0)
+        self.attn_dropout = nn.Dropout(p_drop)
+        self.resid_dropout = nn.Dropout(p_drop)
 
     def _attn(self, q, k, v):
         w = torch.matmul(q, k)
@@ -137,6 +157,7 @@ class Attention(nn.Module):
         b = self.bias[:, :, ns - nd:ns, :ns]
         w = w * b - 1e10 * (1 - b)
         w = nn.Softmax(dim=-1)(w)
+        w = self.attn_dropout(w)
         return torch.matmul(w, v)
 
     def merge_heads(self, x):
@@ -166,6 +187,7 @@ class Attention(nn.Module):
         a = self._attn(query, key, value)
         a = self.merge_heads(a)
         a = self.c_proj(a)
+        a = self.resid_dropout(a)
         return a, present
 
 
@@ -175,12 +197,13 @@ class MLP(nn.Module):
         nx = config.n_embd
         self.c_fc = Conv1D(n_state, nx)
         self.c_proj = Conv1D(nx, n_state)
+        self.dropout = nn.Dropout(getattr(config, "dropout", 0.0))
 
     def forward(self, x):
         # tanh-approximate GELU, matching the reference HALO implementation.
         h = F.gelu(self.c_fc(x), approximate="tanh")
         h2 = self.c_proj(h)
-        return h2
+        return self.dropout(h2)
 
 
 class Block(nn.Module):
@@ -216,8 +239,11 @@ class CoarseTransformerModel(nn.Module):
             [copy.deepcopy(block) for _ in range(config.n_layer)]
         )
         self.ln_f = LayerNorm(config.n_embd, eps=config.layer_norm_epsilon)
+        self.embed_dropout = nn.Dropout(getattr(config, "dropout", 0.0))
+        d = getattr(config, "latent_dim", 0)
+        self.z_proj = nn.Linear(d, config.n_embd) if d > 0 else None
 
-    def forward(self, input_visits, position_ids=None, past=None):
+    def forward(self, input_visits, position_ids=None, past=None, z=None):
         if past is None:
             past_length = 0
             past = [None] * len(self.h)
@@ -236,7 +262,18 @@ class CoarseTransformerModel(nn.Module):
 
         inputs_embeds = self.vis_embed_mat(input_visits)
         position_embeds = self.pos_embed_mat(position_ids)
-        hidden_states = inputs_embeds + position_embeds
+        if self.z_proj is not None and z is not None:
+            # OUT OF PLACE. inputs_embeds is an autograd intermediate;
+            # slice-assigning into it makes the graph depend on a mutated
+            # buffer, which either errors or silently gives wrong gradients.
+            # A one-hot over positions, broadcast, adds z at position 1 only.
+            slot = torch.zeros(inputs_embeds.shape[1], 1,
+                               device=inputs_embeds.device,
+                               dtype=inputs_embeds.dtype)
+            slot[1] = 1.0
+            inputs_embeds = inputs_embeds + slot.unsqueeze(0) * \
+                self.z_proj(z).unsqueeze(1)
+        hidden_states = self.embed_dropout(inputs_embeds + position_embeds)
         for block, layer_past in zip(self.h, past):
             hidden_states, _ = block(hidden_states, layer_past)
         hidden_states = self.ln_f(hidden_states)
@@ -305,7 +342,9 @@ class HALOModel(nn.Module):
         past=None,
         pos_loss_weight=None,
         sample_weights=None,
+        reduce: bool = True,
         irm_scale=None,
+        z=None,
     ):
         """Args:
             irm_scale: Optional scalar tensor multiplying the output logits --
@@ -316,6 +355,11 @@ class HALOModel(nn.Module):
                 the LOGITS, not the parameters: IRM's ``w`` is a classifier
                 stacked on the representation, and scaling ``theta`` instead
                 would be a different (and much less meaningful) quantity.
+            reduce: ``True`` (default) returns the scalar batch loss, exactly as
+                before. ``False`` returns a ``(batch,)`` vector of per-patient
+                losses -- needed by best-of-K objectives, which have to pick a
+                winner per patient rather than per batch. Averaging the vector
+                reproduces the scalar.
             sample_weights: Optional ``(batch,)`` tensor scaling each patient's
                 contribution to the loss. Multiplies whatever ``pos_loss_weight``
                 already does, so the two compose: ``pos_loss_weight`` says which
@@ -328,7 +372,7 @@ class HALOModel(nn.Module):
                 a weighted run is not comparable to an unweighted one and the
                 difference cannot be attributed to the weighting.
         """
-        hidden_states = self.transformer(input_visits, position_ids, past)
+        hidden_states = self.transformer(input_visits, position_ids, past, z=z)
         code_logits = self.ehr_head(hidden_states, input_visits)
         if irm_scale is not None:
             code_logits = code_logits * irm_scale
@@ -355,18 +399,50 @@ class HALOModel(nn.Module):
                 if pos_loss_weight is not None:
                     loss_weights = loss_weights * ehr_masks
 
-            bce = nn.BCELoss(weight=loss_weights)
-            loss = bce(code_probs, shift_labels)
+            if reduce:
+                bce = nn.BCELoss(weight=loss_weights)
+                loss = bce(code_probs, shift_labels)
+            else:
+                # Per-PATIENT loss, for objectives that need to choose among
+                # candidates one patient at a time. Averaging the elementwise
+                # losses per row reproduces the reduction="mean" scalar exactly
+                # when every element is kept, so the two paths cannot drift.
+                bce = nn.BCELoss(weight=loss_weights, reduction="none")
+                loss = bce(code_probs, shift_labels).flatten(1).mean(1)
             return loss, code_probs, shift_labels
 
         return code_probs
 
-    def sample(self, input_visits, random=True):
+    def sample(self, input_visits, random=True, temperature: float = 1.0,
+               z=None):
+        """Extend ``input_visits`` by one visit, one code at a time.
+
+        Args:
+            input_visits: The sequence so far; the LAST position is filled in.
+            random: ``True`` draws each code from its Bernoulli, ``False``
+                rounds at 0.5. Rounding cannot emit rare codes at all -- a
+                0.3%-prevalence code never reaches p = 0.5 -- so it silently
+                deletes the tail this cohort exists to measure.
+            temperature: Divides the logits before the sigmoid. Because the
+                codes are conditionally independent Bernoullis, the expected
+                number emitted per visit is ``sum_c p_c`` -- so temperature is a
+                direct dial on codes/visit at GENERATION time, with no
+                retraining. ``tau < 1`` sharpens (probabilities move toward 0
+                and 1, and the sum falls); ``tau > 1`` flattens and the sum
+                rises. ``1.0`` is the trained model, unchanged.
+
+                Use it to ask how much of a prevalence gap is CALIBRATION
+                rather than representation. Tuning it to hit a prevalence
+                target and reporting that as a result would be fitting the
+                sampler to the metric.
+        """
         sig = nn.Sigmoid()
-        hidden_states = self.transformer(input_visits)
+        hidden_states = self.transformer(input_visits, z=z)
         i = 0
         while i < self.ehr_head.tot_vocab:
             next_logits = self.ehr_head.sample(hidden_states, input_visits)
+            if temperature != 1.0:
+                next_logits = next_logits / temperature
             next_probs = sig(next_logits)
             if random:
                 visit = torch.bernoulli(next_probs)
@@ -445,6 +521,8 @@ class HALO(BaseModel):
         epochs: int = 50,
         pos_loss_weight: Optional[float] = None,
         lr: float = 1e-4,
+        dropout: float = 0.0,
+        latent_dim: int = 0,
         save_dir: str = "./save/",
     ) -> None:
         super(HALO, self).__init__(dataset)
@@ -481,6 +559,8 @@ class HALO(BaseModel):
             epoch=epochs,
             pos_loss_weight=pos_loss_weight,
             lr=lr,
+            dropout=dropout,
+            latent_dim=latent_dim,
         )
 
         # Registered as a sub-module so .parameters()/.to() work.
@@ -600,7 +680,8 @@ class HALO(BaseModel):
             return torch.device("cuda" if torch.cuda.is_available() else "cpu")
         return torch.device(device)
 
-    def _irm_terms(self, batch_ehr, batch_mask, sample_weights=None):
+    def _irm_terms(self, batch_ehr, batch_mask, sample_weights=None,
+                   xm_k: int = 1):
         """Risk and unbiased IRMv1 penalty for one batch.
 
         IRMv1 penalises how far the dummy classifier ``w=1`` is from optimal for
@@ -651,15 +732,42 @@ class HALO(BaseModel):
         for sl in (slice(0, half), slice(half, 2 * half)):
             w = torch.ones(1, device=batch_ehr.device, requires_grad=True)
             sw = None if sample_weights is None else sample_weights[sl]
-            loss, _, _ = self.halo_model(
-                batch_ehr[sl],
-                position_ids=None,
-                ehr_labels=batch_ehr[sl],
-                ehr_masks=batch_mask[sl],
-                pos_loss_weight=self.config.pos_loss_weight,
-                sample_weights=sw,
-                irm_scale=w,
-            )
+            if xm_k > 1:
+                # Best-of-K INSIDE the IRM risk. The penalty is then taken on
+                # the winning candidate only -- autograd routes the gradient
+                # through whichever branch the min selected, which is exactly
+                # "the penalty of the candidate we actually trained on".
+                #
+                # The alternative, averaging the penalty over all K, is a
+                # variance reduction on a noisy estimator but costs K
+                # second-order backwards instead of one. Not done here.
+                #
+                # Caveat worth keeping in view: w scales the logits, so in
+                # principle a different candidate could win at a different w.
+                # The gradient is evaluated at w = 1, where the selection is
+                # fixed, so this is the correct local derivative -- but R(w)
+                # has kinks and the penalty is a local quantity.
+                cands = torch.stack([
+                    self.halo_model(
+                        batch_ehr[sl], position_ids=None,
+                        ehr_labels=batch_ehr[sl], ehr_masks=batch_mask[sl],
+                        pos_loss_weight=self.config.pos_loss_weight,
+                        sample_weights=sw, irm_scale=w, reduce=False,
+                        z=self._draw_z(batch_ehr[sl].shape[0]),
+                    )[0] for _ in range(xm_k)
+                ])
+                loss = cands.min(dim=0).values.mean()
+            else:
+                loss, _, _ = self.halo_model(
+                    batch_ehr[sl],
+                    position_ids=None,
+                    ehr_labels=batch_ehr[sl],
+                    ehr_masks=batch_mask[sl],
+                    pos_loss_weight=self.config.pos_loss_weight,
+                    sample_weights=sw,
+                    irm_scale=w,
+                    z=self._draw_z(batch_ehr[sl].shape[0]),
+                )
             # create_graph=True keeps the penalty differentiable w.r.t. theta --
             # without it the penalty is a constant and contributes no gradient,
             # which fails silently. It makes the backward second-order and is
@@ -671,10 +779,36 @@ class HALO(BaseModel):
         return risk, penalty
 
 
+    def _draw_z(self, batch_size: int):
+        """One z ~ N(0, I) per PATIENT, or None when the latent is disabled.
+
+        Per patient, not per position: the point of the latent is a coherent
+        alternative phenotype for a whole person, so it has to be constant
+        across that patient's visits. A fresh draw per position would be noise
+        again, which is what the dropout probe already showed does nothing.
+
+        Never inferred from the data -- there is no encoder and no KL. The model
+        only ever sees z drawn from the prior, so training and generation match
+        by construction and there is no posterior gap to police. What makes the
+        model USE z rather than average over it is best-of-K: if z spreads the
+        predictions coherently, one of the K candidates lands close, and that is
+        the only branch that gets a gradient.
+        """
+        d = getattr(self.config, "latent_dim", 0)
+        if not d:
+            return None
+        return torch.randn(batch_size, d, device=self.device)
+
     def train_model(self, train_dataset, val_dataset=None, device=None,
                     on_epoch_end: Callable[[int, float], None] = None,
                     sample_weight_fn: Callable[[dict], "torch.Tensor"] = None,
-                    irm_rho=0.0, adapter_mu: float = 0.0) -> None:
+                    irm_rho=0.0, adapter_mu: float = 0.0,
+                    adapter_l1: float = 0.0,
+                    adapter_sparsity: float = 0.0,
+                    adapter_iht_every: int = 1,
+                    adapter_optim: str = "adam",
+                    adapter_lr: float = 0.0,
+                    xm_k: int = 1) -> None:
         """Train the HALO model with a custom loop.
 
         Named ``train_model`` (not ``train``) to avoid shadowing
@@ -704,6 +838,63 @@ class HALO(BaseModel):
                 After each epoch ``self.last_irm`` holds that epoch's mean
                 ``{"risk", "penalty", "rho"}`` -- read it from ``on_epoch_end``
                 to log the two terms as separate curves.
+            adapter_mu: FedProx-style L2 pulling the fine-tuned weights back
+                toward the federated global. ``0.0`` (default) is off.
+            adapter_l1: L1 penalty on the delta ``W - W_global``, applied as a
+                PROXIMAL soft-threshold of size ``lr * adapter_l1`` after each
+                optimiser step -- not as a term added to the loss. The
+                distinction is the whole point: a subgradient L1 shrinks
+                coordinates but never lands on zero, so it regularises without
+                sparsifying and the run reports 0% sparsity. Requires a delta
+                -sparse adapter variant; ``0.0`` (default) is off.
+            adapter_sparsity: Iterative hard thresholding. Every
+                ``adapter_iht_every`` epochs the delta is projected onto its
+                largest ``adapter_sparsity`` fraction of coordinates, ranked
+                globally across the fine-tuned tensors. Training between
+                projections is dense, so a pruned coordinate can re-grow -- that
+                is what makes it iterative rather than one-shot pruning. Also
+                projected on the final epoch, so the saved model is actually
+                sparse. ``0.0`` (default) is off.
+            adapter_iht_every: Epochs between hard-threshold projections.
+            adapter_optim: ``"adam"`` (default, matching every other regime) or
+                ``"sgd"``. SGD is worth having for the sparse variants
+                specifically: ``lr * lam`` is the EXACT proximal operator for
+                SGD (this is ISTA) but only a heuristic under Adam, and plain
+                SGD carries no optimiser state, so hard thresholding cannot be
+                undone by momentum re-inflating a coordinate that was just
+                zeroed. It is a correctness cross-check, not a better optimiser.
+            adapter_lr: Learning rate override for the fine-tuning optimiser.
+                ``0.0`` (default) uses the model's own ``lr``. Effectively
+                required with ``adapter_optim="sgd"``: the configured ``1e-4``
+                is an ADAM learning rate, and SGD at that value barely moves, so
+                an untuned SGD arm underperforms for reasons unrelated to
+                sparsity.
+            xm_k: Best-of-K exploration ("Forward XM"). ``1`` (default) trains
+                the ordinary loss and costs nothing. Above 1, each batch is
+                pushed through the model ``K`` times -- the candidates differ
+                because dropout draws a fresh mask each pass -- and only the
+                LOWEST loss per patient is trained on.
+
+                The motivation is specific rather than fashionable: BCE under
+                maximum likelihood rewards hedging, spreading a little
+                probability over every plausible code, and the centralized arm
+                on this cohort emits 25.2 codes/visit against a real 11.5.
+                Best-of-K lets the model commit each candidate to a coherent
+                phenotype instead, because it only has to be right ONCE. The
+                same argument applies with more force to rare codes: under MLE a
+                0.3%-prevalence code is smoothed toward zero, while here the
+                model is rewarded for SOMETIMES emitting it.
+
+                The minimum is taken PER PATIENT, not per batch. A per-batch
+                minimum would select one dropout mask for 256 patients at once,
+                which is nearly no selection at all -- that is why
+                :meth:`HALOModel.forward` grew a ``reduce=False`` path.
+
+                After each epoch ``self.last_xm`` holds ``{"spread", "k",
+                "win_entropy"}``; read them, because this fails silently. If
+                dropout does not separate the candidates their losses are equal,
+                ``min`` picks arbitrarily, and the run quietly trains on 1/K of
+                the gradient while looking perfectly healthy.
             sample_weight_fn: Optional ``batch -> (batch_size,)`` tensor giving
                 each patient's weight in the loss. Called once per batch on the
                 raw collated batch, so it can key off any field the dataset
@@ -726,6 +917,14 @@ class HALO(BaseModel):
                 Default ``None`` is a no-op, so existing callers are
                 unaffected.
         """
+        # xm_k > 1 with an IRM penalty IS supported: _irm_terms takes the
+        # min over K inside each half-batch and the penalty follows the winning
+        # candidate. An earlier version refused the combination outright, on the
+        # grounds that it was "not a defined objective" -- that was too strong.
+        # It is well defined; what is uncertain is whether IRM's question ("is
+        # one predictor optimal everywhere?") still means the same thing when
+        # the risk is already a per-patient selection over K candidates. Read
+        # the penalty curve with that in mind.
         device = self._resolve_device(device)
         self.to(device)
         print(f"Training on: {device}")
@@ -741,7 +940,18 @@ class HALO(BaseModel):
             raise ValueError(
                 "no trainable parameters: every weight is frozen. An adapter "
                 "variant must leave something with requires_grad=True.")
-        optimizer = torch.optim.Adam(trainable, lr=self._lr)
+        lr = float(adapter_lr) if adapter_lr else self._lr
+        if adapter_optim == "adam":
+            optimizer = torch.optim.Adam(trainable, lr=lr)
+        elif adapter_optim == "sgd":
+            # Momentum deliberately left at zero. It is what makes SGD stateless
+            # here, so a hard-threshold projection cannot be undone by a
+            # momentum buffer pushing the pruned coordinate straight back off
+            # zero -- the failure hard_threshold_ has to mask around for Adam.
+            optimizer = torch.optim.SGD(trainable, lr=lr)
+        else:
+            raise ValueError(
+                f"adapter_optim must be 'adam' or 'sgd', got {adapter_optim!r}")
 
         checkpoint_path = os.path.join(self.save_dir, "halo_model")
         if os.path.exists(checkpoint_path):
@@ -760,6 +970,7 @@ class HALO(BaseModel):
             batch_iter = tqdm(train_loader, desc=f"Epoch {epoch}", leave=False)
             epoch_loss_sum, epoch_batches = 0.0, 0
             epoch_risk_sum, epoch_penalty_sum = 0.0, 0.0
+            xm_spread_sum, xm_ent_sum, xm_batches = 0.0, 0.0, 0
             for batch in batch_iter:
                 visits = batch["visits"].to(self.device)
                 batch_ehr, batch_mask = self._encode_visits(visits)
@@ -776,7 +987,8 @@ class HALO(BaseModel):
 
                 optimizer.zero_grad()
                 if rho > 0.0:
-                    risk, penalty = self._irm_terms(batch_ehr, batch_mask, sw)
+                    risk, penalty = self._irm_terms(batch_ehr, batch_mask, sw,
+                                                    xm_k=xm_k)
                     loss = risk + rho * penalty
                     # Rescale once rho is large. IRMv1's rho jumps by orders of
                     # magnitude after warmup, and without this the whole loss --
@@ -788,6 +1000,46 @@ class HALO(BaseModel):
                         loss = loss / rho
                     epoch_risk_sum += risk.item()
                     epoch_penalty_sum += penalty.item()
+                elif xm_k > 1:
+                    # All K candidates are kept in the graph rather than found
+                    # under no_grad and recomputed: recomputing would draw a
+                    # FRESH dropout mask, so the pass that won would not be the
+                    # pass that trains. Memory is the cheaper thing to spend --
+                    # measured peak here is under 1 GB of 42.
+                    # A DIFFERENT z per candidate is the entire mechanism.
+                    # With a latent, the K candidates are K coherent alternative
+                    # phenotypes rather than K noise realisations, and best-of-K
+                    # is what rewards the model for making z mean something --
+                    # under an ordinary loss it would average over z and ignore
+                    # it.
+                    cands = torch.stack([
+                        self.halo_model(
+                            batch_ehr, position_ids=None, ehr_labels=batch_ehr,
+                            ehr_masks=batch_mask,
+                            pos_loss_weight=self.config.pos_loss_weight,
+                            sample_weights=sw, reduce=False,
+                            z=self._draw_z(batch_ehr.shape[0]),
+                        )[0] for _ in range(xm_k)
+                    ])                                   # (K, batch)
+                    best = cands.min(dim=0)
+                    risk = best.values.mean()
+                    loss = risk
+                    epoch_risk_sum += risk.item()
+                    with torch.no_grad():
+                        # How far apart the candidates are. Zero means dropout
+                        # did not differentiate them and the min is arbitrary.
+                        xm_spread_sum += (cands.max(0).values
+                                          - best.values).mean().item()
+                        # Which candidate wins should be near-uniform. A single
+                        # index winning everything is the same degenerate case
+                        # seen from the other side.
+                        counts = torch.bincount(best.indices.flatten(),
+                                                minlength=xm_k).float()
+                        pk = counts / counts.sum()
+                        xm_ent_sum += float(
+                            -(pk * torch.log(pk.clamp_min(1e-12))).sum()
+                            / math.log(xm_k))
+                    xm_batches += 1
                 else:
                     risk, _, _ = self.halo_model(
                         batch_ehr,
@@ -796,6 +1048,7 @@ class HALO(BaseModel):
                         ehr_masks=batch_mask,
                         pos_loss_weight=self.config.pos_loss_weight,
                         sample_weights=sw,
+                        z=self._draw_z(batch_ehr.shape[0]),
                     )
                     loss = risk
                     epoch_risk_sum += risk.item()
@@ -810,6 +1063,14 @@ class HALO(BaseModel):
                     loss = loss + (adapter_mu / 2.0) * adapter_l2(self.halo_model)
                 loss.backward()
                 optimizer.step()
+                if adapter_l1 > 0.0:
+                    # AFTER the step, not inside the loss. Soft-thresholding is
+                    # the proximal operator of the L1; adding lam*||D||_1 to the
+                    # loss instead leaves the optimiser chattering in a band of
+                    # width lr*lam around zero and never landing on it, so the
+                    # run would regularise without ever sparsifying.
+                    from pyhealth.models.generators.adapters import prox_l1_
+                    prox_l1_(self.halo_model, lr * adapter_l1)
                 epoch_loss_sum += loss.item()
                 epoch_batches += 1
                 batch_iter.set_postfix(loss=f"{loss.item():.4f}")
@@ -823,6 +1084,37 @@ class HALO(BaseModel):
             self.last_irm = {"risk": epoch_risk_sum / n_b,
                              "penalty": epoch_penalty_sum / n_b,
                              "rho": rho}
+
+            # Project BEFORE the callback, so any snapshot an early stopper
+            # takes from on_epoch_end is of the projected weights. The final
+            # epoch always projects, or the model that gets saved is the dense
+            # one that happened to be mid-cycle when training ran out.
+            if adapter_sparsity > 0.0:
+                from pyhealth.models.generators.adapters import hard_threshold_
+                due = (epoch + 1) % max(1, adapter_iht_every) == 0
+                if due or epoch == self._epochs - 1:
+                    hard_threshold_(self.halo_model, adapter_sparsity, optimizer)
+
+            # Sparsity is the claim these variants make, and it is invisible in
+            # the loss -- a fully dense run and a 7%-dense one can sit at the
+            # same training loss. Recorded per epoch so ||D||_1 and the non-zero
+            # fraction can be traced as their own curves, the way risk and
+            # penalty are for IRM.
+            from pyhealth.models.generators.adapters import delta_stats
+            self.last_sparse = delta_stats(self.halo_model)
+
+            # Best-of-K's silent failure, recorded where a logger can read it.
+            self.last_xm = ({"k": xm_k,
+                             "spread": xm_spread_sum / max(1, xm_batches),
+                             "win_entropy": xm_ent_sum / max(1, xm_batches)}
+                            if xm_k > 1 else None)
+            if self.last_xm is not None:
+                # To stdout, not only TensorBoard: this is the run's evidence
+                # that exploration is actually happening, and it has to survive
+                # a --no-tb smoke run. spread -> 0 or win_entropy -> 0 means the
+                # K candidates are not distinct and the minimum is arbitrary.
+                print(f"  xm K={xm_k}  spread={self.last_xm['spread']:.3e}  "
+                      f"win_entropy={self.last_xm['win_entropy']:.3f}")
 
             if on_epoch_end is not None:
                 # Returning False is a stop request -- this is what lets a
@@ -869,7 +1161,8 @@ class HALO(BaseModel):
     # Synthesis
     # ------------------------------------------------------------------
     def generate(
-        self, num_samples: int, random_sampling: bool = True, device=None
+        self, num_samples: int, random_sampling: bool = True, device=None,
+        temperature: float = 1.0,
     ) -> List[Dict]:
         """Generate synthetic patients using the trained HALO model.
 
@@ -881,6 +1174,9 @@ class HALO(BaseModel):
             num_samples: Number of synthetic patients to generate.
             random_sampling: If True, Bernoulli sampling (stochastic). If False,
                 rounding (deterministic). Default: True.
+            temperature: Logit temperature before the sigmoid; see
+                :meth:`HALOModel.sample`. ``1.0`` (default) is the trained
+                model. Lower emits fewer codes per visit, higher emits more.
             device: Device to generate on, e.g. ``"cuda"``, ``"cuda:1"``, or
                 ``"cpu"``. If ``None`` (default), uses CUDA when available and
                 falls back to CPU.
@@ -916,9 +1212,14 @@ class HALO(BaseModel):
                     device=self.device, dtype=torch.float32,
                 )
 
+                # One z per generated patient, held FIXED across that
+                # patient's visits -- the latent is a property of the person,
+                # not of each visit. Redrawing per step would make it noise.
+                z = self._draw_z(bs)
                 for _ in range(cfg.n_ctx - 1):
                     prev = self.halo_model.sample(
-                        torch.cat((prev, empty), dim=1), random_sampling
+                        torch.cat((prev, empty), dim=1), random_sampling,
+                        temperature, z=z,
                     )
                     has_end = prev[:, :, end_token_idx].sum(dim=1).bool()
                     if has_end.all():

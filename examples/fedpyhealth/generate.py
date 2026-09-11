@@ -106,18 +106,39 @@ def build_generator(cfg: dict, sample_dataset, save_dir: str):
     Mirrors ``train.py``'s ``build_model``. ``epochs`` is irrelevant here --
     nothing is trained -- but HALO takes it at construction, so it is pinned to
     1 rather than left to a default that might differ across versions.
+
+    ``latent_dim`` matters the same way an adapter does, and for the same
+    reason: the latent projection ``z_proj`` HAS parameters, so a model built
+    without it cannot load a checkpoint trained with it. Both are read back out
+    of the run's own config.json rather than passed in by the caller.
+
+    If the run used an adapter, the adapter is re-applied here BEFORE any
+    checkpoint is loaded. ``apply_adapter`` wraps modules, which renames every
+    parameter beneath them (``attn.c_attn.weight`` becomes
+    ``attn.c_attn.base.weight``, plus new ``A``/``B`` entries), so a plain HALO
+    cannot accept an adapted run's state dict -- it fails with a wall of missing
+    and unexpected keys. Reading the variant back out of the run's own
+    config.json is what keeps the two sides in step without the caller having to
+    remember which adapter a directory holds.
     """
-    return HALO(
+    model = HALO(
         dataset=sample_dataset,
         embed_dim=cfg["embed_dim"],
         n_heads=cfg["n_heads"],
         n_layers=cfg["n_layers"],
         n_ctx=cfg["n_ctx"],
         batch_size=cfg["batch_size"],
+        latent_dim=cfg.get("latent_dim", 0),
+        dropout=cfg.get("dropout", 0.0),
         epochs=1,
         lr=cfg["lr"],
         save_dir=save_dir,
     )
+    adapter = cfg.get("adapter", "none")
+    if adapter and adapter != "none":
+        from pyhealth.models.generators.adapters import apply_adapter
+        apply_adapter(model.halo_model, adapter, int(cfg.get("adapter_rank", 8)))
+    return model
 
 
 def load_weights(model, path: str, expect_fingerprint: dict = None):
@@ -184,6 +205,7 @@ def generate_run(
     num_synth: int,
     synth_per_hospital: int,
     device: str = "cpu",
+    temperature: float = 1.0,
     fingerprint: dict = None,
     log=print,
 ) -> Tuple[List[dict], Dict[str, List[dict]]]:
@@ -207,7 +229,8 @@ def generate_run(
         want = max(num_synth, len(hospitals) * synth_per_hospital)
         log(f"[{regime}] one global generator -> {want} patients "
             f"({len(hospitals)} x {synth_per_hospital} federation total)")
-        full = model.generate(num_samples=want, device=device)
+        full = model.generate(num_samples=want, device=device,
+                              temperature=temperature)
         # The pooled set stays num_synth for every regime, so Test 1's
         # prevalence resolution is identical across arms.
         return full[:num_synth], {hid: full for hid in hospitals}
@@ -232,7 +255,8 @@ def generate_run(
         model = build_generator(cfg, sample_dataset, save_dir)
         load_weights(model, path, fingerprint)
         per_hospital[hid] = model.generate(
-            num_samples=synth_per_hospital, device=device)
+            num_samples=synth_per_hospital, device=device,
+            temperature=temperature)
         log(f"[{regime}] hospital {hid}: generated "
             f"{len(per_hospital[hid])} synthetic")
 
@@ -244,7 +268,7 @@ def generate_run(
 
 def write_synthetic(save_dir: str, pooled: List[dict],
                     per_hospital: Dict[str, List[dict]],
-                    shared_generator: bool) -> str:
+                    shared_generator: bool, suffix: str = "") -> str:
     """Write ``synthetic.json`` in the layout Test 1 and Test 2 read.
 
     ``pooled`` is stored twice under two names: ``pooled_proportional`` says
@@ -260,7 +284,7 @@ def write_synthetic(save_dir: str, pooled: List[dict],
     completely different patients. A reader comparing ids would call that one
     shared set and collapse eight per-hospital classifiers into one.
     """
-    path = os.path.join(save_dir, "synthetic.json")
+    path = os.path.join(save_dir, f"synthetic{suffix}.json")
     with open(path, "w") as fh:
         json.dump({"pooled": pooled,
                    "pooled_proportional": pooled,
@@ -289,6 +313,17 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                    help="patients per hospital for the multi-model regimes, "
                         "identical for every hospital regardless of its real "
                         "size (default: the run's own value)")
+    p.add_argument("--temperature", type=float, default=1.0,
+                   help="logit temperature at generation, applied before the "
+                        "sigmoid. The codes are conditionally independent "
+                        "Bernoullis, so expected codes/visit = sum of their "
+                        "probabilities -- temperature is therefore a direct "
+                        "dial on emission volume with NO retraining. <1 sharpens "
+                        "and emits fewer codes, >1 flattens and emits more; 1.0 "
+                        "(default) is the trained model. Useful for asking how "
+                        "much of a prevalence gap is calibration rather than "
+                        "representation. Writes to a suffixed synthetic file so "
+                        "a swept run never overwrites the tau=1 baseline.")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available()
                    else "cpu")
     p.add_argument("--dry-run", action="store_true",
@@ -341,9 +376,15 @@ def main(argv=None) -> None:
     pooled, per_hospital = generate_run(
         args.save_dir, regime, cfg, sample_dataset, hospitals, sizes,
         num_synth, per_hosp_n, device=args.device, fingerprint=fingerprint,
+        temperature=args.temperature,
     )
+    # A swept temperature writes to its own file. generate.py overwrites
+    # synthetic.json in place, so without this a tau sweep would destroy the
+    # tau=1 synthetic set that every existing score was computed from.
+    suffix = "" if args.temperature == 1.0 else f"_tau{args.temperature:g}"
     path = write_synthetic(args.save_dir, pooled, per_hospital,
-                           shared_generator=regime in SINGLE_MODEL)
+                           shared_generator=regime in SINGLE_MODEL,
+                           suffix=suffix)
     print(f"\nSaved synthetic data -> {path}")
     print("Re-score it with test1_prevalence.py / test2_rare_efficacy.py; "
           "neither needs a GPU.")

@@ -1,0 +1,782 @@
+<title>Adapters at Half a Percent</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500&family=Public+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+
+<style>
+:root {
+  color-scheme: light;
+  --surface-0: #f4f5f3;
+  --surface-1: #fcfcfb;
+  --surface-2: #eceeeb;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #7c7b76;
+  --rule: #d8dad6;
+  --grid: #e6e8e4;
+  /* Three adapter families take the validated first three categorical slots.
+     full_ft is NOT a fourth hue: it is the reference the others are measured
+     against, so it wears text ink and a hollow mark. Giving it a colour made a
+     4-slot palette that fails the discriminability floor in dark mode, and it
+     would also have implied it is one option among four rather than the
+     baseline. */
+  --f-lora_attn: #2a78d6;
+  --f-lora_head: #eb6834;
+  --f-last_mlp:  #1baf7a;
+  --f-full_ft:   #52514e;
+  /* The combined panel groups by EXPERIMENT FAMILY rather than by variant. */
+  --g-baseline: #52514e;
+  --g-irm:      #eda100;
+  /* Two categorical hues rather than two steps of one. A sequential pair sits
+     close by construction and fails the discriminability floor (blue 250 vs 450
+     is deltaE 14.9, and the lighter step reads as grey at chroma 0.097); the
+     ordering is carried by the legend and the labels instead. */
+  --g-ad2:      #1baf7a;   /* 2 fine-tuning epochs  */
+  --g-ad20:     #2a78d6;   /* 20 fine-tuning epochs */
+  --g-irmft:    #c0308f;   /* IRM trunk, then fine-tuned  */
+  --arrow: #a9aca6;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --surface-0: #131313; --surface-1: #1a1a19; --surface-2: #242423;
+    --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #94938b;
+    --rule: #33332f; --grid: #2b2b29;
+    --f-lora_attn: #3987e5;
+    --f-lora_head: #d95926;
+    --f-last_mlp:  #199e70;
+    --f-full_ft:   #c3c2b7;
+    --g-baseline: #c3c2b7;
+    --g-irm:      #c98500;
+    --g-ad2:      #199e70;
+    --g-ad20:     #3987e5;
+    --g-irmft:    #e061b0;
+    --arrow: #55554f;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-0: #131313; --surface-1: #1a1a19; --surface-2: #242423;
+  --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #94938b;
+  --rule: #33332f; --grid: #2b2b29;
+  --f-lora_attn: #3987e5;
+  --f-lora_head: #d95926;
+  --f-last_mlp:  #199e70;
+  --f-full_ft:   #c3c2b7;
+  --g-baseline: #c3c2b7;
+  --g-irm:      #c98500;
+  --g-ad2:      #199e70;
+  --g-ad20:     #3987e5;
+  --g-irmft:    #e061b0;
+  --arrow: #55554f;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--surface-0); color: var(--text-primary);
+  font-family: "Public Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 16px; line-height: 1.6; -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 1080px; margin: 0 auto; padding: 56px 24px 96px;
+        display: flex; flex-direction: column; gap: 40px; }
+.eyebrow { font-family: "IBM Plex Mono", monospace; font-size: 11px;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-muted);
+  margin: 0 0 10px; }
+h1 { font-family: "Newsreader", Georgia, serif; font-weight: 500;
+  font-size: clamp(30px, 4.4vw, 46px); line-height: 1.12;
+  letter-spacing: -0.015em; margin: 0 0 14px; text-wrap: balance; }
+.standfirst { font-size: 17px; color: var(--text-secondary); max-width: 62ch; margin: 0; }
+h2 { font-family: "Newsreader", Georgia, serif; font-weight: 500; font-size: 25px;
+  letter-spacing: -0.01em; margin: 0 0 6px; text-wrap: balance; }
+.sub { color: var(--text-secondary); font-size: 15px; margin: 0 0 20px; max-width: 68ch; }
+section { display: flex; flex-direction: column; }
+.panel { background: var(--surface-1); border: 1px solid var(--rule);
+  border-radius: 3px; padding: 26px 26px 20px; }
+.controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 18px; }
+.seg { display: inline-flex; border: 1px solid var(--rule); border-radius: 3px; overflow: hidden; }
+.seg button { font-family: inherit; font-size: 13px; font-weight: 500; padding: 6px 14px;
+  border: 0; background: var(--surface-1); color: var(--text-secondary); cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--rule); }
+.seg button[aria-pressed="true"] { background: var(--surface-2); color: var(--text-primary); }
+.seg button:focus-visible, select:focus-visible {
+  outline: 2px solid var(--f-lora_attn); outline-offset: -2px; }
+.field { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-secondary); }
+.field select { font-family: inherit; font-size: 13px; font-weight: 500; padding: 6px 10px;
+  border: 1px solid var(--rule); border-radius: 3px; background: var(--surface-1); color: var(--text-primary); }
+.legend { display: flex; flex-wrap: wrap; gap: 16px; margin: 0 0 6px; padding: 0; list-style: none; }
+.legend li { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: var(--text-secondary); }
+.swatch { width: 11px; height: 11px; border-radius: 50%; flex: none; }
+.condset { border: 0; margin: 14px 0 0; padding: 0; }
+.condset legend { font-size: 11.5px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--text-muted); padding: 0 0 8px; }
+.chiprow { display: flex; flex-wrap: wrap; gap: 8px; }
+#condrow { display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; }
+.chip { display: inline-flex; align-items: center; gap: 7px; cursor: pointer;
+  font-size: 13px; padding: 5px 11px; border-radius: 3px; border: 1px solid var(--rule);
+  background: var(--surface-1); color: var(--text-muted); }
+.chip input { position: absolute; opacity: 0; width: 0; height: 0; }
+.chip[data-on="true"] { background: var(--surface-2); color: var(--text-primary); }
+.chip:has(input:focus-visible) { outline: 2px solid var(--f-lora_attn); outline-offset: 1px; }
+.figwrap { overflow-x: auto; }
+svg { display: block; max-width: 100%; height: auto; }
+.axis-label { font-family: "Public Sans", sans-serif; font-size: 12px; fill: var(--text-secondary); }
+.tick { font-family: "IBM Plex Mono", monospace; font-size: 10.5px; fill: var(--text-muted); }
+.ptlabel { font-family: "Public Sans", sans-serif; font-size: 11.5px; font-weight: 500; fill: var(--text-primary); }
+figcaption { font-size: 13.5px; color: var(--text-secondary); margin-top: 16px; max-width: 74ch; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+caption { text-align: left; font-size: 13px; color: var(--text-muted); padding-bottom: 10px; }
+th, td { padding: 8px 12px; text-align: right; border-bottom: 1px solid var(--rule); }
+th:first-child, td:first-child { text-align: left; }
+thead th { font-size: 11.5px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--text-muted); font-weight: 600; }
+td.num { font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; }
+td.arm { display: flex; align-items: center; gap: 8px; }
+.tablewrap { overflow-x: auto; }
+.callout { border-left: 2px solid var(--f-lora_head); padding: 2px 0 2px 18px;
+  color: var(--text-secondary); font-size: 15px; max-width: 70ch; }
+.callout + .callout { margin-top: 18px; }
+.callout strong { color: var(--text-primary); }
+ul.notes { padding-left: 20px; color: var(--text-secondary); font-size: 15px; max-width: 72ch; margin: 0; }
+ul.notes li { margin-bottom: 10px; }
+ul.notes strong { color: var(--text-primary); }
+code { font-family: "IBM Plex Mono", monospace; font-size: 0.9em;
+  background: var(--surface-2); padding: 1px 5px; border-radius: 2px; }
+hr { border: 0; border-top: 1px solid var(--rule); margin: 0; }
+</style>
+
+<div class="wrap">
+
+<header>
+  <p class="eyebrow">hilo8_random · fedavg_ft · 8 eICU hospitals</p>
+  <h1>What does dropping to 0.5% of the parameters actually cost?</h1>
+  <p class="standfirst">
+    Full local fine-tuning retrains all 6.17&nbsp;million HALO weights per
+    hospital &mdash; nearly 44,000 parameters per patient at the smallest site.
+    Three cheaper alternatives freeze the shared trunk and train a small delta
+    instead. All start from the same federated global and see the same data.
+  </p>
+</header>
+
+<section>
+  <h2>Against everything else</h2>
+  <p class="sub">
+    The adapters next to the baselines and the IRM runs on one axis. Colour is
+    the experiment family; shape is the method. Arrows run from whatever each run
+    was derived from &mdash; an IRM arm from its own unpenalised regime, and every
+    adapter (plus the full fine-tune) from the FedAvg global they all warm-start
+    off.
+  </p>
+  <div class="panel">
+    <div class="controls" style="border-bottom:1px solid var(--rule);padding-bottom:16px">
+      <label class="field"><span>Metric</span>
+        <select id="metric">
+          <option value="pearson" selected>Pearson</option>
+          <option value="r2">R&sup2; vs identity</option>
+          <option value="rmse">RMSE</option>
+        </select>
+      </label>
+      <div class="seg" role="group" aria-label="Code set">
+        <button type="button" data-set="all" aria-pressed="true">All codes</button>
+        <button type="button" data-set="rare" aria-pressed="false">Rare codes</button>
+      </div>
+    </div>
+    <p style="font-size:12.5px;color:var(--text-muted);margin:0 0 14px">
+      Metric and code set apply to <strong>every figure and the table on this page</strong>.
+      Pearson is scale-invariant; R&sup2; scores against the identity line and so
+      punishes absolute error; RMSE is better <em>low</em>, which flips the good
+      corner of each scatter to the bottom-left.
+    </p>
+    <ul class="legend" aria-label="Family">
+      <li><svg width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="5.5" fill="none" stroke="var(--g-baseline)" stroke-width="2.5"/></svg> no local fine-tuning (hollow)</li>
+      <li><span class="swatch" style="background:var(--g-irm)"></span> IRM penalty</li>
+      <li><span class="swatch" style="background:var(--g-ad2)"></span> locally fine-tuned, 2 epochs</li>
+      <li><span class="swatch" style="background:var(--g-ad20)"></span> locally fine-tuned, 20 epochs</li>
+      <li><span class="swatch" style="background:var(--g-irmft)"></span> IRM trunk, then fine-tuned 20 epochs</li>
+    </ul>
+    <ul class="legend" style="margin-top:8px;color:var(--text-muted)">
+      <li><svg width="14" height="14" aria-hidden="true"><path d="M7 1.5 L13 11.5 L1 11.5 Z" fill="currentColor"/></svg> full fine-tune &middot; 6.17M</li>
+      <li><svg width="14" height="14" aria-hidden="true"><circle cx="7" cy="7" r="5" fill="currentColor"/></svg> LoRA attention &middot; 33K &nbsp;<span style="opacity:.6">(or&nbsp;local)</span></li>
+      <li><svg width="14" height="14" aria-hidden="true"><rect x="2" y="2" width="10" height="10" rx="2" fill="currentColor"/></svg> LoRA head &middot; 38K &nbsp;<span style="opacity:.6">(or&nbsp;centralized)</span></li>
+      <li><svg width="14" height="14" aria-hidden="true"><path d="M7 1 L13 7 L7 13 L1 7 Z" fill="currentColor"/></svg> last MLP &middot; 526K &nbsp;<span style="opacity:.6">(or&nbsp;fedavg)</span></li>
+    </ul>
+    <div id="condrow"></div>
+    <div class="figwrap">
+      <svg id="combined" viewBox="0 0 780 560" role="img"
+           aria-label="Baselines, IRM runs and adapters on specialist versus generalist prevalence fidelity."></svg>
+    </div>
+    <figcaption id="capC"></figcaption>
+  </div>
+
+  <div class="callout" style="border-left-color:var(--g-irmft)">
+    <p><strong>The two composed, and the metric decides what you see.</strong>
+    Switch this figure between Pearson and R&sup2; with the IRM-trunk group on;
+    they tell different stories, and the difference is the finding rather than a
+    contradiction.</p>
+    <p>On <strong>R&sup2;</strong> the composition lands up and to the right of
+    both parents. IRM&nbsp;+&nbsp;LoRA head reaches 0.630 specialist and 0.732
+    generalist, against 0.431 / 0.600 for the same adapter on a plain trunk
+    &mdash; both axes improve by far more than the 0.079 R&sup2; noise floor. The
+    full fine-tune moves furthest of all: 0.058&nbsp;&rarr;&nbsp;0.569 specialist
+    and &minus;0.172&nbsp;&rarr;&nbsp;0.039 generalist.</p>
+    <p>On <strong>Pearson</strong> the same runs barely move: +0.025 specialist
+    and &minus;0.014 generalist for the LoRA head, both at or inside the 0.019
+    noise floor. Reporting Pearson alone would have called this a wash.</p>
+    <p>Pearson is scale-invariant and R&sup2; is not, so the split says IRM is
+    fixing <em>absolute prevalence calibration</em> rather than code ranking
+    &mdash; which is the failure it was brought in for. The centralized arm on
+    this cohort emitted 25.2 codes per visit against a real 11.5; a generator can
+    rank codes perfectly and still be wrong about how many of them there are, and
+    only R&sup2; and RMSE can see it.</p>
+  </div>
+</section>
+
+<section>
+  <h2>Parameters against fidelity</h2>
+  <p class="sub">
+    The whole question in one figure. Horizontal axis is trainable parameters on
+    a log scale, spanning 190&times; from LoRA to a full fine-tune.
+  </p>
+  <div class="panel">
+    <ul class="legend">
+      <li><span class="swatch" style="background:var(--f-lora_attn)"></span> LoRA attention &middot; 33K</li>
+      <li><span class="swatch" style="background:var(--f-lora_head)"></span> LoRA head &middot; 38K</li>
+      <li><span class="swatch" style="background:var(--f-last_mlp)"></span> last MLP &middot; 526K</li>
+      <li><svg width="16" height="16" aria-hidden="true"><path d="M8 1.5 L14.5 8 L8 14.5 L1.5 8 Z" fill="none" stroke="currentColor" stroke-width="2"/></svg> full fine-tune &middot; 6.17M</li>
+    </ul>
+    <ul class="legend" style="margin-top:8px">
+      <li><svg width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="currentColor"/></svg> &mu;&nbsp;=&nbsp;0</li>
+      <li><svg width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="2"/></svg> &mu;&nbsp;=&nbsp;0.01</li>
+    </ul>
+    <div class="figwrap">
+      <svg id="params" viewBox="0 0 780 400" role="img"
+           aria-label="Trainable parameters against specialist fidelity for each adapter variant."></svg>
+    </div>
+    <figcaption id="cap1"></figcaption>
+  </div>
+</section>
+
+<section>
+  <h2>Specialist against generalist</h2>
+  <p class="sub">
+    The same arms on the two prevalence targets: each site scored against its own
+    test fold, and against the pooled cohort fold. Up fits the site better, right
+    fits the cohort better.
+  </p>
+  <div class="panel">
+    <div class="figwrap">
+      <svg id="sg" viewBox="0 0 780 480" role="img"
+           aria-label="Specialist against generalist prevalence fidelity for each adapter variant."></svg>
+    </div>
+    <figcaption id="cap2"></figcaption>
+  </div>
+</section>
+
+<section>
+  <h2>Does it help where the ratio is worst?</h2>
+  <p class="sub">
+    Full fine-tuning gives hospital 429 nearly 44,000 parameters for 142
+    patients. If a capacity limit prevents overfitting, the small sites on the
+    left are where it should show. Pearson over all codes, per hospital.
+  </p>
+  <div class="panel">
+    <div class="figwrap">
+      <svg id="perhosp" viewBox="0 0 780 420" role="img"
+           aria-label="Per-hospital specialist fidelity against training-set size, one line per variant."></svg>
+    </div>
+    <figcaption id="cap3"></figcaption>
+  </div>
+</section>
+
+<section>
+  <h2>Every number</h2>
+  <div class="panel tablewrap">
+    <table>
+      <caption id="tcap"></caption>
+      <thead><tr>
+        <th scope="col">Variant</th><th scope="col">Params</th><th scope="col">% of full</th>
+        <th scope="col">Spec. all</th><th scope="col">Spec. rare</th>
+        <th scope="col">Gen. all</th><th scope="col">Gen. rare</th>
+      </tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+</section>
+
+<hr>
+
+<section>
+  <h2>Reading it</h2>
+  <div class="callout">
+    <strong>Parameter count buys nothing among the adapters.</strong> LoRA
+    attention (33K), LoRA head (38K) and the last MLP (526K) land within 0.022 of
+    each other on specialist Pearson, across a 16&times; spread in capacity. If
+    more parameters helped, that gap should not be flat.
+  </div>
+  <div class="callout" style="border-left-color:var(--f-full_ft)">
+    <strong>The full fine-tune is the better specialist, and the worse
+    generalist.</strong> It leads on the site's own fold (0.906 against
+    0.827&ndash;0.849) and trails on the pooled fold (0.950 against
+    0.970&ndash;0.974). More capacity buys sharper personalisation and costs
+    cohort-level fit &mdash; the trade-off the adapters were meant to probe, and it
+    is real.
+  </div>
+  <div class="callout" style="border-left-color:var(--g-ad20)">
+    <strong>It was steps, and ten times more of them changes the answer.</strong>
+    At <code>ft_epochs&nbsp;=&nbsp;20</code> the LoRA head reaches
+    <strong>0.903</strong> specialist against the full fine-tune's 0.929 &mdash;
+    at 0.61% of the parameters &mdash; while holding 0.920 generalist against its
+    0.900. On rare codes it goes 0.777 &rarr; <strong>0.855</strong>. That is the
+    trade-off the adapters were meant to buy, and at 2 epochs it was invisible.
+    <br><br>
+    <strong>LoRA attention still barely moves</strong> (0.827 &rarr; 0.838), which
+    now reads as a real finding rather than under-training: adapting how the model
+    attends over visit history does not change which codes it emits, and code
+    prevalence is what these metrics score.
+  </div>
+  <div class="callout" style="border-left-color:var(--g-baseline)">
+    <strong>Why 2 epochs showed nothing.</strong> At
+    <code>ft_epochs&nbsp;=&nbsp;2</code> and batch 128, a hospital gets between
+    <strong>4 and 30 optimiser steps</strong> &mdash; four at the 142-patient
+    site. A LoRA's <code>B</code> is zero-initialised, so an adapter <em>is</em>
+    the trunk until training moves it, and four steps at lr&nbsp;1e-4 moves it
+    almost nowhere. The evidence is on the first panel: every adapter sits within
+    &plusmn;0.02 of the unadapted <code>fedavg</code> point (0.848), while the
+    full fine-tune &mdash; which starts from an already-good model rather than
+    from zero &mdash; reaches 0.906. The flat response to capacity says the same
+    thing: 16&times; more parameters changes nothing when none of them have
+    trained. This makes the whole page a measurement of <em>under-training</em>,
+    not of parameter efficiency.
+  </div>
+  <div class="callout" style="border-left-color:var(--f-last_mlp)">
+    <strong>&mu; did essentially nothing.</strong> Turning the proximal penalty on
+    moves specialist Pearson by &minus;0.010 to +0.014 depending on variant, with
+    no consistent sign. The most likely explanation is that &mu;&nbsp;=&nbsp;0.01
+    was picked without calibrating against HALO's loss scale (~4&times;10&#8315;&#8308;),
+    so the penalty is either negligible or swamped. Treat this as
+    <em>untested</em>, not as a null result.
+  </div>
+</section>
+
+<section>
+  <h2>What this does not show</h2>
+  <ul class="notes">
+    <li><strong>Adapters did not rescue the smallest sites.</strong> The
+      hypothesis was that a capacity limit would help most where the
+      parameter-to-patient ratio is worst. At hospital 429 (142 patients) the full
+      fine-tune scores 0.774 and the LoRA variants 0.726&ndash;0.744. Only the last
+      MLP beats it there, at 0.799 &mdash; and that is the <em>largest</em> adapter,
+      which is the opposite of the predicted mechanism.</li>
+    <li><strong>One seed, no intervals.</strong> Differences under about 0.02 are
+      not separable from run-to-run noise here, and several of the comparisons
+      above sit at exactly that scale.</li>
+    <li><strong>Rare-code R&sup2; is negative for every adapter</strong>
+      (&minus;0.05 to &minus;0.40) while the full fine-tune reaches +0.11. On rare
+      codes specifically, the adapters are worse than predicting the mean
+      prevalence &mdash; visible only on the R&sup2; metric, not on Pearson.</li>
+    <li><strong>The two epoch settings do not share a trunk.</strong>
+      <code>fed_rounds = (100 &minus; ft_epochs) / 2</code>, so the 20-epoch runs
+      warm-start from a 40-round FedAvg global and the 2-epoch runs from a
+      49-round one. Each set is internally matched &mdash; its own full fine-tune
+      is in it &mdash; but a 2-epoch and a 20-epoch point differ in trunk as well
+      as in fine-tuning length.</li>
+    <li><strong>Learning rate is still untouched.</strong> Adapters inherit
+      <code>lr&nbsp;=&nbsp;1e-4</code> from the profile; LoRA conventionally wants
+      10&ndash;100&times; that because it starts from zero. Only steps were varied
+      here, so the ceiling for LoRA head is not yet known.</li>
+  </ul>
+</section>
+
+</div>
+
+<script>
+const ARMS = [{"id":"full_ft","label":"full fine-tune","family":"full_ft","mu":false,"params":6230872,"s_pearson_all":0.90643,"g_pearson_all":0.95018,"s_pearson_rare":0.81143,"g_pearson_rare":0.93468,"s_r2_all":0.3182,"g_r2_all":0.14159,"s_r2_rare":0.10551,"g_r2_rare":-0.14506,"s_rmse_all":0.01493,"g_rmse_all":0.01282,"s_rmse_rare":0.02814,"g_rmse_rare":0.01529},{"id":"lora_attn","label":"LoRA attention","family":"lora_attn","mu":false,"params":32768,"s_pearson_all":0.8272,"g_pearson_all":0.97077,"s_pearson_rare":0.73798,"g_pearson_rare":0.95505,"s_r2_all":0.29882,"g_r2_all":0.57542,"s_r2_rare":-0.25739,"g_r2_rare":0.4876,"s_rmse_all":0.01404,"g_rmse_all":0.00862,"s_rmse_rare":0.02302,"g_rmse_rare":0.00964},{"id":"lora_attn_mu","label":"LoRA attention · μ","family":"lora_attn","mu":true,"params":32768,"s_pearson_all":0.8416,"g_pearson_all":0.97185,"s_pearson_rare":0.73584,"g_pearson_rare":0.95227,"s_r2_all":0.02066,"g_r2_all":0.52895,"s_r2_rare":-0.39746,"g_r2_rare":0.41898,"s_rmse_all":0.01343,"g_rmse_all":0.00902,"s_rmse_rare":0.02551,"g_rmse_rare":0.01025},{"id":"lora_head","label":"LoRA head","family":"lora_head","mu":false,"params":37760,"s_pearson_all":0.84468,"g_pearson_all":0.9739,"s_pearson_rare":0.77746,"g_pearson_rare":0.95222,"s_r2_all":0.28347,"g_r2_all":0.5774,"s_r2_rare":-0.18555,"g_r2_rare":0.46528,"s_rmse_all":0.01232,"g_rmse_all":0.0093,"s_rmse_rare":0.02313,"g_rmse_rare":0.00995},{"id":"lora_head_mu","label":"LoRA head · μ","family":"lora_head","mu":true,"params":37760,"s_pearson_all":0.83513,"g_pearson_all":0.97106,"s_pearson_rare":0.75533,"g_pearson_rare":0.95307,"s_r2_all":0.20114,"g_r2_all":0.60391,"s_r2_rare":-0.23056,"g_r2_rare":0.51651,"s_rmse_all":0.01369,"g_rmse_all":0.00876,"s_rmse_rare":0.02303,"g_rmse_rare":0.00957},{"id":"last_mlp","label":"last MLP","family":"last_mlp","mu":false,"params":525568,"s_pearson_all":0.84945,"g_pearson_all":0.9697,"s_pearson_rare":0.7601,"g_pearson_rare":0.95172,"s_r2_all":0.2565,"g_r2_all":0.57856,"s_r2_rare":-0.05065,"g_r2_rare":0.49942,"s_rmse_all":0.01388,"g_rmse_all":0.00937,"s_rmse_rare":0.02555,"g_rmse_rare":0.01018},{"id":"last_mlp_mu","label":"last MLP · μ","family":"last_mlp","mu":true,"params":525568,"s_pearson_all":0.84386,"g_pearson_all":0.97407,"s_pearson_rare":0.77138,"g_pearson_rare":0.95249,"s_r2_all":0.28103,"g_r2_all":0.60203,"s_r2_rare":-0.14728,"g_r2_rare":0.52787,"s_rmse_all":0.01372,"g_rmse_all":0.00871,"s_rmse_rare":0.0251,"g_rmse_rare":0.0093}];
+
+const PERHOSP = {"full_ft":{"458":{"n":1832,"sa":0.96337},"188":{"n":1620,"sa":0.90875},"300":{"n":1579,"sa":0.90411},"208":{"n":1517,"sa":0.96448},"449":{"n":1001,"sa":0.9182},"277":{"n":624,"sa":0.85604},"358":{"n":194,"sa":0.82572},"429":{"n":142,"sa":0.7744}},"lora_attn":{"458":{"n":1832,"sa":0.94004},"188":{"n":1620,"sa":0.81988},"300":{"n":1579,"sa":0.83071},"208":{"n":1517,"sa":0.932},"449":{"n":1001,"sa":0.87576},"277":{"n":624,"sa":0.82369},"358":{"n":194,"sa":0.78873},"429":{"n":142,"sa":0.74449}},"lora_head":{"458":{"n":1832,"sa":0.9408},"188":{"n":1620,"sa":0.83038},"300":{"n":1579,"sa":0.83419},"208":{"n":1517,"sa":0.92606},"449":{"n":1001,"sa":0.8888},"277":{"n":624,"sa":0.85518},"358":{"n":194,"sa":0.82282},"429":{"n":142,"sa":0.73064}},"last_mlp":{"458":{"n":1832,"sa":0.93032},"188":{"n":1620,"sa":0.8568},"300":{"n":1579,"sa":0.8421},"208":{"n":1517,"sa":0.92072},"449":{"n":1001,"sa":0.87681},"277":{"n":624,"sa":0.82565},"358":{"n":194,"sa":0.78255},"429":{"n":142,"sa":0.79936}}};
+
+const NS = "http://www.w3.org/2000/svg";
+const COL = f => `var(--f-${f})`;
+const METRIC = {
+  pearson: {label: "Pearson", better: "high",
+    blurb: "Correlation between synthetic and real prevalence across codes. Scale-invariant, so it cannot see an arm emitting the wrong overall volume."},
+  r2: {label: "R² vs identity", better: "high",
+    blurb: "Fit against the identity line, so unlike Pearson it punishes being wrong in ABSOLUTE prevalence. Negative means worse than predicting the mean."},
+  rmse: {label: "RMSE", better: "low",
+    blurb: "Root mean squared prevalence error. Lower is better, so here the good end of the axis is the bottom."}
+};
+let metric = "pearson", codeSet = "all";
+const val = (a, side) => a[`${side}_${metric}_${codeSet}`];
+
+function el(n, at, tx) {
+  const e = document.createElementNS(NS, n);
+  for (const k in at) e.setAttribute(k, at[k]);
+  if (tx != null) e.textContent = tx;
+  return e;
+}
+const fmt = v => metric === "rmse" ? v.toFixed(4)
+                : Math.abs(v) >= 10 ? v.toFixed(1) : v.toFixed(3);
+
+function mark(g, cx, cy, arm, r) {
+  r = r || 7;
+  const col = COL(arm.family);
+  if (arm.family === "full_ft") {
+    // A hollow diamond in text ink: the reference, not a fourth category.
+    g.appendChild(el("path", {d: `M ${cx} ${cy-r-1} L ${cx+r+1} ${cy} L ${cx} ${cy+r+1} L ${cx-r-1} ${cy} Z`,
+      fill: "none", stroke: col, "stroke-width": 2.5}));
+  } else if (arm.mu) {
+    g.appendChild(el("circle", {cx, cy, r, fill: "var(--surface-1)",
+      stroke: col, "stroke-width": 2.5}));
+  } else {
+    g.appendChild(el("circle", {cx, cy, r, fill: col,
+      stroke: "var(--surface-1)", "stroke-width": 2}));
+  }
+}
+
+function axes(svg, m, W, H, d0, d1, x0, x1, xlog, xticks, xlab, ylab) {
+  const sy = v => H - m.b - (v - d0) / (d1 - d0) * (H - m.t - m.b);
+  const sx = xlog
+    ? v => m.l + (Math.log10(v) - Math.log10(x0)) / (Math.log10(x1) - Math.log10(x0)) * (W - m.l - m.r)
+    : v => m.l + (v - x0) / (x1 - x0) * (W - m.l - m.r);
+  const span = d1 - d0;
+  const step = span > 1.5 ? 0.5 : span > 0.45 ? 0.1 : span > 0.08 ? 0.05 : span > 0.02 ? 0.01 : 0.005;
+  for (let v = Math.ceil(d0 / step) * step; v <= d1 + 1e-9; v += step) {
+    const t = Math.round(v * 1000) / 1000;
+    svg.appendChild(el("line", {x1: m.l, y1: sy(t), x2: W - m.r, y2: sy(t),
+      stroke: "var(--grid)", "stroke-width": 1}));
+    svg.appendChild(el("text", {x: m.l - 10, y: sy(t) + 3.5, "text-anchor": "end",
+      class: "tick"}, Math.abs(t) < 0.1 && t !== 0 ? t.toFixed(3) : t.toFixed(2)));
+  }
+  xticks.forEach(([v, lab]) => {
+    svg.appendChild(el("line", {x1: sx(v), y1: m.t, x2: sx(v), y2: H - m.b,
+      stroke: "var(--grid)", "stroke-width": 1}));
+    svg.appendChild(el("text", {x: sx(v), y: H - m.b + 18, "text-anchor": "middle",
+      class: "tick"}, lab));
+  });
+  svg.appendChild(el("text", {x: (m.l + W - m.r) / 2, y: H - 10,
+    "text-anchor": "middle", class: "axis-label"}, xlab));
+  const yl = el("text", {x: 0, y: 0, "text-anchor": "middle", class: "axis-label",
+    transform: `translate(16 ${(m.t + H - m.b) / 2}) rotate(-90)`});
+  yl.textContent = ylab;
+  svg.appendChild(yl);
+  return {sx, sy};
+}
+
+function drawParams() {
+  const svg = document.getElementById("params");
+  svg.textContent = "";
+  const W = 780, H = 400, m = {t: 20, r: 120, b: 52, l: 66};
+  const ys = ARMS.map(a => val(a, "s"));
+  const pad = (Math.max(...ys) - Math.min(...ys)) * 0.25 || 0.05;
+  const {sx, sy} = axes(svg, m, W, H, Math.min(...ys) - pad, Math.max(...ys) + pad,
+    2e4, 1.1e7, true,
+    [[3e4, "30K"], [1e5, "100K"], [5e5, "500K"], [2e6, "2M"], [6.17e6, "6.17M"]],
+    "trainable parameters per hospital (log scale)",
+    `Specialist · ${METRIC[metric].label}  (${METRIC[metric].better === "high" ? "↑ better" : "↓ better"})`);
+
+  // Reference line at the full fine-tune's value: the question is whether an
+  // adapter reaches it, so make "reaching it" a thing you can see rather than
+  // a pair of numbers to subtract.
+  const ft = ARMS.find(a => a.id === "full_ft");
+  svg.appendChild(el("line", {x1: m.l, y1: sy(val(ft, "s")), x2: W - m.r, y2: sy(val(ft, "s")),
+    stroke: "var(--f-full_ft)", "stroke-width": 1.5, "stroke-dasharray": "5 4", opacity: 0.7}));
+  svg.appendChild(el("text", {x: W - m.r + 8, y: sy(val(ft, "s")) + 4, class: "tick"},
+    "full fine-tune"));
+
+  ARMS.forEach(a => {
+    const g = el("g", {});
+    mark(g, sx(a.params), sy(val(a, "s")), a);
+    const t = el("title", {});
+    t.textContent = `${a.label}\n${a.params.toLocaleString()} params\nspecialist ${fmt(val(a, "s"))}`;
+    g.appendChild(t);
+    svg.appendChild(g);
+  });
+  document.getElementById("cap1").textContent = METRIC[metric].blurb
+    + (codeSet === "all" ? "  All 921 codes." : "  The 548 pooled rare codes.");
+}
+
+function drawSG() {
+  const svg = document.getElementById("sg");
+  svg.textContent = "";
+  const W = 780, H = 480, m = {t: 20, r: 30, b: 56, l: 66};
+  const xs = ARMS.map(a => val(a, "g")), ys = ARMS.map(a => val(a, "s"));
+  const lo = Math.min(...xs, ...ys), hi = Math.max(...xs, ...ys);
+  const pad = (hi - lo) * 0.12 || 0.05;
+  const d0 = lo - pad, d1 = hi + pad;
+  const ticks = [];
+  const st = (d1 - d0) > 0.45 ? 0.1 : (d1 - d0) > 0.08 ? 0.05 : 0.01;
+  for (let v = Math.ceil(d0 / st) * st; v <= d1 + 1e-9; v += st)
+    ticks.push([Math.round(v * 1000) / 1000, (Math.round(v * 1000) / 1000).toFixed(2)]);
+  const {sx, sy} = axes(svg, m, W, H, d0, d1, d0, d1, false, ticks,
+    `Generalist · ${METRIC[metric].label} vs the pooled cohort fold`,
+    `Specialist · ${METRIC[metric].label} vs each site's own fold`);
+  svg.appendChild(el("line", {x1: sx(d0), y1: sy(d0), x2: sx(d1), y2: sy(d1),
+    stroke: "var(--rule)", "stroke-width": 1.5, "stroke-dasharray": "5 5"}));
+  ARMS.forEach(a => {
+    const g = el("g", {});
+    mark(g, sx(val(a, "g")), sy(val(a, "s")), a);
+    const t = el("title", {});
+    t.textContent = `${a.label}\nspecialist ${fmt(val(a, "s"))} · generalist ${fmt(val(a, "g"))}`;
+    g.appendChild(t);
+    svg.appendChild(g);
+    if (!a.mu) svg.appendChild(el("text", {x: sx(val(a, "g")) + 12,
+      y: sy(val(a, "s")) + 4, class: "ptlabel"}, a.label));
+  });
+  document.getElementById("cap2").textContent =
+    "The full fine-tune sits high and left — the best specialist, the worst generalist. "
+    + "Every adapter sits low and right. Marks with a hollow centre carry μ = 0.01.";
+}
+
+function drawPerHosp() {
+  const svg = document.getElementById("perhosp");
+  svg.textContent = "";
+  const W = 780, H = 420, m = {t: 20, r: 118, b: 52, l: 66};
+  const all = Object.values(PERHOSP).flatMap(o => Object.values(o).map(v => v.sa));
+  const d0 = Math.min(...all) - 0.03, d1 = Math.max(...all) + 0.03;
+  const {sx, sy} = axes(svg, m, W, H, d0, d1, 120, 2100, true,
+    [[142, "142"], [300, "300"], [624, "624"], [1000, "1,001"], [1832, "1,832"]],
+    "hospital training-set size (log scale)",
+    "Specialist · Pearson, all codes  (↑ better)");
+
+  ["full_ft", "lora_attn", "lora_head", "last_mlp"].forEach(fam => {
+    const pts = Object.entries(PERHOSP[fam])
+      .map(([hid, v]) => ({hid, ...v})).sort((a, b) => a.n - b.n);
+    const d = pts.map((p, i) => `${i ? "L" : "M"} ${sx(p.n)} ${sy(p.sa)}`).join(" ");
+    svg.appendChild(el("path", {d, fill: "none", stroke: COL(fam),
+      "stroke-width": fam === "full_ft" ? 2.5 : 2,
+      "stroke-dasharray": fam === "full_ft" ? "6 4" : "none", opacity: 0.9}));
+    pts.forEach(p => {
+      const g = el("g", {});
+      mark(g, sx(p.n), sy(p.sa), {family: fam, mu: false}, 5);
+      const t = el("title", {});
+      t.textContent = `${fam} · hospital ${p.hid}\n${p.n} train patients\nPearson ${p.sa.toFixed(3)}`;
+      g.appendChild(t);
+      svg.appendChild(g);
+    });
+    const last = pts[pts.length - 1];
+    svg.appendChild(el("text", {x: sx(last.n) + 10, y: sy(last.sa) + 4,
+      class: "tick", fill: COL(fam)}, fam));
+  });
+  document.getElementById("cap3").textContent =
+    "μ arms omitted for legibility. The full fine-tune (dashed) leads at almost every site, "
+    + "including the two smallest — so the predicted small-site advantage does not appear. "
+    + "The one exception is hospital 429, where the last MLP reaches 0.799 against 0.774.";
+}
+
+function table() {
+  const tb = document.getElementById("tbody");
+  tb.textContent = "";
+  const ft = ARMS.find(a => a.id === "full_ft");
+  ARMS.forEach(a => {
+    const tr = document.createElement("tr");
+    const c = document.createElement("td");
+    c.className = "arm";
+    const sw = document.createElement("span");
+    sw.className = "swatch";
+    sw.style.background = COL(a.family);
+    c.append(sw, document.createTextNode(a.label));
+    tr.appendChild(c);
+    [a.params.toLocaleString(), (100 * a.params / ft.params).toFixed(2) + "%"]
+      .forEach(v => { const t = document.createElement("td"); t.className = "num"; t.textContent = v; tr.appendChild(t); });
+    [["s","all"],["s","rare"],["g","all"],["g","rare"]].forEach(([side, cs]) => {
+      const t = document.createElement("td");
+      t.className = "num";
+      t.textContent = fmt(a[`${side}_${metric}_${cs}`]);
+      tr.appendChild(t);
+    });
+    tb.appendChild(tr);
+  });
+  document.getElementById("tcap").textContent =
+    `${METRIC[metric].label}. Specialist = each site's own test fold; generalist = the pooled cohort fold. `
+    + (METRIC[metric].better === "high" ? "Higher is better." : "Lower is better.");
+}
+
+
+const CPTS = [{"id":"local","group":"baseline","label":"local","from":null,"shape":"circle","s_pearson_all":0.93458,"g_pearson_all":0.87166,"s_pearson_rare":0.9053,"g_pearson_rare":0.80431,"s_r2_all":0.68927,"g_r2_all":0.47438,"s_r2_rare":0.48503,"g_r2_rare":0.19735,"s_rmse_all":0.00904,"g_rmse_all":0.01011,"s_rmse_rare":0.01376,"g_rmse_rare":0.01147},{"id":"centralized","group":"baseline","label":"centralized","from":null,"shape":"square","s_pearson_all":0.52689,"g_pearson_all":0.70173,"s_pearson_rare":0.39482,"g_pearson_rare":0.62054,"s_r2_all":-53.13032,"g_r2_all":-43.94157,"s_r2_rare":-68.5338,"g_r2_rare":-76.09157,"s_rmse_all":0.09181,"g_rmse_all":0.09143,"s_rmse_rare":0.14685,"g_rmse_rare":0.11577},{"id":"fedavg","group":"baseline","label":"fedavg","from":null,"shape":"diamond","s_pearson_all":0.84778,"g_pearson_all":0.96773,"s_pearson_rare":0.73872,"g_pearson_rare":0.94715,"s_r2_all":0.16906,"g_r2_all":0.53407,"s_r2_rare":-0.47753,"g_r2_rare":0.44781,"s_rmse_all":0.01302,"g_rmse_all":0.00916,"s_rmse_rare":0.02505,"g_rmse_rare":0.01033},{"id":"fedavg_irm1e2","group":"irm1e2","label":"fedavg · IRM ρ=10²","from":"fedavg","shape":"diamond","s_pearson_all":0.86536,"g_pearson_all":0.98107,"s_pearson_rare":0.75287,"g_pearson_rare":0.96617,"s_r2_all":0.48276,"g_r2_all":0.85667,"s_r2_rare":0.16363,"g_r2_rare":0.82624,"s_rmse_all":0.0113,"g_rmse_all":0.00511,"s_rmse_rare":0.01976,"g_rmse_rare":0.00571},{"id":"fedavg_irm1e4","group":"irm1e4","label":"fedavg · IRM ρ=10⁴","from":"fedavg","shape":"diamond","s_pearson_all":0.81441,"g_pearson_all":0.97481,"s_pearson_rare":0.69153,"g_pearson_rare":0.96968,"s_r2_all":0.5745,"g_r2_all":0.93025,"s_r2_rare":0.19219,"g_r2_rare":0.90221,"s_rmse_all":0.00896,"g_rmse_all":0.00341,"s_rmse_rare":0.01682,"g_rmse_rare":0.00423},{"id":"centralized_irm1e2","group":"irm1e2","label":"centralized · IRM ρ=10²","from":"centralized","shape":"square","s_pearson_all":0.82257,"g_pearson_all":0.99303,"s_pearson_rare":0.71284,"g_pearson_rare":0.98731,"s_r2_all":0.30734,"g_r2_all":0.85063,"s_r2_rare":0.12529,"g_r2_rare":0.81345,"s_rmse_all":0.01254,"g_rmse_all":0.00575,"s_rmse_rare":0.02003,"g_rmse_rare":0.00563},{"id":"centralized_irm1e4","group":"irm1e4","label":"centralized · IRM ρ=10⁴","from":"centralized","shape":"square","s_pearson_all":0.83556,"g_pearson_all":0.99172,"s_pearson_rare":0.71314,"g_pearson_rare":0.98689,"s_r2_all":0.36645,"g_r2_all":0.90719,"s_r2_rare":0.20534,"g_r2_rare":0.8698,"s_rmse_all":0.01222,"g_rmse_all":0.00455,"s_rmse_rare":0.0188,"g_rmse_rare":0.00473},{"id":"c_irm1e5","group":"irm1e5","label":"centralized · IRM ρ=10⁵","from":"centralized","shape":"square","s_pearson_all":0.82883,"g_pearson_all":0.98835,"s_pearson_rare":0.7225,"g_pearson_rare":0.98213,"s_r2_all":0.43805,"g_r2_all":0.83661,"s_r2_rare":-0.02219,"g_r2_rare":0.79337,"s_rmse_all":0.01308,"g_rmse_all":0.00645,"s_rmse_rare":0.02046,"g_rmse_rare":0.00621},{"id":"c_irmlate","group":"irmlate","label":"centralized · IRM late","from":"centralized","shape":"square","s_pearson_all":0.70317,"g_pearson_all":0.87594,"s_pearson_rare":0.52643,"g_pearson_rare":0.83032,"s_r2_all":-18.49896,"g_r2_all":-13.69451,"s_r2_rare":-26.91846,"g_r2_rare":-20.00858,"s_rmse_all":0.0545,"g_rmse_all":0.05298,"s_rmse_rare":0.0875,"g_rmse_rare":0.06265},{"id":"full_ft_ep2","group":"ft2","label":"full fine-tune (6.17M) · 2ep","from":"fedavg","shape":"triangle","s_pearson_all":0.89082,"g_pearson_all":0.9558,"s_pearson_rare":0.79237,"g_pearson_rare":0.94018,"s_r2_all":0.39729,"g_r2_all":0.06902,"s_r2_rare":0.02674,"g_r2_rare":-0.31594,"s_rmse_all":0.01573,"g_rmse_all":0.01303,"s_rmse_rare":0.02575,"g_rmse_rare":0.01587},{"id":"lora_attn_ep2","group":"ft2","label":"LoRA attention (33K) · 2ep","from":"fedavg","shape":"circle","s_pearson_all":0.8272,"g_pearson_all":0.97077,"s_pearson_rare":0.73798,"g_pearson_rare":0.95505,"s_r2_all":0.29882,"g_r2_all":0.57542,"s_r2_rare":-0.25739,"g_r2_rare":0.4876,"s_rmse_all":0.01404,"g_rmse_all":0.00862,"s_rmse_rare":0.02302,"g_rmse_rare":0.00964},{"id":"lora_head_ep2","group":"ft2","label":"LoRA head (38K) · 2ep","from":"fedavg","shape":"square","s_pearson_all":0.84468,"g_pearson_all":0.9739,"s_pearson_rare":0.77746,"g_pearson_rare":0.95222,"s_r2_all":0.28347,"g_r2_all":0.5774,"s_r2_rare":-0.18555,"g_r2_rare":0.46528,"s_rmse_all":0.01232,"g_rmse_all":0.0093,"s_rmse_rare":0.02313,"g_rmse_rare":0.00995},{"id":"last_mlp_ep2","group":"ft2","label":"last MLP (526K) · 2ep","from":"fedavg","shape":"diamond","s_pearson_all":0.84945,"g_pearson_all":0.9697,"s_pearson_rare":0.7601,"g_pearson_rare":0.95172,"s_r2_all":0.2565,"g_r2_all":0.57856,"s_r2_rare":-0.05065,"g_r2_rare":0.49942,"s_rmse_all":0.01388,"g_rmse_all":0.00937,"s_rmse_rare":0.02555,"g_rmse_rare":0.01018},{"id":"full_ft_ep20","group":"ft20","label":"full fine-tune (6.17M) · 20ep","from":"fedavg","shape":"triangle","s_pearson_all":0.92883,"g_pearson_all":0.90037,"s_pearson_rare":0.89077,"g_pearson_rare":0.85194,"s_r2_all":0.05784,"g_r2_all":-0.17185,"s_r2_rare":-0.83865,"g_r2_rare":-1.09821,"s_rmse_all":0.01798,"g_rmse_all":0.01625,"s_rmse_rare":0.03262,"g_rmse_rare":0.02016},{"id":"lora_attn_ep20","group":"ft20","label":"LoRA attention (33K) · 20ep","from":"fedavg","shape":"circle","s_pearson_all":0.83759,"g_pearson_all":0.97317,"s_pearson_rare":0.7434,"g_pearson_rare":0.95351,"s_r2_all":0.41478,"g_r2_all":0.71665,"s_r2_rare":-0.1631,"g_r2_rare":0.59514,"s_rmse_all":0.01265,"g_rmse_all":0.00791,"s_rmse_rare":0.01966,"g_rmse_rare":0.00827},{"id":"lora_head_ep20","group":"ft20","label":"LoRA head (38K) · 20ep","from":"fedavg","shape":"square","s_pearson_all":0.90302,"g_pearson_all":0.91982,"s_pearson_rare":0.8546,"g_pearson_rare":0.91013,"s_r2_all":0.43072,"g_r2_all":0.60025,"s_r2_rare":-0.02671,"g_r2_rare":0.42195,"s_rmse_all":0.01038,"g_rmse_all":0.00869,"s_rmse_rare":0.01802,"g_rmse_rare":0.01002},{"id":"last_mlp_ep20","group":"ft20","label":"last MLP (526K) · 20ep","from":"fedavg","shape":"diamond","s_pearson_all":0.85323,"g_pearson_all":0.96071,"s_pearson_rare":0.79456,"g_pearson_rare":0.94159,"s_r2_all":0.45553,"g_r2_all":0.45024,"s_r2_rare":0.17103,"g_r2_rare":0.30046,"s_rmse_all":0.01434,"g_rmse_all":0.01021,"s_rmse_rare":0.02272,"g_rmse_rare":0.0113},{"id":"irm_full_ft","group":"irmft","label":"IRM trunk + full fine-tune (6.17M)","from":"fedavg_irm1e2","shape":"triangle","s_pearson_all":0.93325,"g_pearson_all":0.89785,"s_pearson_rare":0.90451,"g_pearson_rare":0.84968,"s_r2_all":0.56849,"g_r2_all":0.03881,"s_r2_rare":0.23821,"g_r2_rare":-0.3638,"s_rmse_all":0.01201,"g_rmse_all":0.01291,"s_rmse_rare":0.0222,"g_rmse_rare":0.0154},{"id":"irm_lora_head","group":"irmft","label":"IRM trunk + LoRA head (38K)","from":"fedavg_irm1e2","shape":"square","s_pearson_all":0.92844,"g_pearson_all":0.90597,"s_pearson_rare":0.8951,"g_pearson_rare":0.8715,"s_r2_all":0.62983,"g_r2_all":0.7317,"s_r2_rare":0.33718,"g_r2_rare":0.55772,"s_rmse_all":0.00895,"g_rmse_all":0.00734,"s_rmse_rare":0.01441,"g_rmse_rare":0.0091},{"id":"irm_lora_attn","group":"irmft","label":"IRM trunk + LoRA attention (33K)","from":"fedavg_irm1e2","shape":"circle","s_pearson_all":0.83239,"g_pearson_all":0.97819,"s_pearson_rare":0.73226,"g_pearson_rare":0.96422,"s_r2_all":0.34709,"g_r2_all":0.85806,"s_r2_rare":-0.05841,"g_r2_rare":0.82516,"s_rmse_all":0.01068,"g_rmse_all":0.00512,"s_rmse_rare":0.0185,"g_rmse_rare":0.00574}];
+
+// ---- the combined panel ------------------------------------------------
+// Its own state and drawing, sharing this page's `metric` and `codeSet` so one
+// set of controls governs every figure. Colour groups by experiment family;
+// shape carries the method.
+// Two steps of ONE hue for the adapters, because 2 -> 20 epochs is an ordered
+// quantity, not two categories. Shape still carries the variant.
+// Group = WHAT WAS DONE: no fine-tuning, an IRM penalty during training, or
+// local fine-tuning at one of two budgets. The four fine-tuning METHODS (full
+// fine-tune plus three adapters) are shapes, and each budget carries all four --
+// so "full fine-tune" is one shape appearing once per budget, never a category
+// of its own.
+const CFAM = g => g === "baseline" ? "baseline"
+                : g === "ft2" ? "ad2" : g === "ft20" ? "ad20"
+                : g === "irmft" ? "irmft" : "irm";
+const CCOL = g => `var(--g-${CFAM(g)})`;
+const CROWS = [
+  {title: "Training regime \u2014 before any local fine-tuning", items: [
+    {key: "baseline", label: "local / centralized / fedavg", on: true}]},
+  {title: "IRM penalty, applied during training", items: [
+    {key: "irm1e2",   label: "\u03c1=10\u00b2",  on: true},
+    {key: "irm1e4",   label: "\u03c1=10\u2074",  on: false},
+    {key: "irm1e5",   label: "\u03c1=10\u2075",  on: false},
+    {key: "irmlate",  label: "\u03c1=10\u00b2, late", on: false}]},
+  {title: "Local fine-tuning \u2014 all four methods at each budget", items: [
+    {key: "ft2",  label: "2 epochs  (4\u201330 steps)",  on: true},
+    {key: "ft20", label: "20 epochs (40\u2013300 steps)", on: true}]},
+  {title: "Both at once \u2014 fine-tuned on top of the IRM trunk", items: [
+    {key: "irmft", label: "IRM \u03c1=10\u00b2 trunk + 20 epochs", on: true}]}
+];
+const cShown = new Set(CROWS.flatMap(r => r.items.filter(i => i.on).map(i => i.key)));
+const cVisible = () => CPTS.filter(p => cShown.has(p.group));
+const cRaw = (p, side) => p[`${side}_${metric}_${codeSet}`];
+const cClampV = v => { const f = METRIC[metric].floor; return (f != null && v < f) ? f : v; };
+const cX = p => cClampV(cRaw(p, "g"));
+const cY = p => cClampV(cRaw(p, "s"));
+
+function cShape(g, cx, cy, p, r) {
+  r = r || 7;
+  const col = CCOL(p.group), isBase = p.group === "baseline";
+  const fill = isBase ? "var(--surface-1)" : col;
+  const stroke = isBase ? col : "var(--surface-1)";
+  const sw = isBase ? 2.5 : 2;
+  if (p.shape === "square")
+    g.appendChild(el("rect", {x: cx - r, y: cy - r, width: 2 * r, height: 2 * r, rx: 2, fill, stroke, "stroke-width": sw}));
+  else if (p.shape === "diamond")
+    g.appendChild(el("path", {d: `M ${cx} ${cy-r-1} L ${cx+r+1} ${cy} L ${cx} ${cy+r+1} L ${cx-r-1} ${cy} Z`, fill, stroke, "stroke-width": sw}));
+  else if (p.shape === "triangle")
+    g.appendChild(el("path", {d: `M ${cx} ${cy-r-1} L ${cx+r} ${cy+r*0.8} L ${cx-r} ${cy+r*0.8} Z`, fill, stroke, "stroke-width": sw}));
+  else
+    g.appendChild(el("circle", {cx, cy, r, fill, stroke, "stroke-width": sw}));
+}
+
+function drawCombined() {
+  const svg = document.getElementById("combined");
+  svg.textContent = "";
+  const W = 780, H = 560, m = {t: 18, r: 26, b: 56, l: 66};
+  const V = cVisible();
+  if (!V.length) {
+    svg.appendChild(el("text", {x: W/2, y: H/2, "text-anchor": "middle", class: "axis-label"}, "No conditions selected."));
+    document.getElementById("capC").textContent = "Select at least one row above.";
+    return;
+  }
+  const xs = V.map(cX), ys = V.map(cY);
+  const lo = Math.min(...xs, ...ys), hi = Math.max(...xs, ...ys);
+  const pad = (hi - lo) * 0.12 || 0.05;
+  const capped = metric === "pearson" || metric === "r2";
+  const d0 = lo - pad, d1 = capped ? Math.min(1.02, hi + pad) : hi + pad;
+  const sx = v => m.l + (v - d0) / (d1 - d0) * (W - m.l - m.r);
+  const sy = v => H - m.b - (v - d0) / (d1 - d0) * (H - m.t - m.b);
+  const span = d1 - d0;
+  const step = span > 1.5 ? 0.5 : span > 0.45 ? 0.1 : span > 0.08 ? 0.05 : span > 0.02 ? 0.01 : 0.005;
+  for (let v = Math.ceil(d0/step)*step; v <= d1 + 1e-9; v += step) {
+    const t = Math.round(v*1000)/1000;
+    const lab = Math.abs(t) < 0.1 && t !== 0 ? t.toFixed(3) : t.toFixed(2);
+    svg.appendChild(el("line", {x1: sx(t), y1: m.t, x2: sx(t), y2: H-m.b, stroke: "var(--grid)", "stroke-width": 1}));
+    svg.appendChild(el("line", {x1: m.l, y1: sy(t), x2: W-m.r, y2: sy(t), stroke: "var(--grid)", "stroke-width": 1}));
+    svg.appendChild(el("text", {x: sx(t), y: H-m.b+18, "text-anchor": "middle", class: "tick"}, lab));
+    svg.appendChild(el("text", {x: m.l-10, y: sy(t)+3.5, "text-anchor": "end", class: "tick"}, lab));
+  }
+  svg.appendChild(el("line", {x1: sx(d0), y1: sy(d0), x2: sx(d1), y2: sy(d1),
+    stroke: "var(--rule)", "stroke-width": 1.5, "stroke-dasharray": "5 5"}));
+  const M = METRIC[metric], dir = M.better === "high" ? "\u2192 better" : "\u2190 better";
+  svg.appendChild(el("text", {x: (m.l+W-m.r)/2, y: H-12, "text-anchor": "middle", class: "axis-label"},
+    `Generalist \u00b7 ${M.label} vs the pooled cohort fold  (${dir})`));
+  const yl = el("text", {x: 0, y: 0, "text-anchor": "middle", class: "axis-label",
+    transform: `translate(16 ${(m.t+H-m.b)/2}) rotate(-90)`});
+  yl.textContent = `Specialist \u00b7 ${M.label} vs each site's own fold  (${dir})`;
+  svg.appendChild(yl);
+
+  const defs = el("defs", {});
+  const mk = el("marker", {id: "cah", viewBox: "0 0 10 10", refX: "8", refY: "5",
+    markerWidth: "6", markerHeight: "6", orient: "auto-start-reverse"});
+  mk.appendChild(el("path", {d: "M 0 0 L 10 5 L 0 10 z", fill: "var(--arrow)"}));
+  defs.appendChild(mk);
+  svg.appendChild(defs);
+
+  const byId = {}; CPTS.forEach(p => byId[p.id] = p);
+  V.forEach(p => {
+    if (!p.from) return;
+    const o = byId[p.from];
+    if (!o || !cShown.has(o.group)) return;
+    const x1 = sx(cX(o)), y1 = sy(cY(o)), x2 = sx(cX(p)), y2 = sy(cY(p));
+    const dx = x2-x1, dy = y2-y1, L = Math.hypot(dx, dy) || 1, off = 11;
+    if (L < 2*off) return;
+    svg.appendChild(el("line", {x1: x1+dx/L*off, y1: y1+dy/L*off, x2: x2-dx/L*off, y2: y2-dy/L*off,
+      stroke: CCOL(p.group), "stroke-width": 1.5, opacity: 0.5, "marker-end": "url(#cah)"}));
+  });
+
+  // Painting order, back to front. Anything whose family is NOT named here is
+  // appended rather than dropped: this list having no entry for a new colour
+  // group is what made the IRM-trunk points render as arrows pointing at
+  // nothing -- the arrow loop above has no family filter, so the connector drew
+  // and the marker did not, and the figure read as an existing point moving.
+  const CZ = ["ad2", "ad20", "irmft", "irm", "baseline"];
+  const fams = CZ.concat(
+    [...new Set(V.map(p => CFAM(p.group)))].filter(f => !CZ.includes(f)));
+  fams.forEach(fam =>
+    V.filter(p => CFAM(p.group) === fam).forEach(p => {
+      const g = el("g", {});
+      cShape(g, sx(cX(p)), sy(cY(p)), p);
+      const t = el("title", {});
+      t.textContent = `${p.label}\nspecialist ${fmt(cRaw(p,"s"))} \u00b7 generalist ${fmt(cRaw(p,"g"))}`;
+      g.appendChild(t);
+      svg.appendChild(g);
+    }));
+  V.filter(p => p.group === "baseline").forEach(p => {
+    const cx = sx(cX(p)), cy = sy(cY(p));
+    const left = cX(p) > (d0+d1)/2;
+    svg.appendChild(el("text", {x: cx + (left ? -12 : 12), y: cy+4,
+      "text-anchor": left ? "end" : "start", class: "ptlabel"}, p.label));
+  });
+  let cap = "At 2 epochs every adapter sits on top of the unadapted fedavg point. "
+    + "At 20 epochs LoRA head moves almost all the way to the full fine-tune on the "
+    + "specialist axis (0.903 against 0.929) while giving up far less generalist fit "
+    + "(0.920 against 0.900). LoRA attention barely moves at either budget. ";
+  if (cShown.has("irmft"))
+    cap += metric === "pearson"
+      ? "The IRM-trunk runs barely separate from their plain-trunk twins here: "
+        + "+0.025 specialist and \u22120.014 generalist for the LoRA head, both at "
+        + "or inside the 0.019 Pearson noise floor. Switch to R\u00b2 \u2014 that is "
+        + "where they move. "
+      : "The IRM-trunk runs sit up and to the right of both parents on this metric: "
+        + "IRM + LoRA head reaches 0.630 specialist and 0.732 generalist against "
+        + "0.431 / 0.600 for the same adapter on a plain trunk. ";
+  document.getElementById("capC").textContent = cap + M.blurb;
+}
+
+function cBuildChips() {
+  const host = document.getElementById("condrow");
+  host.textContent = "";
+  CROWS.forEach(row => {
+    const fs = document.createElement("fieldset");
+    fs.className = "condset";
+    const lg = document.createElement("legend");
+    lg.textContent = row.title;
+    fs.appendChild(lg);
+    const wrap = document.createElement("div");
+    wrap.className = "chiprow";
+    row.items.forEach(it => {
+      const lab = document.createElement("label");
+      lab.className = "chip";
+      lab.dataset.on = String(cShown.has(it.key));
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = cShown.has(it.key);
+      const txt = document.createElement("span");
+      txt.textContent = it.label;
+      box.addEventListener("change", () => {
+        if (box.checked) cShown.add(it.key); else cShown.delete(it.key);
+        lab.dataset.on = String(box.checked);
+        drawCombined();
+      });
+      lab.append(box, txt);
+      wrap.appendChild(lab);
+    });
+    fs.appendChild(wrap);
+    host.appendChild(fs);
+  });
+}
+cBuildChips();
+
+function redraw() { drawCombined(); drawParams(); drawSG(); drawPerHosp(); table(); }
+document.getElementById("metric").addEventListener("change", e => { metric = e.target.value; redraw(); });
+document.querySelectorAll(".seg button").forEach(b => b.addEventListener("click", () => {
+  codeSet = b.dataset.set;
+  document.querySelectorAll(".seg button").forEach(o => o.setAttribute("aria-pressed", String(o === b)));
+  redraw();
+}));
+redraw();
+</script>

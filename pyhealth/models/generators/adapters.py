@@ -12,6 +12,8 @@ variant      trainable                                       params     % of FT
 lora_attn    LoRA on q,v of every block's attention           32,768      0.53%
 last_mlp     the final block's feedforward, in full          524,288      8.49%
 lora_head    LoRA on the autoregressive code head             37,792      0.61%
+last_mlp_l1  last block's feedforward, L1-sparse delta       524,288      8.49%
+last_mlp_iht last block's feedforward, top-k sparse delta    524,288      8.49%
 ===========  ==============================================  =========  ========
 
 (counts at rank 8, n_embd 256, 4 layers, total_vocab_size 925)
@@ -22,6 +24,14 @@ second changes how codes are emitted given that history. Prevalence metrics scor
 the emitted codes, so ``lora_head`` is aimed at the metric while ``lora_attn`` is
 the more conservative edit. ``last_mlp`` is neither low-rank nor small; it is the
 reference point the other two are trying to beat on parameter count.
+
+``last_mlp_l1`` and ``last_mlp_iht`` train the same weights as ``last_mlp`` but
+constrain the UPDATE ``D = W - W_global`` to be sparse -- by a proximal L1 step
+and by periodic top-k projection respectively. Their column above is the count
+they OPTIMISE; the count they finally use is that times the achieved density,
+which :func:`delta_stats` reports and which nothing else in the pipeline can
+infer. LoRA's prior is "personalise along few directions"; theirs is "along few
+coordinates".
 
 A LoRA delta starts at exactly zero (``B`` is zero-initialised), so an adapted
 model reproduces its trunk bit-for-bit before the first optimiser step. That is
@@ -144,7 +154,190 @@ class LoRAMaskedLinear(nn.Module):
 
 
 #: Adapter variants. Keys are what ``--adapter`` accepts.
-VARIANTS = ("none", "lora_attn", "last_mlp", "lora_head")
+VARIANTS = ("none", "lora_attn", "last_mlp", "lora_head",
+            "last_mlp_l1", "last_mlp_iht")
+
+#: Variants that constrain the update to be SPARSE rather than low-rank. They
+#: train exactly the parameters ``last_mlp`` trains, and differ only in what is
+#: allowed to move: a sparse delta instead of a dense one. LoRA asks "can this
+#: site personalise along a few DIRECTIONS"; these ask "along a few
+#: COORDINATES". Both are complexity priors on the same fine-tuning step, which
+#: is what makes them comparable.
+SPARSE_VARIANTS = ("last_mlp_l1", "last_mlp_iht")
+
+
+class _DeltaRef(nn.Module):
+    """Frozen copy of the federated global's weights, for delta-sparse variants.
+
+    ``last_mlp`` differs from the LoRA variants in a way that matters here: its
+    parameters start at the TRUNK's values, not at zero. So "sparsify" is
+    ambiguous, and the two readings are different experiments:
+
+    * sparsify ``W`` -- force the last MLP itself to be mostly zeros. A trained
+      MLP is not sparse, so this destroys what the trunk knows. It is a pruning
+      experiment, not a personalisation one.
+    * sparsify ``D = W - W_global`` -- the site changes a few coordinates and is
+      the federated global everywhere else.
+
+    The second is what these variants do. It restores the property plain
+    ``last_mlp`` lacks -- "adapter = 0 means be the federated global" -- which is
+    what makes the FedProx term meaningful for it, and it lines the variant up
+    against LoRA as sparse-vs-low-rank on one axis.
+
+    The reference is stored as BUFFERS so it round-trips through the checkpoint:
+    ``generate.py`` applies the adapter before loading, so both sides carry the
+    same keys, and a saved run alone is enough to recompute its final sparsity.
+
+    Note that plain ``last_mlp`` deliberately does NOT get one of these. Adding
+    buffers to it would change its state dict, and the ``last_mlp`` checkpoints
+    already on disk -- saved without them -- would stop loading.
+    """
+
+    def __init__(self, params: Iterable[nn.Parameter]):
+        super().__init__()
+        self._names = []
+        for i, p in enumerate(params):
+            self.register_buffer(f"w0_{i}", p.detach().clone())
+            self._names.append(f"w0_{i}")
+        # A plain list attribute, not a ParameterList: these Parameters are
+        # already owned by the MLP, and registering them twice would double
+        # them in the state dict and in the optimiser.
+        self._live = list(params)
+
+    def pairs(self):
+        """``[(live_param, w_global), ...]`` in a stable order."""
+        return [(p, getattr(self, n)) for p, n in zip(self._live, self._names)]
+
+
+def _ref(halo_model: nn.Module):
+    """The model's :class:`_DeltaRef`, or None if this is not a sparse run."""
+    return getattr(halo_model, "sparse_ft", None)
+
+
+def delta_stats(halo_model: nn.Module, tol: float = 0.0) -> dict:
+    """Size and sparsity of ``D = W - W_global`` over the fine-tuned weights.
+
+    This is the run's actual evidence. Sparsity is the thing being claimed, and
+    it is not observable from the loss: a subgradient L1 shrinks coordinates
+    without ever landing on zero, so a run can look regularised and be fully
+    dense. Logging ``nnz_frac`` per epoch is what separates the two.
+
+    Args:
+        halo_model: A ``HALOModel`` adapted with a sparse variant.
+        tol: Count a coordinate as non-zero when ``|d| > tol``. The default
+            ``0.0`` counts EXACT non-zeros, which is the honest measure for the
+            proximal and hard-threshold paths, since both produce true zeros.
+            Raise it only to ask a different question ("how many coordinates
+            moved appreciably"), and say which you used.
+
+    Returns:
+        ``{"l1", "l2", "linf", "nnz", "n", "nnz_frac"}``, or ``{}`` when the
+        model carries no reference (i.e. not a sparse variant).
+    """
+    ref = _ref(halo_model)
+    if ref is None:
+        return {}
+    with torch.no_grad():
+        flat = torch.cat([(p.detach() - w0).reshape(-1) for p, w0 in ref.pairs()])
+        absd = flat.abs()
+        nnz = int((absd > tol).sum().item())
+        n = flat.numel()
+        return {"l1": absd.sum().item(), "l2": flat.norm().item(),
+                "linf": absd.max().item() if n else 0.0,
+                "nnz": nnz, "n": n, "nnz_frac": nnz / n if n else 0.0}
+
+
+@torch.no_grad()
+def prox_l1_(halo_model: nn.Module, thresh: float) -> None:
+    """Soft-threshold the delta in place -- the step that actually makes zeros.
+
+    Adding ``lam * ||D||_1`` to the loss and letting the optimiser handle it does
+    NOT sparsify. The subgradient of ``|x|`` is ``sign(x)`` away from zero, so
+    the update chatters in a band of width ``lr * lam`` around zero and
+    essentially never lands on it. The run then reports a sparsity of 0% and
+    looks like a failed idea when it is really a failed representation. The
+    proximal step is what closes it::
+
+        D <- sign(D) * max(|D| - thresh, 0)
+
+    Args:
+        halo_model: A ``HALOModel`` adapted with a sparse variant. A model with
+            no reference is left untouched.
+        thresh: Soft-threshold size, normally ``lr * lam``.
+
+    Note:
+        ``thresh = lr * lam`` is the EXACT proximal operator only for plain SGD
+        (this is ISTA). Under Adam the correct per-coordinate threshold carries
+        a ``1/sqrt(v_hat)`` factor, so prox-Adam is a heuristic -- effective in
+        practice, but not the operator its name suggests. That is the reason
+        ``--adapter-optim sgd`` exists: it is the arm where the maths is exact,
+        and a cross-check that the Adam arm's sparsity is not an artefact.
+    """
+    ref = _ref(halo_model)
+    if ref is None or thresh <= 0.0:
+        return
+    for p, w0 in ref.pairs():
+        d = p - w0
+        d = torch.sign(d) * torch.clamp(d.abs() - thresh, min=0.0)
+        p.copy_(w0 + d)
+
+
+@torch.no_grad()
+def hard_threshold_(halo_model: nn.Module, keep_frac: float,
+                    optimizer=None) -> dict:
+    """Project the delta onto its ``keep_frac`` largest coordinates.
+
+    Ranked GLOBALLY across every fine-tuned tensor rather than per tensor, so
+    the layer allocates its own budget instead of each weight matrix being
+    forced to spend the same fraction.
+
+    Called every few epochs rather than once at the end, which is what makes it
+    ITERATIVE hard thresholding: training between projections is dense, so a
+    coordinate zeroed at one projection can re-grow and survive the next. A
+    single projection at the end would be ordinary one-shot pruning.
+
+    Args:
+        halo_model: A ``HALOModel`` adapted with a sparse variant.
+        keep_frac: Fraction of coordinates to keep, in ``(0, 1]``.
+        optimizer: The optimiser being stepped. Passing it is not optional in
+            practice for a stateful optimiser -- see the warning below.
+
+    Returns:
+        :func:`delta_stats` measured immediately after the projection.
+
+    Raises:
+        ValueError: If ``keep_frac`` is outside ``(0, 1]``.
+
+    Warning:
+        Zeroing a weight but leaving Adam's ``exp_avg`` for that coordinate
+        intact means the very next step pushes it straight back off zero, and
+        the run ends dense while every projection looked like it worked. This
+        masks the optimiser state alongside the weight. Plain SGD has no state
+        and so cannot hit this at all.
+    """
+    if not 0.0 < keep_frac <= 1.0:
+        raise ValueError(f"keep_frac must be in (0, 1], got {keep_frac}")
+    ref = _ref(halo_model)
+    if ref is None:
+        return {}
+    pairs = ref.pairs()
+    absd = torch.cat([(p - w0).abs().reshape(-1) for p, w0 in pairs])
+    k = max(1, int(round(keep_frac * absd.numel())))
+    # Ties at the cutoff keep slightly more than k, which is the safe direction:
+    # it never prunes below the requested budget.
+    cutoff = torch.topk(absd, k, largest=True, sorted=True).values[-1]
+    for p, w0 in pairs:
+        d = p - w0
+        mask = (d.abs() >= cutoff).to(d.dtype)
+        p.copy_(w0 + d * mask)
+        if optimizer is not None:
+            state = optimizer.state.get(p)
+            if state:
+                for key in ("exp_avg", "exp_avg_sq", "momentum_buffer"):
+                    buf = state.get(key)
+                    if torch.is_tensor(buf):
+                        buf.mul_(mask)
+    return delta_stats(halo_model)
 
 
 def apply_adapter(halo_model: nn.Module, variant: str, rank: int = 8
@@ -195,10 +388,23 @@ def apply_adapter(halo_model: nn.Module, variant: str, rank: int = 8
         head = halo_model.ehr_head
         head.auto1 = LoRAMaskedLinear(head.auto1, rank)
         head.auto2 = LoRAMaskedLinear(head.auto2, rank)
+    elif variant in SPARSE_VARIANTS:
+        # Same weights as last_mlp. What differs is the CONSTRAINT on how they
+        # may move, which lives in the training loop (a proximal step or a
+        # periodic projection) and needs the pre-fine-tuning weights to measure
+        # a delta against -- hence the reference below.
+        for p in halo_model.transformer.h[-1].mlp.parameters():
+            p.requires_grad_(True)
 
     trainable = [p for p in halo_model.parameters() if p.requires_grad]
     if not trainable:
         raise ValueError(f"adapter {variant!r} left nothing trainable")
+    if variant in SPARSE_VARIANTS:
+        # Snapshot AFTER the unfreeze and after the caller has loaded the
+        # federated global, which is why finetune_local adapts only once the
+        # warm start is in place. Snapshot a randomly initialised model instead
+        # and every "delta" is measured from the wrong origin.
+        halo_model.sparse_ft = _DeltaRef(trainable)
     return trainable
 
 
@@ -237,7 +443,17 @@ def adapter_l2(halo_model: nn.Module) -> torch.Tensor:
     Returns:
         A scalar tensor; zero (with grad) when nothing is trainable.
     """
-    terms = [(p ** 2).sum() for p in halo_model.parameters() if p.requires_grad]
+    ref = _ref(halo_model)
+    if ref is not None:
+        # A delta-sparse variant knows where the federated global is, so mu can
+        # be the LITERAL proximal term ||theta - theta_global||^2 rather than
+        # weight decay toward zero. Penalising the raw weights here would pull
+        # the layer toward the origin, which for a trunk-initialised MLP is
+        # damage, not regularisation.
+        terms = [((p - w0) ** 2).sum() for p, w0 in ref.pairs()]
+    else:
+        terms = [(p ** 2).sum()
+                 for p in halo_model.parameters() if p.requires_grad]
     if not terms:
         return torch.zeros((), device=next(halo_model.parameters()).device)
     return torch.stack(terms).sum()

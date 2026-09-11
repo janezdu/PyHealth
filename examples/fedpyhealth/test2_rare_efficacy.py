@@ -80,6 +80,30 @@ Three things are instrumented because they look like results but are not:
    broken out by validation support band (5-9 / 10-19 / 20-49 / 50+); the
    federation claim lives in the 5-9 band and is invisible in the macro mean.
 
+Which codes get scored
+----------------------
+``--code-pool`` picks the pool before any of the above happens:
+
+* ``rare`` (default) -- the manifest's ``pooled_rare_codes``. The tail this
+  test was built for, and the pool every result before 2026-09 used.
+* ``common`` -- its complement. On a cohort whose rare threshold is loose
+  (``rare_prevalence_max`` 0.05 catches almost every ICD code) this pool is
+  nearly empty; check the printed size before reading anything into it.
+* ``all`` -- both. Combined with ``--min-positives`` this is the useful
+  selection: reject codes too thin to measure, then ``--n-eval-codes`` draws
+  uniformly from what survives, so the head is filtered *in* rather than
+  cherry-picked.
+
+For ``common`` and ``all`` the support counts come from ``fold_support`` over
+the evaluation fold, since the manifest carries them only for rare codes, and
+the ``global_rare`` split is empty by construction -- every ``global_rare``
+figure in the output is NaN.
+
+**AP's floor moves with the pool.** A no-information ranker scores AP equal to
+the base rate, so a well-supported pool starts near 0.03 where the tail starts
+near 0.007. Compare arms to the ``prior`` row of the same file; an AP from one
+pool means nothing against an AP from another.
+
 Runs on one GPU. Loads eICU once and scores every regime, so submit it after the
 training jobs finish -- it consumes the ``synthetic.json`` each run persists.
 
@@ -109,6 +133,7 @@ from utils.cohort import (
     load_manifest,
     load_synthetic,
     load_shared_generator,
+    fold_support,
     read_trajectories,
     sample_eval_codes,
     scored_codes,
@@ -150,6 +175,18 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         "classifiers for 4 regimes) is the default; 1 strips "
                         "the whole tail at once and is smoke-only, since no arm "
                         "can learn co-occurrence that is not there")
+    p.add_argument("--code-pool", default="rare",
+                   choices=["rare", "common", "all"],
+                   help="which codes to mask and score. 'rare' (default) is "
+                        "the manifest's pooled-rare list, the tail this test "
+                        "was built for. 'common' is its complement -- every "
+                        "code in the fold that the cohort did NOT call rare -- "
+                        "which trades the tail question for codes with enough "
+                        "positives that AP and AUROC are actually estimable. "
+                        "'all' pools both. For 'common'/'all' the support "
+                        "counts are recomputed from the fold, since the "
+                        "manifest only carries them for rare codes, and the "
+                        "global_rare split is empty by construction")
     p.add_argument("--n-eval-codes", type=int, default=0,
                    help="DRAW MODE: instead of partitioning all scored codes "
                         "into --mask-folds folds, draw this many codes once, "
@@ -643,23 +680,44 @@ def main(argv=None) -> None:
 
     manifest = load_manifest(args.cohort_cache)
     hospitals = list(manifest["hospitals"])
-    strict = set(manifest.get("global_rare_codes", []))
-    support: Dict[str, int] = manifest["pooled_rare_support"][args.fold]
 
-    scored = scored_codes(manifest, args.fold, args.min_positives)
+    # Read the evaluation fold BEFORE choosing the pool: a non-rare pool has to
+    # count its own support, which the manifest does not carry.
+    eval_traj = read_trajectories(args.cohort_cache, args.fold, hospitals)
+
+    if args.code_pool == "rare":
+        strict = set(manifest.get("global_rare_codes", []))
+        support: Dict[str, int] = manifest["pooled_rare_support"][args.fold]
+        scored = scored_codes(manifest, args.fold, args.min_positives)
+        pool_desc = f"pooled rare codes: {len(support)}"
+    else:
+        # No global_rare subset outside the rare list -- the manifest defines
+        # that split only within it, so report it as empty rather than invent
+        # one. Every `global_rare` figure below is NaN by construction here.
+        strict = set()
+        rare = set(manifest.get("pooled_rare_codes", []))
+        seen = fold_support(eval_traj)
+        pool = sorted(seen if args.code_pool == "all"
+                      else (c for c in seen if c not in rare))
+        support = {c: seen[c] for c in pool}
+        scored = [c for c in pool if support[c] >= args.min_positives]
+        pool_desc = (f"{args.code_pool} codes present in {args.fold}: "
+                     f"{len(pool)} (of {len(seen)} in the fold, "
+                     f"{len(rare)} rare)")
     if not scored:
         raise ValueError(
-            f"no rare code has enough {args.fold} positives to score; lower "
-            "--min-positives or widen --rare-prevalence-max when building the "
-            "cache"
+            f"no code in the {args.code_pool!r} pool has enough {args.fold} "
+            "positives to score; lower --min-positives, or widen "
+            "--rare-prevalence-max when building the cache"
         )
     dropped = len(support) - len(scored)
-    print(f"pooled rare codes: {len(support)}   scored (>= "
+    print(f"{pool_desc}   scored (>= "
           f"{args.min_positives} {args.fold} positives): {len(scored)}   "
           f"dropped (< {args.min_positives} positives, unscoreable): {dropped}")
-    print(f"  of the scored, globally rare (cohort prevalence <= "
-          f"{manifest.get('global_rare_prevalence_max')}): "
-          f"{len([c for c in scored if c in strict])}")
+    if args.code_pool == "rare":
+        print(f"  of the scored, globally rare (cohort prevalence <= "
+              f"{manifest.get('global_rare_prevalence_max')}): "
+              f"{len([c for c in scored if c in strict])}")
 
     # DRAW MODE. Narrowing `scored` is the whole change: assign_folds(scored, 1)
     # then yields a single fold holding exactly the drawn codes, and every
@@ -685,8 +743,9 @@ def main(argv=None) -> None:
               f"seed {args.eval_seed}   ONE classifier per arm")
         print(f"  rare-to-rare co-occurrence left in the input: {kept:.0%} "
               f"(a {args.mask_folds}-of-{pool_size} mask, against 75% at K=4)")
-        print(f"  drawn, globally rare: "
-              f"{len([c for c in scored if c in strict])}/{len(scored)}")
+        if strict:
+            print(f"  drawn, globally rare: "
+                  f"{len([c for c in scored if c in strict])}/{len(scored)}")
         print("  support bands: "
               + ", ".join(f"{k}={v}" for k, v in sorted(band_counts.items())))
         # 59% of this pool has 1-4 positives, so a faithful draw is mostly
@@ -700,7 +759,6 @@ def main(argv=None) -> None:
 
     # Straight off the cache: {hospital: {patient: [[code, ...], ...]}}.
     train_traj = read_trajectories(args.cohort_cache, "train", hospitals)
-    eval_traj = read_trajectories(args.cohort_cache, args.fold, hospitals)
     real = {p: v for per in (train_traj, eval_traj)
             for pats in per.values() for p, v in pats.items()}
     train_by_hospital = {hid: sorted(pats) for hid, pats in train_traj.items()}
@@ -943,6 +1001,7 @@ def main(argv=None) -> None:
         "fold": args.fold,
         "hospitals": hospitals,
         "min_positives": args.min_positives,
+        "code_pool": args.code_pool,
         "n_pooled_rare_codes": len(support),
         "n_scored_codes": len(scored),
         "n_dropped_low_support": dropped,

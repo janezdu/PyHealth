@@ -30,6 +30,7 @@ are sized for a quick tiny run on one GPU.
 
 import argparse
 import json
+import math
 import os
 from typing import Callable, Dict, List, Tuple
 
@@ -38,6 +39,8 @@ import torch
 
 from utils.cohort import (
     DEFAULT_CACHE_DIR,
+    mix_synthetic,
+    read_trajectories,
     load_clients,
     load_fold,
     load_manifest,
@@ -237,7 +240,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         "default; run_name gets a _rw suffix so weighted and "
                         "unweighted runs never share a save_dir.")
     p.add_argument("--adapter", default=None,
-                   choices=["none", "lora_attn", "last_mlp", "lora_head"],
+                   choices=["none", "lora_attn", "last_mlp", "lora_head",
+                            "last_mlp_l1", "last_mlp_iht"],
                    help="parameter-efficient LOCAL fine-tuning for fedavg_ft. "
                         "'none' (default) is the existing full fine-tune: all "
                         "6.17M weights per hospital. 'lora_attn' trains LoRA on "
@@ -257,6 +261,135 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         "of zero IS the federated global, so this is a proximal "
                         "term: mu controls how far a site may personalise away "
                         "from the shared model. 0 (default) is off.")
+    p.add_argument("--adapter-l1", type=float, default=None,
+                   help="L1 weight for --adapter last_mlp_l1. Applied as a "
+                        "proximal soft-threshold of size lr*lambda after each "
+                        "step, NOT as a term in the loss -- a subgradient L1 "
+                        "shrinks coordinates without ever reaching zero, so it "
+                        "would regularise while reporting 0%% sparsity. Sparsity "
+                        "is measured on the delta W - W_global, so the site "
+                        "changes few COORDINATES and is the federated global "
+                        "everywhere else. 0 (default) is off.")
+    p.add_argument("--adapter-sparsity", type=float, default=None,
+                   help="Target density for --adapter last_mlp_iht, e.g. 0.1 "
+                        "keeps the largest 10%% of delta coordinates (ranked "
+                        "globally across the fine-tuned tensors). Projected "
+                        "every --adapter-iht-every epochs and on the last "
+                        "epoch; training in between is dense, so a pruned "
+                        "coordinate can re-grow. 0 (default) is off. Note that "
+                        "last_mlp is 525K params, so 0.5 density is still 7x "
+                        "lora_head -- around 0.07 is where the parameter counts "
+                        "actually meet.")
+    p.add_argument("--adapter-iht-every", type=int, default=None,
+                   help="Epochs between hard-threshold projections (default 1).")
+    p.add_argument("--adapter-optim", default=None, choices=["adam", "sgd"],
+                   help="Fine-tuning optimizer (default adam, matching every "
+                        "other regime). 'sgd' exists as a correctness "
+                        "cross-check for the sparse variants: lr*lambda is the "
+                        "EXACT proximal operator under SGD but only a heuristic "
+                        "under Adam, and stateless SGD cannot have a pruned "
+                        "coordinate re-inflated by a momentum buffer. Pair it "
+                        "with --adapter-lr: 1e-4 is an Adam learning rate and "
+                        "SGD barely moves at it.")
+    p.add_argument("--adapter-lr", type=float, default=None,
+                   help="Learning rate for the fine-tuning stage only. "
+                        "0/unset uses the model's lr.")
+    p.add_argument("--print-save-dir", action="store_true",
+                   help="Resolve the config, print the save_dir this run WOULD "
+                        "use, and exit without training. A launcher that needs "
+                        "the directory before the run exists (to seed a "
+                        "checkpoint into it, or to chain scoring onto it) should "
+                        "ask for it here rather than rebuilding the name itself "
+                        "-- two implementations of the naming rule drift, and "
+                        "the failure mode is a run silently scoring against "
+                        "another run's directory.")
+    p.add_argument("--latent-dim", type=int, default=None,
+                   help="width of a per-patient latent z ~ N(0, I), projected "
+                        "into the embedding at POSITION 1 -- the conditioning "
+                        "slot HALO reserves for a label and this port leaves "
+                        "empty. 0 (default) disables it and the model is "
+                        "unchanged. That position is chosen because the fine "
+                        "head pairs history[t] with visits[t+1], so position 1's "
+                        "hidden state is exactly what predicts visit 1, and 79%% "
+                        "of this cohort has only visit 1. There is NO encoder "
+                        "and no KL: z is always drawn from the prior, so "
+                        "training and generation match by construction. What "
+                        "makes the model use z instead of averaging it away is "
+                        "--xm-k; alone, a latent is ignorable noise.")
+    p.add_argument("--dropout", type=float, default=None,
+                   help="dropout probability inside HALO -- on the attention "
+                        "weights, the attention and MLP residual branches, and "
+                        "the embeddings. 0.0 (DEFAULT) reproduces the model as "
+                        "it was before this flag existed, exactly; every result "
+                        "on the board was produced at 0.0 and is not comparable "
+                        "to a dropout run. Above 0 it is also the only source of "
+                        "stochasticity in the forward pass, which is what makes "
+                        "--xm-k do anything: without dropout the K candidates "
+                        "are bit-identical and best-of-K silently trains on 1/K "
+                        "of the gradient.")
+    p.add_argument("--selftrain-frac", type=float, default=None,
+                   help="self-training: each round, after the server broadcast, "
+                        "every client generates this fraction of its own train "
+                        "size from the JUST-BROADCAST GLOBAL and trains the "
+                        "local step on real + synthetic together. 0 (default) "
+                        "is off. The synthetic carries cross-site information "
+                        "the site does not have, with no raw record leaving it. "
+                        "Regenerated fresh each round and never accumulated -- "
+                        "an accumulating pool is the self-consuming regime where "
+                        "the distribution collapses and the tails go first. "
+                        "Watch selftrain_distinct/*: a monotone fall is collapse "
+                        "in progress. fedavg/fedavg_ft only.")
+    p.add_argument("--selftrain-start", type=int, default=None,
+                   help="first ROUND at which self-training engages (default 0). "
+                        "Generating from an untrained global is sampling noise, "
+                        "so a later start may be the difference between help and "
+                        "harm.")
+    p.add_argument("--selftrain-at", type=float, default=None,
+                   help="WHERE inside local training to generate, as a fraction "
+                        "of local_epochs. 0.0 (default) generates once at the "
+                        "start of the round, before any local epoch -- the "
+                        "original behaviour, and the only value that takes the "
+                        "unsplit code path. 0.8 with --local-epochs 10 means 8 "
+                        "real-only epochs, then generate, then 2 epochs on the "
+                        "mixture. A FRACTION rather than an epoch index so the "
+                        "same value means the same thing at a different "
+                        "--local-epochs; the resolved integer is what goes in "
+                        "the run name. Only meaningful with --selftrain-frac > 0.")
+    p.add_argument("--selftrain-source", default=None,
+                   choices=["global", "local"],
+                   help="WHOSE distribution the synthetic comes from. 'global' "
+                        "(default) samples the weights the server just "
+                        "broadcast, so a small site mixes in information from "
+                        "the other seven -- federated distillation, and the "
+                        "only reason to expect more than regularisation. "
+                        "'local' samples the partly-adapted local model, which "
+                        "carries no information the site does not already have. "
+                        "At --selftrain-at 0 the two are identical (nothing has "
+                        "trained yet); the gap between them GROWS with "
+                        "--selftrain-at, which is what makes the pair the "
+                        "experiment rather than a knob.")
+    p.add_argument("--xm-k", type=int, default=None,
+                   help="best-of-K exploration (Forward XM). 1 (default) is "
+                        "ordinary training. Above 1, each batch is run K times "
+                        "-- dropout draws a fresh mask each pass -- and only the "
+                        "lowest loss PER PATIENT is trained on, so the model has "
+                        "to be right once rather than hedge across every "
+                        "plausible code. Aimed at the code-count blowup (the "
+                        "centralized arm emits 25.2 codes/visit against a real "
+                        "11.5) and at rare codes, which MLE smooths away. Costs "
+                        "K forward passes and K x activation memory; not "
+                        "combinable with --irm-rho.")
+    p.add_argument("--irm-schedule", default=None,
+                   choices=["step", "linear", "geom", "cosine", "decay"],
+                   help="how rho moves once warmup is over. 'step' (default) "
+                        "jumps straight to --irm-rho, matching the paper. "
+                        "'geom' ramps geometrically, which for a weight "
+                        "spanning two decades is the natural continuation -- a "
+                        "linear ramp spends 90%% of training above rho/10. "
+                        "'linear' and 'cosine' are the other ramps. 'decay' is "
+                        "the REVERSE: start at rho and anneal down to 1, which "
+                        "tests whether the penalty only has to shape the early "
+                        "representation. See irm_rho_at.")
     p.add_argument("--irm-rho", type=float, default=None,
                    help="IRMv1 penalty weight. 0 (default) trains the plain "
                         "risk. Above 0 each client optimises risk + rho * "
@@ -362,11 +495,44 @@ def make_run_name(cfg: dict) -> str:
     # the experiment, so two rho values must not land on one save_dir.
     if cfg.get("irm_rho", 0.0) > 0:
         name += f"_irm{cfg['irm_rho']:g}"
+        # WARMUP BELONGS IN THE NAME. Without it, two runs that differ only in
+        # when the penalty engages resolve to the SAME save_dir and silently
+        # overwrite each other's checkpoints and results -- and the comparison
+        # between them becomes a comparison of one run with itself. Caught when
+        # a warmup sweep at fixed rho produced one directory for two arms.
+        if cfg.get("irm_warmup", 0):
+            name += f"w{cfg['irm_warmup']}"
     # Full-budget runs are a different model from early-stopped ones (the
     # hilo8 centralized baseline stopped at 37 of 100 epochs), so they get
     # their own save_dir rather than overwriting the baseline.
     if cfg.get("early_stop") is False:
         name += "_nes"
+    if cfg.get("latent_dim", 0) > 0:
+        name += f"_z{cfg['latent_dim']}"
+    if cfg.get("dropout", 0.0) > 0:
+        name += f"_do{cfg['dropout']:g}"
+    if cfg.get("xm_k", 1) > 1:
+        name += f"_xm{cfg['xm_k']}"
+    if cfg.get("selftrain_frac", 0.0) > 0:
+        name += f"_st{cfg['selftrain_frac']:g}"
+        if cfg.get("selftrain_start", 0):
+            name += f"r{cfg['selftrain_start']}"
+        # WHERE the generation happens and WHOSE weights produced it are both
+        # different models, so they must not share a save_dir. Appended only
+        # when non-default: at at=0 / source=global this is the original
+        # behaviour and must keep resolving to the name it already has, or the
+        # existing st runs become unfindable.
+        at = float(cfg.get("selftrain_at", 0.0) or 0.0)
+        if at > 0:
+            # The resolved epoch, not the fraction: "@8" is what someone reading
+            # a log wants, and it is unambiguous without knowing local_epochs.
+            name += f"@{_selftrain_split_epoch(at, cfg['local_epochs'])}"
+        if cfg.get("selftrain_source", "global") != "global":
+            name += f"_src{cfg['selftrain_source']}"
+    # A different rho schedule is a different training trajectory, so it needs
+    # its own save_dir even at identical rho and warmup.
+    if cfg.get("irm_rho", 0.0) > 0 and cfg.get("irm_schedule", "step") != "step":
+        name += f"_{cfg['irm_schedule']}"
     # The adapter changes WHICH weights fine-tuning moves, so an adapter run is
     # a different model from the full fine-tune and needs its own save_dir. mu
     # is in the name too: sweeping it is the point.
@@ -374,6 +540,19 @@ def make_run_name(cfg: dict) -> str:
         name += f"_{cfg['adapter']}r{cfg.get('adapter_rank', 8)}"
         if cfg.get("adapter_mu", 0.0) > 0:
             name += f"_mu{cfg['adapter_mu']:g}"
+        # Two runs of the same variant at different lambda / density are
+        # different models. Without these in the name the second silently
+        # overwrites the first's save_dir, checkpoints and results.
+        if cfg.get("adapter_l1", 0.0) > 0:
+            name += f"_l1{cfg['adapter_l1']:g}"
+        if cfg.get("adapter_sparsity", 0.0) > 0:
+            name += f"_sp{cfg['adapter_sparsity']:g}"
+            if cfg.get("adapter_iht_every", 1) != 1:
+                name += f"e{cfg['adapter_iht_every']}"
+        if cfg.get("adapter_optim", "adam") != "adam":
+            name += f"_{cfg['adapter_optim']}"
+        if cfg.get("adapter_lr", 0.0):
+            name += f"_alr{cfg['adapter_lr']:g}"
     return name
 
 
@@ -439,8 +618,18 @@ def build_config(argv: List[str] = None) -> dict:
         "synth_per_hospital": args.synth_per_hospital,
         "ft_epochs": args.ft_epochs, "run_name": args.run_name,
         "irm_rho": args.irm_rho, "irm_warmup": args.irm_warmup,
+        "irm_schedule": args.irm_schedule, "xm_k": args.xm_k,
+        "dropout": args.dropout, "latent_dim": args.latent_dim,
+        "selftrain_frac": args.selftrain_frac,
+        "selftrain_start": args.selftrain_start,
+        "selftrain_at": args.selftrain_at,
+        "selftrain_source": args.selftrain_source,
         "adapter": args.adapter, "adapter_rank": args.adapter_rank,
-        "adapter_mu": args.adapter_mu,
+        "adapter_mu": args.adapter_mu, "adapter_l1": args.adapter_l1,
+        "adapter_sparsity": args.adapter_sparsity,
+        "adapter_iht_every": args.adapter_iht_every,
+        "adapter_optim": args.adapter_optim, "adapter_lr": args.adapter_lr,
+        "print_save_dir": args.print_save_dir or None,
         "early_stop": args.early_stop, "es_patience": args.es_patience,
         "es_min_steps": args.es_min_steps,
         "es_min_val_patients": args.es_min_val_patients,
@@ -461,8 +650,21 @@ def build_config(argv: List[str] = None) -> dict:
     cfg.setdefault("adapter", "none")
     cfg.setdefault("adapter_rank", 8)
     cfg.setdefault("adapter_mu", 0.0)
+    cfg.setdefault("adapter_l1", 0.0)
+    cfg.setdefault("adapter_sparsity", 0.0)
+    cfg.setdefault("adapter_iht_every", 1)
+    cfg.setdefault("adapter_optim", "adam")
+    cfg.setdefault("adapter_lr", 0.0)
     cfg.setdefault("irm_rho", 0.0)
     cfg.setdefault("irm_warmup", 0)
+    cfg.setdefault("irm_schedule", "step")
+    cfg.setdefault("xm_k", 1)
+    cfg.setdefault("dropout", 0.0)
+    cfg.setdefault("latent_dim", 0)
+    cfg.setdefault("selftrain_frac", 0.0)
+    cfg.setdefault("selftrain_start", 0)
+    cfg.setdefault("selftrain_at", 0.0)
+    cfg.setdefault("selftrain_source", "global")
     cfg.setdefault("tb_logdir", None)
     cfg.setdefault("no_tb", False)
     cfg.setdefault("log_every_epochs", 1)
@@ -797,7 +999,12 @@ def _save_ckpt(path: str, completed: int, global_state, fingerprint: dict,
     os.replace(tmp, path)
 
 
-def irm_rho_at(step: int, rho: float, warmup: int) -> float:
+#: Accepted ``--irm-schedule`` values; see :func:`irm_rho_at`.
+IRM_SCHEDULES = ("step", "linear", "geom", "cosine", "decay")
+
+
+def irm_rho_at(step: int, rho: float, warmup: int,
+               schedule: str = "step", total: int = 0) -> float:
     """IRMv1's penalty weight for one round/epoch, with the paper's warmup.
 
     IRM cannot be trained by simply switching a large penalty on: at a big
@@ -808,10 +1015,14 @@ def irm_rho_at(step: int, rho: float, warmup: int) -> float:
     value. A run that "shows IRM does nothing" without warmup usually never
     fitted in the first place.
 
-    The jump is deliberately a STEP, not a ramp, matching the reference
-    implementation. Ramping conflates "the penalty grew" with "training
-    progressed" and makes the loss curve unreadable at exactly the point you
-    need to see it.
+    ``schedule="step"`` is the default and matches the reference
+    implementation: a hard jump, not a ramp. A ramp conflates "the penalty grew"
+    with "training progressed" and makes the loss curve harder to read at
+    exactly the point you need it. The alternatives exist because the step is
+    also the crudest possible choice, and this cohort has evidence the timing
+    matters -- starting the penalty late (epoch 68) recovered less than half the
+    gap that starting at 34 did, which says the penalty PREVENTS the failure
+    rather than repairing it.
 
     Args:
         step: Completed EPOCHS. FedAvg converts its round counter at the call
@@ -821,13 +1032,54 @@ def irm_rho_at(step: int, rho: float, warmup: int) -> float:
             17, and the two arms were not comparable on when the penalty began.
         rho: The post-warmup penalty weight.
         warmup: Steps to hold at 1.0 first. ``0`` applies ``rho`` immediately.
+        schedule: How the weight moves once warmup is over.
+
+            * ``"step"`` -- jump straight to ``rho`` (default, the paper's).
+            * ``"linear"`` -- ramp 1 -> rho linearly over the remaining epochs.
+            * ``"geom"`` -- ramp 1 -> rho GEOMETRICALLY (``rho ** t``). For a
+              penalty weight spanning two decades this is the natural
+              continuation: it spends equal time per order of magnitude,
+              where a linear ramp spends 90% of training above rho/10.
+            * ``"cosine"`` -- a smooth 1 -> rho ramp, slow at both ends.
+            * ``"decay"`` -- the REVERSE: start at ``rho`` and anneal down to 1.
+              Tests whether the penalty's job is to shape the early
+              representation and then get out of the way, which is the opposite
+              of the paper's reading and worth falsifying directly.
+
+        total: Total epochs in the run, needed by every schedule except
+            ``"step"`` to know how far along it is. Ignored by ``"step"``; a
+            ramp with ``total <= warmup`` degrades to ``"step"`` rather than
+            dividing by zero.
 
     Returns:
         The penalty weight to pass to ``train_model(irm_rho=...)``.
+
+    Raises:
+        ValueError: On an unknown schedule name.
     """
     if rho <= 0.0:
         return 0.0
-    return 1.0 if step < warmup else rho
+    if schedule not in IRM_SCHEDULES:
+        raise ValueError(f"unknown --irm-schedule {schedule!r}; choose from "
+                         f"{list(IRM_SCHEDULES)}")
+    if schedule == "step":
+        return 1.0 if step < warmup else rho
+    if step < warmup:
+        # Every ramp still honours the warmup: the model has to fit something
+        # before the penalty is allowed to matter at all.
+        return 1.0
+    span = total - warmup
+    if span <= 0:
+        return rho
+    t = min(1.0, max(0.0, (step - warmup) / span))
+    if schedule == "linear":
+        return 1.0 + (rho - 1.0) * t
+    if schedule == "geom":
+        return float(rho ** t)
+    if schedule == "cosine":
+        return 1.0 + (rho - 1.0) * (1.0 - math.cos(math.pi * t)) / 2.0
+    # "decay": start hot and cool down -- rho at the warmup boundary, 1 at the end.
+    return float(rho ** (1.0 - t))
 
 
 def log_irm(writer, model, step: int, tag: str) -> None:
@@ -856,6 +1108,95 @@ def log_irm(writer, model, step: int, tag: str) -> None:
     writer.add_scalar("irm_rho", irm["rho"], step)
 
 
+def _selftrain_split_epoch(at: float, local_epochs: int) -> int:
+    """Resolve ``--selftrain-at`` (a fraction) to an epoch index.
+
+    Returns the number of real-only epochs to run before generating. Clamped to
+    ``[0, local_epochs - 1]``: a split at the very end would generate synthetic
+    data and then never train on it, which looks like a valid run and silently
+    measures nothing. 0 means "no split" and takes the original code path.
+
+    Args:
+        at: Fraction of local epochs to run before generating.
+        local_epochs: Local epochs per round.
+
+    Returns:
+        Number of real-only epochs before the generation point.
+    """
+    if not at or at <= 0:
+        return 0
+    return max(0, min(int(round(at * local_epochs)), local_epochs - 1))
+
+
+def _synth_health(synthetic: List[dict]) -> dict:
+    """Distinct codes and codes-per-visit in one generated batch.
+
+    The tail-collapse detector for self-training. Feeding a generator its own
+    output narrows the distribution and the TAILS GO FIRST, which on this cohort
+    is precisely what is being measured -- so the failure has to be watched
+    directly rather than inferred from a prevalence score at the end of the run.
+    A monotone fall in ``distinct`` across rounds is the signal to stop; it shows
+    up well before Test 1 moves, and a single end-of-run number cannot tell
+    "stable and better" from "two rounds short of collapse".
+    """
+    seen, n_codes, n_visits = set(), 0, 0
+    for p in synthetic:
+        for visit in p.get("visits", []):
+            n_visits += 1
+            n_codes += len(visit)
+            seen.update(visit)
+    return {"distinct": len(seen),
+            "codes_per_visit": n_codes / n_visits if n_visits else 0.0,
+            "n_visits": n_visits}
+
+
+def log_xm(writer, model, step: int, tag: str) -> None:
+    """Write best-of-K's two health signals as their own curves.
+
+    Neither is visible in the training loss, and both mark the same degenerate
+    state from opposite sides: if dropout does not separate the K candidates
+    then ``spread`` goes to zero, ``win_entropy`` stops being uniform, and the
+    run is quietly training on 1/K of its gradient while the loss curve looks
+    entirely normal.
+
+    ``win_entropy`` is normalised to [0, 1]: 1.0 means every candidate wins
+    equally often, which is what a working exploration looks like.
+
+    No-ops when the run is not using XM.
+    """
+    if writer is None:
+        return
+    xm = getattr(model, "last_xm", None)
+    if not xm:
+        return
+    writer.add_scalar(f"xm_spread/{tag}", xm["spread"], step)
+    writer.add_scalar(f"xm_win_entropy/{tag}", xm["win_entropy"], step)
+
+
+def log_sparse(writer, model, step: int, tag: str) -> None:
+    """Write the L1 norm and non-zero fraction of the fine-tuning delta.
+
+    Both, not one. ``nnz_frac`` alone cannot tell a genuinely sparse update from
+    one that kept 7% of coordinates and put an enormous magnitude in each;
+    ``l1`` alone cannot tell shrinkage from sparsity, which is exactly the
+    failure a subgradient L1 produces -- every coordinate small, none of them
+    zero. The pair is what makes the claim checkable, and neither is visible in
+    the training loss: a dense run and a 7%-dense one can sit at the same loss.
+
+    No-ops when the run is not using a delta-sparse variant, so every regime can
+    call it blind.
+    """
+    if writer is None:
+        return
+    st = getattr(model, "last_sparse", None)
+    if not st:
+        return
+    writer.add_scalar(f"sparse_l1/{tag}", st["l1"], step)
+    writer.add_scalar(f"sparse_l2/{tag}", st["l2"], step)
+    writer.add_scalar(f"sparse_nnz_frac/{tag}", st["nnz_frac"], step)
+    writer.add_scalar(f"sparse_linf/{tag}", st["linf"], step)
+
+
 def run_fedavg(
     model,
     clients: Dict[str, object],
@@ -874,6 +1215,14 @@ def run_fedavg(
     sample_weight_fn=None,
     irm_rho: float = 0.0,
     irm_warmup: int = 0,
+    irm_schedule: str = "step",
+    xm_k: int = 1,
+    selftrain_frac: float = 0.0,
+    selftrain_start: int = 0,
+    selftrain_at: float = 0.0,
+    selftrain_source: str = "global",
+    client_trajectories: Dict[str, dict] = None,
+    processor=None,
 ) -> object:
     """Train ``model`` with FedAvg across ``clients`` for ``n_rounds`` rounds.
 
@@ -943,6 +1292,75 @@ def run_fedavg(
         return model
 
     local_epochs = int(getattr(model, "_epochs", 1))
+    split_epoch = _selftrain_split_epoch(selftrain_at, local_epochs)
+    if selftrain_frac > 0:
+        log(f"self-training: frac={selftrain_frac:g} from round {selftrain_start}, "
+            f"generating after epoch {split_epoch}/{local_epochs} from the "
+            f"{selftrain_source} model")
+
+    def _generate_and_mix(model, cid, r, at_epoch, source, global_state):
+        """Sample synthetic patients for one client and mix them with its real fold.
+
+        Args:
+            model: The client's model, mid-local-training when ``at_epoch > 0``.
+            cid: Hospital id.
+            r: Round index, for logging and the TensorBoard step.
+            at_epoch: Local epoch this generation happens after. 0 is the
+                round-start generation.
+            source: ``"global"`` samples the weights the server broadcast;
+                ``"local"`` samples the model as it currently stands. At
+                ``at_epoch == 0`` these are the same weights.
+            global_state: The broadcast state, needed for ``source="global"``
+                once local training has already moved the weights.
+
+        Returns:
+            A ``SampleDataset`` over real + synthetic, or ``None`` when the
+            requested count rounds to zero -- the caller then keeps the real
+            dataset it already holds rather than rebuilding an identical one.
+        """
+        real = client_trajectories[cid]
+        n_syn = int(round(selftrain_frac * sizes[cid]))
+        if n_syn <= 0:
+            return None
+
+        # Sampling the GLOBAL after local training has begun means temporarily
+        # putting the broadcast weights back. The local weights are restored
+        # before training resumes -- without that, the second block would
+        # continue from the global and the first block's epochs would be thrown
+        # away silently.
+        restore = None
+        if source == "global" and at_epoch > 0:
+            restore = _snapshot(model)
+            model.load_state_dict(global_state)
+        try:
+            syn = model.generate(n_syn, device=device)
+        finally:
+            if restore is not None:
+                model.load_state_dict(restore)
+
+        mixed, kept = mix_synthetic(real, syn, cid, processor,
+                                    f"mix_{cid}_r{r}e{at_epoch}")
+        st = _synth_health(syn)
+        log(f"  round {r + 1} client {cid} @e{at_epoch} ({source}): "
+            f"+{kept}/{n_syn} synthetic "
+            f"({100 * kept / max(1, n_syn):.0f}% non-empty), "
+            f"{st['distinct']} distinct codes, "
+            f"{st['codes_per_visit']:.2f} codes/visit")
+        if writer is not None:
+            # Stepped by the epoch the generation actually happened at, not by
+            # the round, so a split run's scalars land where the model that
+            # produced them lived.
+            step = r * local_epochs + at_epoch
+            # Tail collapse shows here GENERATIONS before it reaches
+            # any prevalence metric: a monotone fall in the distinct
+            # code count is the stop signal.
+            writer.add_scalar(f"selftrain_distinct/hospital_{cid}",
+                              st["distinct"], step)
+            writer.add_scalar(f"selftrain_codes_per_visit/hospital_{cid}",
+                              st["codes_per_visit"], step)
+            writer.add_scalar(f"selftrain_kept/hospital_{cid}",
+                              kept / max(1, n_syn), step)
+        return mixed
     for r in range(start_round, n_rounds):
         snapshots: List[Dict[str, torch.Tensor]] = []
         weights: List[float] = []
@@ -962,15 +1380,81 @@ def run_fedavg(
                     # Per hospital: which SITES are non-invariant is itself a
                     # result on a cohort with a 13x size spread.
                     log_irm(writer, model, step, f"hospital_{cid}")
+                    log_xm(writer, model, step, f"hospital_{cid}")
 
-            model.train_model(clients[cid], val_dataset=None, device=device,
-                              on_epoch_end=_on_epoch_end,
-                              sample_weight_fn=sample_weight_fn,
-                              # warmup is in EPOCHS everywhere; convert to
-                              # rounds here so --irm-warmup means the same
-                              # point in training for every regime.
-                              irm_rho=irm_rho_at(
-                                  r * local_epochs, irm_rho, irm_warmup))
+            # SELF-TRAINING. Generate from the model the server just broadcast,
+            # then train the local step on real + synthetic together. The
+            # synthetic is sampled from the AGGREGATED GLOBAL, so what a small
+            # hospital mixes in carries information from the other seven sites
+            # without any raw record leaving anyone's machine -- that, rather
+            # than "more data", is the reason to expect anything from it.
+            #
+            # Fresh every round and never accumulated: a growing pool of an
+            # earlier model's output is the self-consuming regime where the
+            # distribution collapses, and the tails go first. Rare codes are the
+            # whole evaluation here, so the safer arrangement is the one where
+            # real data is present at every step and the synthetic is always
+            # from the current global.
+            local_train = clients[cid]
+            # Round-start generation. Skipped entirely when split_epoch > 0:
+            # there the whole point is that the first block sees REAL DATA ONLY,
+            # and generating here as well would put synthetic in front of it.
+            if (split_epoch == 0 and selftrain_frac > 0
+                    and r >= selftrain_start):
+                local_train = _generate_and_mix(
+                    model, cid, r, at_epoch=0, source="global",
+                    global_state=global_state) or local_train
+
+            def _train_block(dataset, n_epochs, epoch_offset):
+                """Run ``n_epochs`` of local training, numbered from ``epoch_offset``.
+
+                The epoch offset exists so a split round keeps ONE continuous
+                epoch axis: the second block's callback still reports epochs
+                8, 9 rather than restarting at 0, so TensorBoard curves and the
+                round-final-loss capture behave the same split or not.
+                """
+                prev = model._epochs
+                model._epochs = n_epochs
+                try:
+                    model.train_model(
+                        dataset, val_dataset=None, device=device,
+                        on_epoch_end=lambda e, ml: _on_epoch_end(
+                            e + epoch_offset, ml),
+                        sample_weight_fn=sample_weight_fn,
+                        # warmup is in EPOCHS everywhere; convert to
+                        # rounds here so --irm-warmup means the same
+                        # point in training for every regime.
+                        irm_rho=irm_rho_at(
+                            r * local_epochs + epoch_offset, irm_rho,
+                            irm_warmup, irm_schedule,
+                            n_rounds * local_epochs),
+                        xm_k=xm_k)
+                finally:
+                    model._epochs = prev
+
+            if split_epoch > 0 and selftrain_frac > 0 and r >= selftrain_start:
+                # THE OUROBOROS PATH. Train on real data only, then generate
+                # from whatever the model has become, then finish the round on
+                # the mixture.
+                #
+                # NOT equivalent to the unsplit path with the same total epochs,
+                # even ignoring the synthetic: train_model builds its Adam
+                # inside the call, so the second block starts with fresh moment
+                # buffers. That is a real effect on its own and needs its own
+                # control -- run the same --selftrain-at with --selftrain-frac 0
+                # to measure the optimizer reset alone before attributing
+                # anything to the synthetic data.
+                _train_block(local_train, split_epoch, 0)
+                local_train = _generate_and_mix(
+                    model, cid, r, at_epoch=split_epoch,
+                    source=selftrain_source,
+                    global_state=global_state) or local_train
+                _train_block(local_train, local_epochs - split_epoch,
+                             split_epoch)
+            else:
+                # Unsplit: one call, exactly as before. at=0 must stay on this
+                # path so existing runs remain reproducible bit for bit.
+                _train_block(local_train, local_epochs, 0)
             snapshots.append(_snapshot(model))
             weights.append(1.0 if weighting == "uniform" else float(sizes[cid]))
             log(f"  round {r + 1}/{n_rounds}  client {cid}  (n={sizes[cid]}) done")
@@ -989,17 +1473,29 @@ def run_fedavg(
             log(f"round {r + 1}/{n_rounds} aggregated")
         log_gpu(writer, r + 1)
 
-        if val_dataset is not None and stopper is not None:
+        # Held-out loss is a DIAGNOSTIC, not just an early-stopping input.
+        # Gating it on `stopper` meant every --no-early-stop run -- which is
+        # every arm in this project -- recorded no validation curve at all, so
+        # a run that diverged mid-training looked identical to one that did
+        # not until the end-of-run prevalence metrics landed. Self-training in
+        # particular can only be watched here: its failure is the model drifting
+        # onto its own output, which shows up as val loss rising while train
+        # loss keeps falling.
+        if val_dataset is not None:
             vl = val_loss(model, val_dataset, device)
             if writer is not None:
                 writer.add_scalar("loss_val/global", vl, r + 1)
-            stop = stopper.step(vl, state=global_state)
-            log(f"  round {r + 1}: val {vl:.4f}  (best {stopper.best_score:.4f} "
-                f"at round {stopper.best_step})")
-            if stop:
-                log(f"FedAvg: early stop at round {r + 1}/{n_rounds} -- "
-                    f"{stopper.summary('round')}")
-                break
+            if stopper is None:
+                log(f"  round {r + 1}: val {vl:.4f}")
+            else:
+                stop = stopper.step(vl, state=global_state)
+                log(f"  round {r + 1}: val {vl:.4f}  "
+                    f"(best {stopper.best_score:.4f} at round "
+                    f"{stopper.best_step})")
+                if stop:
+                    log(f"FedAvg: early stop at round {r + 1}/{n_rounds} -- "
+                        f"{stopper.summary('round')}")
+                    break
 
     # Restoring the best global state is the half of early stopping that is
     # easy to leave out: without it the run stops early AND keeps the worse
@@ -1069,7 +1565,9 @@ def train_centralized(model, pooled_train, device: str = "cpu", writer=None,
                       snapshot_every: int = 0,
                       sample_weight_fn=None,
                       irm_rho: float = 0.0,
-                      irm_warmup: int = 0) -> object:
+                      irm_warmup: int = 0,
+                      irm_schedule: str = "step",
+                      xm_k: int = 1) -> object:
     """Train ONE model on the pooled (all-hospital) train data. Returns it.
 
     Checkpointing is epoch-granular rather than round-granular (there are no
@@ -1120,7 +1618,7 @@ def train_centralized(model, pooled_train, device: str = "cpu", writer=None,
                        key="completed_epochs")
             log(f"  snapshot -> {snap}")
 
-        if val_dataset is None or stopper is None:
+        if val_dataset is None:
             log(f"  centralized  epoch {done}/{total_epochs}  "
                 f"loss={mean_loss:.4f}")
             return None
@@ -1128,6 +1626,12 @@ def train_centralized(model, pooled_train, device: str = "cpu", writer=None,
         if writer is not None:
             writer.add_scalar("loss_val/pooled", vl, done - 1)
             log_irm(writer, model, done - 1, "pooled")
+            log_xm(writer, model, done - 1, "pooled")
+        # Same reasoning as the fedavg path: log the curve even with no stopper.
+        if stopper is None:
+            log(f"  centralized  epoch {done}/{total_epochs}  "
+                f"loss={mean_loss:.4f}  val={vl:.4f}")
+            return None
         stop = stopper.step(vl, state=lambda: _snapshot(model))
         log(f"  centralized  epoch {done}/{total_epochs}  loss={mean_loss:.4f}"
             f"  val={vl:.4f}  (best {stopper.best_score:.4f} @ "
@@ -1144,7 +1648,9 @@ def train_centralized(model, pooled_train, device: str = "cpu", writer=None,
                       # start_epoch offset so a RESUMED run does not restart the
                       # warmup it already finished and re-enter the rho=1 regime.
                       irm_rho=lambda e: irm_rho_at(start_epoch + e, irm_rho,
-                                                   irm_warmup))
+                                                   irm_warmup, irm_schedule,
+                                                   epochs),
+                      xm_k=xm_k)
     if stopper is not None:
         log(f"Centralized: {stopper.summary()}")
         if stopper.best_state is not None:
@@ -1206,6 +1712,8 @@ def train_local(
     sample_weight_fn=None,
     irm_rho: float = 0.0,
     irm_warmup: int = 0,
+    irm_schedule: str = "step",
+    xm_k: int = 1,
 ) -> Dict[str, object]:
     """Train an INDEPENDENT model per hospital on its own data (no averaging).
 
@@ -1257,15 +1765,18 @@ def train_local(
                 writer.add_scalar(f"loss_train/hospital_{hid}", mean_loss,
                                   done - 1)
                 log_irm(writer, m, done - 1, f"hospital_{hid}")
+                log_xm(writer, m, done - 1, f"hospital_{hid}")
                 log_gpu(writer, done - 1, tag="gpu_local")
             if path and (done % ckpt_every == 0 or done == epochs):
                 _save_ckpt(path, done, _snapshot(m), fingerprint,
                            key="completed_epochs")
-            if stopper is None:
-                return None
             score = val_loss(m, val_ds, device) if use_val else mean_loss
             if writer is not None and use_val:
                 writer.add_scalar(f"loss_val/hospital_{hid}", score, done - 1)
+            if stopper is None:
+                if use_val:
+                    log(f"  local {hid}  epoch {done}/{epochs}  val={score:.4f}")
+                return None
             stop = stopper.step(score, state=lambda: _snapshot(m))
             return False if stop else None
 
@@ -1274,7 +1785,8 @@ def train_local(
                       on_epoch_end=_on_epoch_end,
                       sample_weight_fn=sample_weight_fn,
                       irm_rho=lambda e, s0=start_epoch: irm_rho_at(
-                          s0 + e, irm_rho, irm_warmup))
+                          s0 + e, irm_rho, irm_warmup, irm_schedule, epochs),
+                      xm_k=xm_k)
         if stopper is not None:
             log(f"  {hid}: {stopper.summary()}")
             if stopper.best_state is not None:
@@ -1301,9 +1813,16 @@ def finetune_local(
     sample_weight_fn=None,
     irm_rho: float = 0.0,
     irm_warmup: int = 0,
+    irm_schedule: str = "step",
+    xm_k: int = 1,
     adapter: str = "none",
     adapter_rank: int = 8,
     adapter_mu: float = 0.0,
+    adapter_l1: float = 0.0,
+    adapter_sparsity: float = 0.0,
+    adapter_iht_every: int = 1,
+    adapter_optim: str = "adam",
+    adapter_lr: float = 0.0,
 ) -> Dict[str, object]:
     """FedAvg + fine-tuning: personalize the shared global model per hospital.
 
@@ -1339,6 +1858,23 @@ def finetune_local(
     Returns:
         ``{hospital_id: fine_tuned_model}``.
     """
+    # Fail here rather than train eight hospitals and report a sparsity that
+    # was never enforced: both knobs need the delta reference that only the
+    # sparse variants install, and silently ignoring them is the expensive
+    # failure mode.
+    if (adapter_l1 > 0.0 or adapter_sparsity > 0.0) and \
+            adapter not in ("last_mlp_l1", "last_mlp_iht"):
+        raise ValueError(
+            f"--adapter-l1/--adapter-sparsity need a delta-sparse variant, but "
+            f"--adapter is {adapter!r}. Use last_mlp_l1 (proximal L1) or "
+            f"last_mlp_iht (top-k projection).")
+    if adapter == "last_mlp_l1" and adapter_l1 <= 0.0:
+        raise ValueError("--adapter last_mlp_l1 needs --adapter-l1 > 0, "
+                         "otherwise it is just last_mlp under another name.")
+    if adapter == "last_mlp_iht" and adapter_sparsity <= 0.0:
+        raise ValueError("--adapter last_mlp_iht needs --adapter-sparsity > 0, "
+                         "otherwise it is just last_mlp under another name.")
+
     models: Dict[str, object] = {}
     for hid, train_subset in clients.items():
         log(f"FedAvg+FT: fine-tuning hospital {hid} from global "
@@ -1354,9 +1890,21 @@ def finetune_local(
             trainable = apply_adapter(m.halo_model, adapter, adapter_rank)
             n_tr = sum(p.numel() for p in trainable)
             n_all = sum(p.numel() for p in m.halo_model.parameters())
+            extra = ""
+            if adapter_mu:
+                extra += f", mu={adapter_mu:g}"
+            if adapter_l1:
+                extra += f", l1={adapter_l1:g}"
+            if adapter_sparsity:
+                extra += (f", density={adapter_sparsity:g} every "
+                          f"{adapter_iht_every}ep")
+            if adapter_optim != "adam":
+                extra += f", optim={adapter_optim}"
+            if adapter_lr:
+                extra += f", lr={adapter_lr:g}"
             log(f"  {hid}: adapter {adapter} r={adapter_rank} -- training "
                 f"{n_tr:,} of {n_all:,} params ({100 * n_tr / n_all:.2f}%)"
-                + (f", mu={adapter_mu:g}" if adapter_mu else ""))
+                + extra)
 
         val_ds = (val_clients or {}).get(hid)
         stopper, use_val = make_site_stopper(
@@ -1367,6 +1915,8 @@ def finetune_local(
             if writer is not None:
                 writer.add_scalar(f"loss_ft/hospital_{hid}", mean_loss, epoch)
                 log_irm(writer, m, epoch, f"ft_{hid}")
+                log_sparse(writer, m, epoch, f"ft_{hid}")
+                log_xm(writer, m, epoch, f"ft_{hid}")
                 log_gpu(writer, epoch, tag="gpu_ft")
             if stopper is None:
                 return None
@@ -1381,12 +1931,31 @@ def finetune_local(
                       sample_weight_fn=sample_weight_fn,
                       # Fine-tuning runs AFTER the last aggregation, so warmup
                       # is already long over -- rho applies from step 0 here.
-                      # The IRM penalty is deliberately NOT extended to adapter
-                      # runs: IRM enforces invariance across sites and local
-                      # adaptation deliberately breaks it, so applying both to
-                      # the same weights would have them pull against each other.
-                      irm_rho=0.0 if adapter != "none" else irm_rho,
-                      adapter_mu=adapter_mu)
+                      # The IRM penalty NEVER applies during fine-tuning, for
+                      # any variant. IRM enforces invariance across sites and
+                      # local fine-tuning deliberately breaks it, so running both
+                      # on the same stage has them pull against each other --
+                      # true whether the update is low-rank or not. --irm-rho on
+                      # a fedavg_ft run therefore means "IRM trunk, plain local
+                      # fine-tuning", which is the composition worth testing.
+                      irm_rho=0.0,
+                      adapter_mu=adapter_mu,
+                      adapter_l1=adapter_l1,
+                      adapter_sparsity=adapter_sparsity,
+                      adapter_iht_every=adapter_iht_every,
+                      adapter_optim=adapter_optim,
+                      adapter_lr=adapter_lr)
+        if adapter in ("last_mlp_l1", "last_mlp_iht"):
+            # To stdout, not only TensorBoard: this is the run's evidence that
+            # the constraint was actually enforced, and it must survive a
+            # --no-tb smoke run. A density of 1.0 here means the proximal step
+            # or the projection never fired and the arm is plain last_mlp.
+            from pyhealth.models.generators.adapters import delta_stats
+            st = delta_stats(m.halo_model)
+            log(f"  {hid}: delta density {st['nnz_frac']:.4f} "
+                f"({st['nnz']:,}/{st['n']:,} coords), "
+                f"||D||_1={st['l1']:.4g}, ||D||_inf={st['linf']:.4g}")
+
         if stopper is not None:
             log(f"  {hid}: {stopper.summary()}")
             # The warm start means epoch 0 can already be the best the site
@@ -1395,6 +1964,15 @@ def finetune_local(
             # that from silently becoming the reported fedavg_ft result.
             if stopper.best_state is not None:
                 m.load_state_dict(stopper.best_state)
+                # The restored epoch may not have been a projection epoch, in
+                # which case the "sparse" model just written to disk is dense.
+                # Re-project so the checkpoint matches what the run claims.
+                if adapter_sparsity > 0.0:
+                    from pyhealth.models.generators.adapters import (
+                        delta_stats, hard_threshold_)
+                    hard_threshold_(m.halo_model, adapter_sparsity)
+                    log(f"  {hid}: re-projected restored best state -- "
+                        f"density {delta_stats(m.halo_model)['nnz_frac']:.4f}")
         models[hid] = m
         if ckpt_dir:
             path = os.path.join(ckpt_dir, f"ft_{hid}.pt")
@@ -1469,6 +2047,11 @@ def generate_local(
 
 if __name__ == "__main__":
     cfg = build_config()
+    if cfg.get("print_save_dir"):
+        # Nothing but the name, on stdout, so `dir=$(... --print-save-dir)` in a
+        # shell script gets a clean value.
+        print(f"_outputs/{cfg['run_name']}_save")
+        raise SystemExit(0)
     torch.manual_seed(SEED)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"profile={cfg['profile']}  device={device}")
@@ -1504,6 +2087,11 @@ if __name__ == "__main__":
     clients = {hid: f["train"] for hid, f in clients_by_fold.items()}
     client_tests = {hid: f[EVAL_FOLD] for hid, f in clients_by_fold.items()}
     client_vals = {hid: f["val"] for hid, f in clients_by_fold.items()}
+    # Self-training needs the RAW per-hospital trajectories, not just the
+    # SampleDatasets: the mixture is rebuilt each round from real + freshly
+    # generated patients, through the same pinned processor.
+    client_trajectories = (read_trajectories(cache, "train")
+                           if cfg.get("selftrain_frac", 0.0) > 0 else None)
     pooled_train = load_fold(cache, "train")
     pooled_test = load_fold(cache, EVAL_FOLD)
     pooled_val = load_fold(cache, "val")
@@ -1606,6 +2194,8 @@ if __name__ == "__main__":
             batch_size=cfg["batch_size"],
             epochs=epochs,
             lr=cfg["lr"],
+            dropout=cfg["dropout"],
+            latent_dim=cfg["latent_dim"],
             save_dir=save_dir,
         )
 
@@ -1680,7 +2270,8 @@ if __name__ == "__main__":
                                  resume=cfg["resume"], fingerprint=fingerprint,
                                  val_clients=client_vals, es_cfg=es_cfg,
                                  sample_weight_fn=sample_weight_fn,
-                                 irm_rho=cfg["irm_rho"], irm_warmup=cfg["irm_warmup"])
+                                 irm_rho=cfg["irm_rho"], irm_warmup=cfg["irm_warmup"],
+                    irm_schedule=cfg["irm_schedule"], xm_k=cfg["xm_k"])
             num_params = sum(p.numel()
                              for p in next(iter(models.values())).parameters())
             print(f"Each model: {num_params} parameters")
@@ -1712,7 +2303,8 @@ if __name__ == "__main__":
                                           cfg["es_min_steps"])
                              if es_cfg else None),
                     sample_weight_fn=sample_weight_fn,
-                    irm_rho=cfg["irm_rho"], irm_warmup=cfg["irm_warmup"])
+                    irm_rho=cfg["irm_rho"], irm_warmup=cfg["irm_warmup"],
+                    irm_schedule=cfg["irm_schedule"], xm_k=cfg["xm_k"])
             else:  # fedavg or fedavg_ft -- both start with a FedAvg run
                 print(f"Regime: {regime} -- {len(clients)} clients, "
                       f"{cfg['local_epochs']} local epochs x {fed_rounds} rounds"
@@ -1723,6 +2315,12 @@ if __name__ == "__main__":
                 # continues from the last completed round (fedavg only).
                 ckpt_path = os.path.join(save_dir, "fedavg_state.pt")
                 run_fedavg(model, clients, n_rounds=fed_rounds, device=device,
+                           selftrain_frac=cfg["selftrain_frac"],
+                           selftrain_start=cfg["selftrain_start"],
+                           selftrain_at=cfg["selftrain_at"],
+                           selftrain_source=cfg["selftrain_source"],
+                           client_trajectories=client_trajectories,
+                           processor=sample_dataset.input_processors["visits"],
                            ckpt_path=ckpt_path, ckpt_every=cfg["ckpt_every"],
                            resume=cfg["resume"], weighting=cfg["weighting"],
                            writer=writer,
@@ -1739,7 +2337,8 @@ if __name__ == "__main__":
                                                  cfg["es_min_steps"])
                                     if es_cfg else None),
                            sample_weight_fn=sample_weight_fn,
-                           irm_rho=cfg["irm_rho"], irm_warmup=cfg["irm_warmup"])
+                           irm_rho=cfg["irm_rho"], irm_warmup=cfg["irm_warmup"],
+                    irm_schedule=cfg["irm_schedule"], xm_k=cfg["xm_k"])
             # STEP 5: generate synthetic patients from the single global/server
             # model. For fedavg_ft this stays the SHARED global model's output, so
             # the global eval (STEP 6) is directly comparable to plain fedavg.
@@ -1769,8 +2368,14 @@ if __name__ == "__main__":
                     val_clients=client_vals, es_cfg=es_cfg,
                     sample_weight_fn=sample_weight_fn,
                     irm_rho=cfg["irm_rho"], irm_warmup=cfg["irm_warmup"],
+                    irm_schedule=cfg["irm_schedule"], xm_k=cfg["xm_k"],
                     adapter=cfg["adapter"], adapter_rank=cfg["adapter_rank"],
-                    adapter_mu=cfg["adapter_mu"])
+                    adapter_mu=cfg["adapter_mu"],
+                    adapter_l1=cfg["adapter_l1"],
+                    adapter_sparsity=cfg["adapter_sparsity"],
+                    adapter_iht_every=cfg["adapter_iht_every"],
+                    adapter_optim=cfg["adapter_optim"],
+                    adapter_lr=cfg["adapter_lr"])
                 _, client_synth = generate_local(
                     ft_models, sizes, cfg["num_synth"],
                     cfg["synth_per_hospital"], device=device)

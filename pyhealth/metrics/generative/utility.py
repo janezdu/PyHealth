@@ -44,6 +44,7 @@ def compute_mle(
     code_col: str = "visit_codes",
     label_col: str = "labels",
     n_bootstraps: int = 5,
+    seed: Optional[int] = None,
     **kwargs,
 ) -> Dict[str, Tuple[float, float]]:
     """Computes Machine Learning Efficacy (utility) for synthetic data.
@@ -78,6 +79,11 @@ def compute_mle(
         label_col: Column name for the label (overwritten by the next-visit
             prediction label).
         n_bootstraps: Number of bootstrap resamples of the predictions.
+        seed: Seed for the resampling. ``None`` (default) draws from the
+            global numpy stream, exactly as before this argument existed, so
+            ``np.random.seed(...)`` still controls it. Note that seeding buys REPRODUCIBILITY, not precision:
+            the reported value is the mean of ``n_bootstraps`` resamples, so
+            its standard error shrinks only with ``n_bootstraps``.
         **kwargs: Extra keyword arguments forwarded to ``train_fn``.
 
     Returns:
@@ -129,9 +135,22 @@ def compute_mle(
 
     metrics_runs = []
     n_samples = len(real_y_true)
+    # A LOCAL generator, not np.random.seed(): seeding the global stream here
+    # would silently make every other consumer of numpy randomness in the same
+    # process deterministic too, which is a much larger change than this
+    # function is entitled to make.
+    #
+    # seed=None keeps the LEGACY path -- the global numpy stream -- rather than
+    # an unseeded local Generator. They are equally random, but callers that set
+    # np.random.seed(...) and expect this to become reproducible would silently
+    # stop being reproducible, and tests/core/test_generative_metrics.py shows
+    # that contract is relied on.
+    rng = np.random.default_rng(seed) if seed is not None else None
     for _ in range(n_bootstraps):
         if n_samples > 0:
-            indices = np.random.choice(n_samples, n_samples, replace=True)
+            indices = (rng.choice(n_samples, n_samples, replace=True)
+                       if rng is not None
+                       else np.random.choice(n_samples, n_samples, replace=True))
             r_true, r_pred = real_y_true[indices], real_y_pred[indices]
             s_true, s_pred = syn_y_true[indices], syn_y_pred[indices]
         else:
@@ -182,6 +201,7 @@ def compute_prevalence_metrics(
     code_col: str = "visit_codes",
     n_bootstraps: int = 5,
     code_subset: Optional[Iterable] = None,
+    seed: Optional[int] = None,
 ) -> Dict[str, Tuple[float, float]]:
     """Compares per-code patient-level prevalence of real vs synthetic data.
 
@@ -212,7 +232,16 @@ def compute_prevalence_metrics(
         syn_ehr: Synthetic EHR dataframe; same schema as ``train_ehr``.
         subject_col: Column name for patient/subject identifiers.
         code_col: Column name for the medical codes (one code per row).
-        n_bootstraps: Number of bootstrap resamples over codes.
+        n_bootstraps: Number of bootstrap resamples over codes. The default of
+            5 is low: measured on the fedpyhealth hilo8 cohort, the per-run
+            bootstrap std on specialist R-squared is ~0.22, so a 5-resample
+            mean carries a standard error near 0.10 -- large enough to swamp
+            most differences between arms. Raise it when comparing runs.
+        seed: Seed for the resampling. ``None`` (default) draws from the
+            global numpy stream, exactly as before this argument existed, so
+            ``np.random.seed(...)`` still controls it. Seeding makes a score
+            reproducible; it does not make it more precise -- only
+            ``n_bootstraps`` does that.
         code_subset: Optional codes to restrict the comparison to. Codes absent
             from a frame contribute a prevalence of 0 rather than being dropped,
             so a code the generator never emits counts against it. Defaults to
@@ -280,9 +309,14 @@ def compute_prevalence_metrics(
 
     metrics_runs = []
     n_samples = len(df_compare)
+    # None keeps the legacy path: pandas reads random_state=None off the global
+    # numpy stream, so np.random.seed(...) still controls this call. See the
+    # note in compute_mle.
+    rng = np.random.default_rng(seed) if seed is not None else None
     for _ in range(n_bootstraps):
         if n_samples > 0:
-            df_sampled = df_compare.sample(n=n_samples, replace=True)
+            df_sampled = df_compare.sample(
+                n=n_samples, replace=True, random_state=rng)
             real_vec = df_sampled["real"].values
             syn_vec = df_sampled["syn"].values
         else:

@@ -1,0 +1,35 @@
+# Best-of-K needs stochasticity to select over, and without a latent that means
+# dropout. do0.1 and do0.3 are already run; this pushes into the range where
+# dropout is doing real damage on its own, to find where the K=4 gain (if any)
+# peaks before the model stops learning.
+#
+# The xm_k: 1 cells ARE the controls -- dropout-only at the same rate -- so the
+# K=1 -> K=4 gap at fixed dropout is attributable to best-of-K and nothing else.
+# This matters because no result on the board was produced at dropout > 0
+# without also changing something else.
+#
+# 0.9 is deliberately past the point of usefulness: it is the probe for whether
+# more candidate spread keeps helping or the model simply stops learning. Expect
+# the K=1 cell at 0.9 to be visibly bad; if K=4 at 0.9 is NOT much better than
+# it, the mechanism has saturated. Read xm_ent alongside -- entropy near 0 means
+# one candidate index wins everything, which is degenerate from the other side.
+#
+# 6 runs.
+
+sweep_name: dropout_high_v1
+
+base:
+  profile: full
+  batch_size: 256          # matches the z16_xm4 anchor run, NOT the b128 resume note
+  regime: fedavg
+  weighting: sample
+  metrics: privacy
+  early_stop: false        # "_nes" in the run name; matches every run on this board
+  local_epochs: 2
+  n_rounds: 50
+  lr: 0.0001
+  latent_dim: 0
+
+grid:
+  dropout: [0.5, 0.7, 0.9]
+  xm_k: [1, 4]

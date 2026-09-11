@@ -1,0 +1,217 @@
+<!doctype html>
+<!--
+  Template for scripts/fig_mechanisms.py. The literal string "__PAYLOAD__"
+  below is replaced with the JSON payload; do not edit mechanisms.html
+  directly, regenerate it.
+
+  No CDN, no external CSS, no separate JS -- the generated page must open from
+  a file:// path on a laptop with no network. See viz/README.md for why an
+  editor's HTML preview pane will render this blank.
+-->
+<meta charset="utf-8">
+<title>Mechanism sweeps — dropout, latent width, best-of-K</title>
+<style>
+  :root {
+    --bg:#fbfbfa; --fg:#1c1b19; --muted:#6b6862; --line:#dedbd4; --card:#fff;
+    --k1:#b8563e; --k2:#2f6f7e; --ref:#9a968e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:#191817; --fg:#eceae6; --muted:#a29e96; --line:#343230; --card:#211f1e;
+      --k1:#e08466; --k2:#6fb6c6; --ref:#6b6862;
+    }
+  }
+  body { background:var(--bg); color:var(--fg); margin:0;
+         font:14px/1.55 ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif; }
+  .wrap { max-width:1080px; margin:0 auto; padding:32px 24px 64px; }
+  h1 { font-size:1.45rem; font-weight:650; margin:0 0 6px; letter-spacing:-.01em; }
+  .sub { color:var(--muted); margin:0 0 26px; max-width:64ch; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px;
+          padding:18px 20px 12px; margin:0 0 20px; }
+  .card h2 { font-size:1rem; font-weight:600; margin:0 0 2px; }
+  .card p.note { color:var(--muted); font-size:.83rem; margin:0 0 14px; max-width:70ch; }
+  label { font-size:.83rem; color:var(--muted); margin-right:8px; }
+  select { font:inherit; font-size:.85rem; background:var(--card); color:var(--fg);
+           border:1px solid var(--line); border-radius:6px; padding:5px 8px; }
+  .charts { display:grid; grid-template-columns:repeat(auto-fit,minmax(360px,1fr)); gap:18px; }
+  .legend { display:flex; gap:16px; font-size:.8rem; color:var(--muted);
+            margin:2px 0 0 46px; flex-wrap:wrap; }
+  .swatch { display:inline-block; width:11px; height:11px; border-radius:2px;
+            vertical-align:-1px; margin-right:5px; }
+  .scroll { overflow-x:auto; }
+  table { border-collapse:collapse; font-size:.82rem; width:100%; }
+  th,td { text-align:right; padding:5px 10px; border-bottom:1px solid var(--line);
+          white-space:nowrap; }
+  th:first-child, td:first-child { text-align:left; }
+  th { color:var(--muted); font-weight:600; }
+  .warn { border-left:3px solid var(--k1); padding-left:12px; }
+</style>
+<div class="wrap">
+<h1>Mechanism sweeps</h1>
+<p class="sub">What makes best-of-K do anything — dropout rate, latent width, and K itself.
+Macro-averaged across the 8 hospitals of <code>hilo8_random</code>.</p>
+
+<div class="card warn">
+  <h2>Read this before the charts</h2>
+  <p class="note">
+  These runs are <strong>not comparable to the fidelity/utility board</strong>. Every
+  number there was produced at dropout&nbsp;0 with no latent; these change the training
+  objective's stochasticity, so they get their own page and their own baseline
+  (<em>control</em>, the dashed line: plain FedAvg at identical settings).
+  <br><br>
+  Best-of-K needs something to select over. At dropout&nbsp;0 with no latent the K passes
+  are bit-identical and best-of-K is <em>best-of-1 at K× the cost</em> — so a K&gt;1 point
+  is only meaningful where its row has a real source of spread. In the dropout panel that
+  source is dropout; in the latent panel it is z, redrawn per candidate.
+  </p>
+</div>
+
+<div class="card">
+  <label for="metric">Metric</label>
+  <select id="metric"></select>
+  <div class="charts" id="charts"></div>
+</div>
+
+<div class="card">
+  <h2>All values</h2>
+  <div class="scroll"><table id="tbl"></table></div>
+</div>
+</div>
+
+<script>
+const DATA = __PAYLOAD__;
+const W = 430, H = 260, M = {t:16, r:16, b:44, l:56};
+const COLORS = ["var(--k1)", "var(--k2)"];
+
+const sel = document.getElementById("metric");
+DATA.metrics.forEach(m => {
+  const o = document.createElement("option");
+  o.value = o.textContent = m;
+  sel.appendChild(o);
+});
+// Rare-code prevalence is the headline of this project, so open on it rather
+// than on whatever sorts first.
+sel.value = DATA.metrics.includes("PrevVal_Rare_Prevalence_Pearson")
+  ? "PrevVal_Rare_Prevalence_Pearson" : DATA.metrics[0];
+
+function refLines(metric) {
+  const out = [];
+  for (const r of DATA.control) out.push({label: "control (E2/R50)", v: r.metrics[metric].mean});
+  for (const r of DATA.trunk)   out.push({label: "trunk (E10/R10)",  v: r.metrics[metric].mean});
+  return out.filter(d => Number.isFinite(d.v));
+}
+
+function chart(spec, metric) {
+  const groups = [...new Set(spec.runs.map(r => r[spec.group_key]))].sort((a,b)=>a-b);
+  const xs = [...new Set(spec.runs.map(r => r[spec.x_key]))].sort((a,b)=>a-b);
+  const refs = refLines(metric);
+
+  // Whiskers are part of the range: an axis fitted to means alone would clip
+  // the spread it is meant to show.
+  const vals = spec.runs.flatMap(r => {
+                          const d = r.metrics[metric] || {};
+                          const s = Number.isFinite(d.std) ? d.std : 0;
+                          return Number.isFinite(d.mean)
+                            ? [d.mean - s, d.mean + s] : [];
+                        })
+                        .concat(refs.map(d => d.v))
+                        .filter(Number.isFinite);
+  if (!vals.length) return `<div class="card"><p class="note">no data</p></div>`;
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  if (lo === hi) { lo -= 1; hi += 1; }
+  const pad = (hi - lo) * 0.12; lo -= pad; hi += pad;
+
+  const px = i => M.l + (xs.length === 1 ? (W-M.l-M.r)/2
+                        : i * (W - M.l - M.r) / (xs.length - 1));
+  const py = v => M.t + (1 - (v - lo) / (hi - lo)) * (H - M.t - M.b);
+
+  let svg = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img"
+    aria-label="${spec.label}: ${metric}">`;
+  // y gridlines
+  for (let i = 0; i <= 4; i++) {
+    const v = lo + (hi - lo) * i / 4, y = py(v);
+    svg += `<line x1="${M.l}" x2="${W-M.r}" y1="${y}" y2="${y}"
+             stroke="var(--line)" stroke-width="1"/>
+            <text x="${M.l-8}" y="${y+4}" text-anchor="end" font-size="10"
+             fill="var(--muted)">${v.toFixed(3)}</text>`;
+  }
+  // reference lines: the baseline these sweeps are measured against
+  refs.forEach((d, i) => {
+    const y = py(d.v);
+    svg += `<line x1="${M.l}" x2="${W-M.r}" y1="${y}" y2="${y}"
+             stroke="var(--ref)" stroke-width="1.4"
+             stroke-dasharray="${i ? "2 3" : "5 4"}"/>
+            <text x="${W-M.r}" y="${y-4}" text-anchor="end" font-size="9.5"
+             fill="var(--ref)">${d.label}</text>`;
+  });
+  // x axis
+  xs.forEach((x, i) => {
+    svg += `<text x="${px(i)}" y="${H-M.b+18}" text-anchor="middle" font-size="10.5"
+             fill="var(--muted)">${x}</text>`;
+  });
+  svg += `<text x="${(M.l+W-M.r)/2}" y="${H-8}" text-anchor="middle" font-size="10.5"
+           fill="var(--muted)">${spec.x_label}</text>`;
+  // one line per group
+  groups.forEach((g, gi) => {
+    const pts = xs.map((x, i) => {
+      const run = spec.runs.find(r => r[spec.x_key] === x && r[spec.group_key] === g);
+      const d = run && run.metrics[metric];
+      const v = d && d.mean;
+      return Number.isFinite(v)
+        ? {x: px(i), y: py(v), v, sd: Number.isFinite(d.std) ? d.std : null,
+           run: run.run}
+        : null;
+    }).filter(Boolean);
+    if (pts.length > 1) {
+      svg += `<polyline fill="none" stroke="${COLORS[gi % COLORS.length]}"
+               stroke-width="2" stroke-linejoin="round"
+               points="${pts.map(p => `${p.x},${p.y}`).join(" ")}"/>`;
+    }
+    pts.forEach(p => {
+      if (p.sd) {
+        const y0 = py(p.v - p.sd), y1 = py(p.v + p.sd);
+        svg += `<line x1="${p.x}" x2="${p.x}" y1="${y0}" y2="${y1}"
+                 stroke="${COLORS[gi % COLORS.length]}" stroke-width="1.2"
+                 opacity=".55"/>`;
+      }
+      svg += `<circle cx="${p.x}" cy="${p.y}" r="4"
+               fill="${COLORS[gi % COLORS.length]}"><title>${p.run}
+${metric} = ${p.v.toFixed(4)}${p.sd ? ` +/- ${p.sd.toFixed(4)} across sites` : ""}</title></circle>`;
+    });
+  });
+  svg += `</svg>`;
+
+  const legend = groups.map((g, gi) =>
+    `<span><span class="swatch" style="background:${COLORS[gi % COLORS.length]}"></span>${spec.group_label}=${g}</span>`
+  ).join("");
+  return `<div><h2 style="font-size:.92rem;margin:0 0 6px">${spec.label}</h2>
+          ${svg}<div class="legend">${legend}</div></div>`;
+}
+
+function table(metric) {
+  const rows = [...DATA.control.map(r => ({...r, kind: "control"})),
+                ...DATA.trunk.map(r => ({...r, kind: "trunk"})),
+                ...DATA.series.flatMap(s => s.runs.map(r => ({...r, kind: s.id})))];
+  let h = `<tr><th>run</th><th>kind</th><th>dropout</th><th>z</th><th>K</th>
+           <th>E/R</th><th>${metric} (± between-site sd)</th></tr>`;
+  for (const r of rows) {
+    const d = r.metrics[metric] || {}, v = d.mean;
+    h += `<tr><td>${r.run}</td><td>${r.kind}</td><td>${r.dropout}</td>
+          <td>${r.latent_dim}</td><td>${r.xm_k}</td>
+          <td>${r.local_epochs}/${r.n_rounds}</td>
+          <td>${Number.isFinite(v) ? v.toFixed(4) : "—"}${
+            Number.isFinite(d.std) ? ` <span style="color:var(--muted)">± ${d.std.toFixed(3)}</span>` : ""
+          }</td></tr>`;
+  }
+  return h;
+}
+
+function render() {
+  const m = sel.value;
+  document.getElementById("charts").innerHTML =
+    DATA.series.map(s => chart(s, m)).join("");
+  document.getElementById("tbl").innerHTML = table(m);
+}
+sel.addEventListener("change", render);
+render();
+</script>

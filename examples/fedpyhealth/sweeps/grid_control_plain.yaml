@@ -1,0 +1,24 @@
+# The missing denominator: plain fedavg at these exact settings, no latent, no
+# dropout, no best-of-K. Nothing on the board is this run -- every fedavg cell
+# carries at least one of do/xm/irm -- so without it "z8 beat nothing" and
+# "do0.5 beat nothing" have no baseline to be measured against.
+#
+# 1 run, ~20 min. Launch it with the other two grids.
+
+sweep_name: control_plain_v1
+
+base:
+  profile: full
+  batch_size: 256          # matches the z16_xm4 anchor run, NOT the b128 resume note
+  regime: fedavg
+  weighting: sample
+  metrics: privacy
+  early_stop: false        # "_nes" in the run name; matches every run on this board
+  local_epochs: 2
+  n_rounds: 50
+  lr: 0.0001
+  latent_dim: 0
+  dropout: 0.0
+
+grid:
+  xm_k: [1]

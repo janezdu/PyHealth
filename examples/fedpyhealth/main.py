@@ -497,8 +497,12 @@ def with_cohort(passthrough: Sequence[str], cohort_cache: str) -> List[str]:
 # now also name-affecting: sweeping WHEN the penalty starts is a
 # planned axis, and two warmups at one rho would otherwise collide.
 NAME_AFFECTING = ("--n-rounds", "--local-epochs", "--ft-epochs", "--weighting",
-                  "--metrics", "--irm-rho", "--irm-warmup",
-                  "--adapter", "--adapter-mu")
+                  "--metrics", "--irm-rho", "--irm-warmup", "--irm-schedule", "--xm-k",
+                  "--selftrain-frac", "--selftrain-start", "--dropout",
+                  "--latent-dim",
+                  "--adapter", "--adapter-mu", "--adapter-l1",
+                  "--adapter-sparsity", "--adapter-iht-every",
+                  "--adapter-optim", "--adapter-lr")
 
 
 #: Boolean train.py flags that must appear in the run name. The suffix has to

@@ -199,3 +199,93 @@ class TestIRMSchedule(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRhoSchedules(unittest.TestCase):
+    """The rho schedules, which are easy to get subtly wrong and impossible to
+    notice: a schedule that silently degrades to "step" trains fine, converges,
+    and answers a different question than the one asked.
+
+    Imported from the example rather than the library because that is where the
+    schedule lives -- it is a training-loop policy, and halo.py deliberately
+    holds no training-progress state (FedAvg rebuilds the optimiser 400 times).
+    """
+
+    @staticmethod
+    def _f():
+        import importlib.util, os, sys
+        root = os.path.join(os.path.dirname(__file__), "..", "..",
+                            "examples", "fedpyhealth")
+        sys.path.insert(0, os.path.abspath(root))
+        spec = importlib.util.spec_from_file_location(
+            "_fedtrain", os.path.join(root, "train.py"))
+        # train.py imports torch and the cohort helpers at module scope, so pull
+        # the function out by exec-ing only what we need would be fragile --
+        # importing is fine, it is cheap once torch is already loaded here.
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.irm_rho_at, mod.IRM_SCHEDULES
+
+    def test_step_is_unchanged(self):
+        f, _ = self._f()
+        self.assertEqual(f(0, 100, 34), 1.0)
+        self.assertEqual(f(33, 100, 34), 1.0)
+        self.assertEqual(f(34, 100, 34), 100.0)
+        self.assertEqual(f(99, 100, 34), 100.0)
+
+    def test_every_ramp_honours_the_warmup(self):
+        f, S = self._f()
+        for sch in S:
+            with self.subTest(schedule=sch):
+                self.assertEqual(f(0, 100, 34, sch, 100), 1.0)
+                self.assertEqual(f(33, 100, 34, sch, 100), 1.0)
+
+    def test_ramps_start_at_one_and_end_at_rho(self):
+        f, _ = self._f()
+        for sch in ("linear", "geom", "cosine"):
+            with self.subTest(schedule=sch):
+                self.assertAlmostEqual(f(34, 100, 34, sch, 100), 1.0, places=6)
+                self.assertAlmostEqual(f(100, 100, 34, sch, 100), 100.0, places=4)
+
+    def test_ramps_are_monotone(self):
+        f, _ = self._f()
+        for sch in ("linear", "geom", "cosine"):
+            with self.subTest(schedule=sch):
+                vals = [f(e, 100, 34, sch, 100) for e in range(34, 101)]
+                self.assertTrue(all(b >= a - 1e-9 for a, b in zip(vals, vals[1:])))
+
+    def test_decay_runs_the_other_way(self):
+        """The whole point of the arm: hot at the warmup boundary, cool at the
+        end. If this ever came out monotone increasing it would be a relabelled
+        ramp and the experiment would answer nothing."""
+        f, _ = self._f()
+        vals = [f(e, 100, 34, "decay", 100) for e in range(34, 101)]
+        self.assertAlmostEqual(vals[0], 100.0, places=4)
+        self.assertAlmostEqual(vals[-1], 1.0, places=6)
+        self.assertTrue(all(b <= a + 1e-9 for a, b in zip(vals, vals[1:])))
+
+    def test_geom_is_gentler_than_linear_in_the_middle(self):
+        """Why geom exists. A linear ramp spends most of training near rho; a
+        geometric one spends equal time per decade."""
+        f, _ = self._f()
+        mid = 67
+        self.assertLess(f(mid, 100, 34, "geom", 100),
+                        f(mid, 100, 34, "linear", 100))
+
+    def test_a_ramp_with_no_room_degrades_to_step_not_a_crash(self):
+        f, _ = self._f()
+        for sch in ("linear", "geom", "cosine", "decay"):
+            with self.subTest(schedule=sch):
+                self.assertEqual(f(40, 100, 34, sch, 0), 100.0)
+                self.assertEqual(f(40, 100, 34, sch, 34), 100.0)
+
+    def test_rho_zero_is_off_for_every_schedule(self):
+        f, S = self._f()
+        for sch in S:
+            with self.subTest(schedule=sch):
+                self.assertEqual(f(50, 0.0, 34, sch, 100), 0.0)
+
+    def test_unknown_schedule_raises(self):
+        f, _ = self._f()
+        with self.assertRaises(ValueError):
+            f(50, 100, 34, "annealing", 100)

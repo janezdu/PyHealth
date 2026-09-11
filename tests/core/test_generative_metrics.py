@@ -314,6 +314,89 @@ class TestPrevalenceMetrics(GenerativeMetricsTestCase):
         )
 
 
+class TestBootstrapSeed(GenerativeMetricsTestCase):
+    """The seed has to actually reach the resampler.
+
+    A `seed=` argument that is accepted and then ignored is the worst version of
+    this: every call still returns a different number, and the only symptom is
+    that "reproducible" runs quietly are not. These tests pin that the seed
+    changes the draw and that it is off by default.
+
+    Note what seeding does NOT do. The reported value is the MEAN of
+    `n_bootstraps` resamples, so its standard error shrinks only with
+    `n_bootstraps`; seeding freezes one draw rather than tightening it.
+    Measured on the fedpyhealth hilo8 cohort the per-run bootstrap std on
+    specialist R^2 is ~0.22, so the default of 5 resamples carries a standard
+    error near 0.10 -- larger than most differences it is used to compare.
+    """
+
+    def test_same_seed_reproduces_the_same_scores(self):
+        a = compute_prevalence_metrics(self.train_ehr, self.syn_ehr,
+                                       n_bootstraps=8, seed=0)
+        b = compute_prevalence_metrics(self.train_ehr, self.syn_ehr,
+                                       n_bootstraps=8, seed=0)
+        self.assertEqual(set(a), set(b))
+        for k in a:
+            self.assertAlmostEqual(
+                a[k][0], b[k][0], places=12,
+                msg=f"{k} differed between two seed=0 calls; the seed is not "
+                    "reaching the resampler")
+            self.assertAlmostEqual(a[k][1], b[k][1], places=12)
+
+    def test_different_seeds_give_different_draws(self):
+        """Guards the test above: if the seed were ignored, equality would hold
+        trivially and prove nothing."""
+        a = compute_prevalence_metrics(self.train_ehr, self.syn_ehr,
+                                       n_bootstraps=8, seed=0)
+        b = compute_prevalence_metrics(self.train_ehr, self.syn_ehr,
+                                       n_bootstraps=8, seed=12345)
+        self.assertTrue(
+            any(abs(a[k][0] - b[k][0]) > 1e-12 for k in a),
+            "two different seeds produced identical scores; either the seed is "
+            "ignored or the bootstrap is not resampling")
+
+    def test_unseeded_is_still_the_default(self):
+        """Existing callers must not silently become deterministic -- every
+        result written before the flag existed used an unseeded draw."""
+        import inspect
+        sig = inspect.signature(compute_prevalence_metrics)
+        self.assertIsNone(sig.parameters["seed"].default)
+        sig = inspect.signature(compute_mle)
+        self.assertIsNone(sig.parameters["seed"].default)
+
+    def test_seed_none_still_obeys_the_global_numpy_seed(self):
+        """The regression this argument first caused.
+
+        Routing seed=None through a local Generator looks harmless -- equally
+        random either way -- but it silently breaks every caller that sets
+        np.random.seed(...) to make this reproducible, which the paired
+        comparisons elsewhere in this file rely on.
+        """
+        kw = dict(subject_col=SUBJECT_COL, code_col=CODE_COL, n_bootstraps=3)
+        np.random.seed(11)
+        a = compute_prevalence_metrics(self.train_ehr, self.syn_ehr, **kw)
+        np.random.seed(11)
+        b = compute_prevalence_metrics(self.train_ehr, self.syn_ehr, **kw)
+        self.assertEqual(
+            a, b,
+            "seed=None no longer reads the global numpy stream, so "
+            "np.random.seed() has stopped controlling this function")
+
+    def test_seeding_does_not_touch_the_global_numpy_stream(self):
+        """A local Generator, not np.random.seed(). Seeding the global stream
+        would make every other numpy consumer in the process deterministic
+        too -- a far larger change than this function is entitled to make."""
+        np.random.seed(1234)
+        before = np.random.rand()
+        np.random.seed(1234)
+        compute_prevalence_metrics(self.train_ehr, self.syn_ehr,
+                                   n_bootstraps=8, seed=7)
+        self.assertAlmostEqual(
+            before, np.random.rand(), places=12,
+            msg="the global numpy stream advanced differently, so seeding here "
+                "is leaking into the rest of the process")
+
+
 class TestConvertColsToMultihot(GenerativeMetricsTestCase):
     def test_convert_cols_to_multihot(self):
         df = self.train_ehr.copy()

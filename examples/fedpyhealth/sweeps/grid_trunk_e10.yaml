@@ -1,0 +1,35 @@
+# The E10 trunk: plain fedavg at the local-epoch budget the ouroboros variant
+# needs, so the 8-then-2 split has a same-shape baseline to be measured against.
+#
+# R10, not R50. The board is E2/R50 = 100 round-epochs; E10/R10 is also 100, so
+# total gradient steps match and any difference is about PLACEMENT of the local
+# epochs rather than about training longer. E10/R50 would be 5x the compute and
+# would confound the two.
+#
+# What this does NOT hold constant is the number of aggregations: 10 here
+# against 50 on the board. That is unavoidable -- rounds x local_epochs cannot
+# both be pinned -- and it is a real difference, since 10 local epochs between
+# averages lets each client drift further before it is pulled back. Read this
+# trunk against control_plain_v1 (E2/R50) to see what that drift costs on its
+# own, BEFORE attributing anything to self-training.
+#
+# 1 run. Longer than the 10 min control_plain took -- same step count, but
+# fewer, larger local blocks and only 10 generation/eval cycles.
+
+sweep_name: trunk_e10_v1
+
+base:
+  profile: full
+  batch_size: 256
+  regime: fedavg
+  weighting: sample
+  metrics: privacy
+  early_stop: false
+  local_epochs: 10
+  n_rounds: 10
+  lr: 0.0001
+  latent_dim: 0
+  dropout: 0.0
+
+grid:
+  xm_k: [1]

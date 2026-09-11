@@ -10,6 +10,11 @@ back up, including the person who wrote it.
 | [CHEATSHEET.md](CHEATSHEET.md) | the numbers you keep needing: cohort sizes, what "rare" means, generator and classifier hyperparameters, baseline floors |
 | [TODO.md](TODO.md) | outstanding work, each item carrying the evidence that motivated it |
 | [eicu-hospitals.md](eicu-hospitals.md) | the eICU hospital size distribution — which sites exist and how big, for designing a cohort |
+| [cohort-distributions.md](cohort-distributions.md) | how the built cohorts differ from each other, and from eICU as a whole |
+| [prevalence-all-vs-rare.md](prevalence-all-vs-rare.md) | what the all-codes and rare-codes views of Test 1 each answer, and why both are reported |
+| [irm-federated.md](irm-federated.md) | the IRMv1 penalty over hospitals-as-environments: the derivation, the split-batch estimator, and what ρ did |
+| [self-training-loop.md](self-training-loop.md) | **proposal, unimplemented** — mixing the generator's own output back into its training data, the collapse risk it runs, and the guards |
+| [adapters.md](adapters.md) | parameter-efficient per-hospital fine-tuning — the five `--adapter` variants, what each constrains, and the three ways a sparse run fails silently |
 
 ## Related, elsewhere
 

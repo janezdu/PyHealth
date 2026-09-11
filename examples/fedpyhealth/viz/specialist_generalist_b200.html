@@ -1,0 +1,662 @@
+<title>Specialist Against Generalist</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+:root{
+  --ground:#f6f7f8; --surface:#ffffff; --sunk:#eceff1;
+  --ink:#16191d; --ink2:#3d454e; --muted:#6b7480; --rule:#dde2e6; --grid:#e8ebee;
+  --accent:#0f6e6e;
+  --g-baseline:#7b8087; --g-irmreg:#c07a00; --g-ft2:#7fb3ea;
+  --g-ft20:#2a78d6; --g-irmft:#c0308f; --g-iht:#1baf7a;
+  --g-l1:#0f8b9e; --g-irmiht:#6b4fd6; --g-irml1:#b8336a;
+  --g-dropout:#9e9e9e; --g-xmk2:#ef9a9a; --g-xmk4:#e05252; --g-xmk8:#8e1c1c; --g-xmirm:#00695c; --g-latent:#8a5a00; --g-dead:#b9bec4;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --ground:#131517; --surface:#1a1d20; --sunk:#22262a;
+    --ink:#f1f3f5; --ink2:#c7ced5; --muted:#949da7; --rule:#2f343a; --grid:#25292d;
+    --accent:#57bab2;
+    --g-baseline:#8e949b; --g-irmreg:#d9a03c; --g-ft2:#8ab8e8;
+    --g-ft20:#4b93e8; --g-irmft:#e061b0; --g-iht:#2fc48c;
+    --g-l1:#3fb3c4; --g-irmiht:#9b82ec; --g-irml1:#e0708f;
+    --g-dropout:#8b9097; --g-xmk2:#f6b3b3; --g-xmk4:#ef6b6b; --g-xmk8:#c14444; --g-xmirm:#4db6ac; --g-latent:#d19a3c; --g-dead:#5a6067;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#131517; --surface:#1a1d20; --sunk:#22262a;
+  --ink:#f1f3f5; --ink2:#c7ced5; --muted:#949da7; --rule:#2f343a; --grid:#25292d;
+  --accent:#57bab2;
+  --g-baseline:#8e949b; --g-irmreg:#d9a03c; --g-ft2:#8ab8e8;
+  --g-ft20:#4b93e8; --g-irmft:#e061b0; --g-iht:#2fc48c;
+  --g-l1:#3fb3c4; --g-irmiht:#9b82ec; --g-irml1:#e0708f;
+  --g-dropout:#8b9097; --g-xmk2:#f6b3b3; --g-xmk4:#ef6b6b; --g-xmk8:#c14444; --g-xmirm:#4db6ac; --g-latent:#d19a3c; --g-dead:#5a6067;
+}
+*{box-sizing:border-box}
+body{background:var(--ground);color:var(--ink);margin:0;
+  font-family:"Source Serif 4",Georgia,serif;font-size:16.5px;line-height:1.6}
+.wrap{max-width:1000px;margin:0 auto;padding:48px 24px 90px;
+  display:flex;flex-direction:column;gap:40px}
+h1,h2,.lbl,th,.chip,select,button{font-family:Archivo,"Helvetica Neue",Arial,sans-serif}
+h1{font-size:32px;font-weight:700;letter-spacing:-.02em;margin:0;text-wrap:balance}
+h2{font-size:20px;font-weight:600;margin:0 0 6px;text-wrap:balance}
+p{margin:0 0 12px;max-width:70ch}
+p:last-child{margin-bottom:0}
+.lbl{font-size:11px;font-weight:600;letter-spacing:.13em;text-transform:uppercase;
+  color:var(--muted);margin:0 0 12px}
+.deck{color:var(--ink2);font-size:17px;max-width:66ch;margin:10px 0 0}
+header{border-bottom:2px solid var(--ink);padding-bottom:20px}
+.meta{font-family:"JetBrains Mono",ui-monospace,monospace;font-size:12px;
+  color:var(--muted);margin-top:14px;display:flex;flex-wrap:wrap;gap:6px 20px}
+.panel{background:var(--surface);border:1px solid var(--rule);border-radius:3px;padding:20px}
+.controls{display:flex;flex-wrap:wrap;gap:20px;align-items:flex-end;
+  border-bottom:1px solid var(--rule);padding-bottom:16px;margin-bottom:14px}
+.field{display:flex;flex-direction:column;gap:5px;font-size:11px;font-weight:600;
+  letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+select{font-size:14px;padding:6px 9px;border:1px solid var(--rule);border-radius:2px;
+  background:var(--surface);color:var(--ink);text-transform:none;letter-spacing:0;font-weight:500}
+.seg{display:inline-flex;border:1px solid var(--rule);border-radius:2px;overflow:hidden}
+.seg button{font-size:13px;padding:6px 13px;border:0;background:var(--surface);
+  color:var(--muted);cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--sunk);color:var(--ink);font-weight:600}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 14px}
+.chip{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;padding:5px 11px;
+  border:1px solid var(--rule);border-radius:2px;cursor:pointer;background:var(--surface);
+  color:var(--ink2)}
+.chip input{margin:0}
+.chip .sw{width:10px;height:10px;border-radius:2px;display:inline-block}
+.figwrap{overflow-x:auto}
+svg{display:block;max-width:100%;height:auto}
+.tick{font-size:11px;fill:var(--muted);font-family:"JetBrains Mono",monospace}
+.axis-label{font-size:12.5px;fill:var(--ink2);font-family:Archivo,sans-serif;font-weight:500}
+.ptlabel{font-size:11.5px;fill:var(--ink2);font-family:Archivo,sans-serif}
+figcaption{font-size:13.5px;color:var(--muted);margin-top:14px;max-width:74ch}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:14px;font-variant-numeric:tabular-nums;min-width:560px}
+th{font-size:11px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);
+  text-align:left;padding:0 12px 7px 0;border-bottom:1px solid var(--rule)}
+td{padding:6px 12px 6px 0;border-bottom:1px solid var(--rule);color:var(--ink2)}
+td:first-child{color:var(--ink)}
+td.num,th.num{text-align:right;padding-right:0}
+tr:last-child td{border-bottom:none}
+.note{border-left:3px solid var(--accent);padding:2px 0 2px 16px;color:var(--ink2);font-size:15px}
+code{font-family:"JetBrains Mono",monospace;font-size:.87em;background:var(--sunk);
+  padding:1.5px 5px;border-radius:2px}
+@media(max-width:600px){.wrap{padding:32px 16px 64px;gap:32px}h1{font-size:26px}}
+</style>
+<div class="wrap">
+
+<header>
+  <p class="lbl">hilo8_random &middot; 8 hospitals &middot; 200 bootstrap resamples</p>
+  <h1>Specialist Against Generalist</h1>
+  <p class="deck">Forty arms on one axis &mdash; the three training regimes, the
+  IRM runs, both fine-tuning budgets, and the sparse ladder on <em>both</em> a plain and
+  an IRM-trained trunk &mdash; all rescored at 200 bootstrap resamples with a fixed seed.
+  At the old default of 5 the ranking was not stable (two arms swapped first place), so
+  nothing here is comparable to numbers reported before the rescore.</p>
+  <div class="meta"><span>test1_*_b200.json</span><span>seed 0</span>
+    <span>SE ~0.003 Pearson &middot; ~0.018 R&sup2;</span><span>1 Sep 2026</span></div>
+</header>
+
+<section>
+  <div class="panel">
+    <div class="controls">
+      <label class="field"><span>Metric</span>
+        <select id="metric">
+          <option value="pearson" selected>Pearson</option>
+          <option value="r2">R&sup2; vs identity</option>
+          <option value="rmse">RMSE</option>
+        </select>
+      </label>
+      <div class="field"><span>Code set</span>
+        <div class="seg" role="group" aria-label="Code set">
+          <button type="button" data-set="all" aria-pressed="true">All codes</button>
+          <button type="button" data-set="rare" aria-pressed="false">Rare codes</button>
+        </div>
+      </div>
+    </div>
+    <div class="chips" id="chips"></div>
+    <div class="figwrap">
+      <svg id="sg" viewBox="0 0 860 600" role="img"
+           aria-label="Specialist versus generalist prevalence fidelity for every fine-tuning variant."></svg>
+    </div>
+    <figcaption id="capSG"></figcaption>
+  </div>
+</section>
+
+<section>
+  <p class="lbl">The sparse ladder on its own</p>
+  <div class="panel">
+    <h2>Sparser is better &mdash; and the trunk matters more than the sparsity</h2>
+    <p>Density is the fraction of the last MLP&rsquo;s weights the site is allowed to
+    change. Four curves: hard top-k projection and proximal L1, each on a plain trunk and
+    on an IRM-trained one. That two independent mechanisms trace the same shape is what
+    makes it a dose&ndash;response rather than scatter &mdash; but note how far apart the
+    two <em>trunks</em> sit compared to how far the curves travel along themselves.</p>
+    <div class="figwrap">
+      <svg id="dens" viewBox="0 0 860 380" role="img"
+           aria-label="Trainable density against specialist fidelity for the sparse variants."></svg>
+    </div>
+    <figcaption id="capD"></figcaption>
+  </div>
+</section>
+
+<section>
+  <p class="lbl">Test 2 &mdash; downstream utility</p>
+  <div class="panel">
+    <h2>Can you train a rare-code classifier on this synthetic data?</h2>
+    <p>Test&nbsp;1 asks whether the synthetic data has the right code prevalences.
+    This asks whether it is <em>useful</em>: an RNN is trained purely on each arm's
+    synthetic patients and scored on real ones (train-on-synthetic, test-on-real).
+    Average precision, because the rare codes sit near 0.3% prevalence &mdash;
+    accuracy and AUROC both stay flattering while a model is useless.</p>
+    <p><strong>Head codes (30)</strong> is a different experiment on the same
+    arms: 30 codes drawn at random from the 91 that carry at least 20 test
+    positives, rather than the 478-code tail where half the codes have four
+    positives or fewer. It is the pool on which this test can actually separate
+    arms &mdash; but its AP floor is 0.029 against the tail's 0.0067, so read
+    each panel against its own dashed anchors and never across them.</p>
+    <div class="controls" style="border:0;padding:0;margin:14px 0 4px">
+      <label class="field"><span>Metric</span>
+        <select id="t2metric">
+          <option value="ap_macro" selected>Average precision</option>
+          <option value="lift">Lift over guessing (&times;)</option>
+          <option value="ceilfrac">% of real pooled data</option>
+          <option value="roc_auc_macro">ROC-AUC</option>
+          <option value="f1_best_macro">F1 at best threshold</option>
+          <option value="f1_prev_macro">F1 at prevalence threshold</option>
+        </select>
+      </label>
+      <div class="field"><span>Code set</span>
+        <div class="seg" role="group" aria-label="Test 2 code set">
+          <button type="button" data-t2="overall" aria-pressed="false">All codes</button>
+          <button type="button" data-t2="rare" aria-pressed="true">Rare codes</button>
+          <button type="button" data-t2="head" aria-pressed="false">Head codes (30)</button>
+        </div>
+      </div>
+    </div>
+    <div class="figwrap">
+      <svg id="t2" viewBox="0 0 860 520" role="img"
+           aria-label="Downstream rare-code average precision for each arm, against real-data references."></svg>
+    </div>
+    <figcaption id="capT2"></figcaption>
+  </div>
+</section>
+
+<section>
+  <p class="lbl">Every arm, current metric</p>
+  <div class="panel">
+    <div class="scroll"><table id="tbl"></table></div>
+  </div>
+</section>
+
+<section>
+  <p class="lbl">Reading this honestly</p>
+  <div class="panel" style="display:flex;flex-direction:column;gap:14px">
+    <p class="note"><strong>Which comparisons are clean.</strong> The sparse arms and
+    the trunk share <em>one</em> federated global exactly &mdash; they were seeded from
+    it and skipped retraining, so differences between them are the adapter and nothing
+    else. The four plain fine-tuning arms each trained their <em>own</em> trunk
+    (<code>--resume</code> was missing), and FedAvg over 40 rounds is not bit-reproducible,
+    so some of the spread among them is trunk draw. The three IRM arms share the IRM trunk
+    with each other.</p>
+    <p class="note"><strong>Pearson and R&sup2; disagree, and that is the finding.</strong>
+    Switch the dropdown. On R&sup2; the sparse ladder spans 0.276&ndash;0.478 and IRM +
+    LoRA head reaches 0.633; on Pearson almost everything sits within 0.013 of doing
+    nothing at all. Pearson is scale-invariant and R&sup2; is not, so these methods are
+    correcting <em>how much</em> of each code gets emitted, not <em>which</em> codes are
+    relatively common. If ranking codes correctly is what matters to you, none of this
+    has moved.</p>
+    <p class="note"><strong>Two arms are inert.</strong> <code>IHT 10% · SGD</code> sits on
+    top of the trunk on every metric &mdash; SGD barely moved the weights even at a
+    learning rate 10,000&times; the Adam default, so it is effectively an un-fine-tuned
+    model wearing an adapter&rsquo;s name. It is drawn in grey and off by default.</p>
+    <p class="note"><strong>The composition is currently the best arm, and the control
+    undercuts the story.</strong> IRM&nbsp;&rho;=10&sup2;&nbsp;+&nbsp;XM&nbsp;K=4 on fedavg
+    reaches 0.591&nbsp;/&nbsp;0.943 on R&sup2;, beating both of its parents. But
+    <code>dropout 0.3 only</code> &mdash; no best-of-K at all &mdash; scores
+    0.496&nbsp;/&nbsp;0.923, essentially matching XM&nbsp;K=4's 0.570&nbsp;/&nbsp;0.923,
+    and <code>fedavg&nbsp;&middot;&nbsp;IRM&nbsp;&rho;=10&#8308;</code> reaches
+    0.525&nbsp;/&nbsp;0.932 with neither dropout nor XM. Toggle those on together: most of
+    what looks like a best-of-K effect is reachable without best-of-K.</p>
+    <p class="note"><strong>The best-of-K arms changed the model, so read them apart.</strong>
+    They are drawn as <em>squares</em> because they carry dropout 0.3, which nothing else
+    on this page has &mdash; so they differ from their baselines in two ways, not one, and
+    the separate dropout-only control has not been scored on this protocol yet. Their R&sup2;
+    spread across K (0.412, 0.570, &minus;0.000 for K = 2, 4, 8 on the specialist axis) is
+    thirty times the 0.018 measurement noise floor and is not monotone, which points at
+    run-to-run TRAINING variance rather than an effect of K. That variance has never been
+    measured here: every noise figure on this page comes from scoring one model twice, not
+    from training the same configuration twice.</p>
+    <p class="note"><strong>The trunk is doing more work than the adapter.</strong>
+    Sparse fine-tuning on the IRM trunk beats the same adapter on a plain trunk on both
+    axes &mdash; generalist R&sup2; 0.651&nbsp;&rarr;&nbsp;0.848 for L1 at &lambda;=0.5,
+    about nine standard errors. And there is no single winner: IRM&nbsp;+&nbsp;LoRA head
+    leads on specialist, IRM&nbsp;+&nbsp;L1 on generalist. Most uncomfortable of all,
+    <code>fedavg · IRM ρ=10⁴</code> &mdash; with <em>no fine-tuning whatsoever</em>
+    &mdash; scores 0.525&nbsp;/&nbsp;0.932 on R&sup2;, ahead of every fine-tuned arm on
+    both axes. Toggle the fine-tuning families off and watch where the IRM training
+    points sit.</p>
+    <p class="note"><strong>Full fine-tuning is the cautionary point, not the target.</strong>
+    It reaches the best specialist Pearson of any arm and the worst generalist R&sup2; of
+    any arm (&minus;0.466) &mdash; it fits each site by destroying the shared model, which
+    is the entire case for adapters.</p>
+  </div>
+</section>
+
+</div>
+<script>
+const PTS = [{"id":"local","group":"baseline","label":"local-only","s_pearson_all":0.93315,"g_pearson_all":0.86621,"s_pearson_rare":0.90408,"g_pearson_rare":0.81069,"s_r2_all":0.65763,"g_r2_all":0.40117,"s_r2_rare":0.54343,"g_r2_rare":0.11443,"s_rmse_all":0.00875,"g_rmse_all":0.01077,"s_rmse_rare":0.01396,"g_rmse_rare":0.01264},{"id":"centralized","group":"baseline","label":"centralized","s_pearson_all":0.53538,"g_pearson_all":0.68632,"s_pearson_rare":0.38307,"g_pearson_rare":0.6137,"s_r2_all":-55.1712,"g_r2_all":-44.31382,"s_r2_rare":-67.16551,"g_r2_rare":-70.01637,"s_rmse_all":0.09522,"g_rmse_all":0.09123,"s_rmse_rare":0.14824,"g_rmse_rare":0.11501},{"id":"fedavg","group":"baseline","label":"fedavg","s_pearson_all":0.83622,"g_pearson_all":0.96913,"s_pearson_rare":0.74031,"g_pearson_rare":0.94942,"s_r2_all":0.14273,"g_r2_all":0.55184,"s_r2_rare":-0.25747,"g_r2_rare":0.42163,"s_rmse_all":0.01393,"g_rmse_all":0.00936,"s_rmse_rare":0.02518,"g_rmse_rare":0.01049},{"id":"trunk","group":"baseline","label":"trunk (40-round global)","s_pearson_all":0.84047,"g_pearson_all":0.97362,"s_pearson_rare":0.74866,"g_pearson_rare":0.95593,"s_r2_all":0.27552,"g_r2_all":0.67491,"s_r2_rare":-0.15009,"g_r2_rare":0.58592,"s_rmse_all":0.01288,"g_rmse_all":0.00796,"s_rmse_rare":0.02306,"g_rmse_rare":0.00886},{"id":"fedavg_irm1e2","group":"irmreg","label":"fedavg · IRM ρ=10²","s_pearson_all":0.85013,"g_pearson_all":0.98002,"s_pearson_rare":0.75746,"g_pearson_rare":0.96728,"s_r2_all":0.47432,"g_r2_all":0.85753,"s_r2_rare":0.25129,"g_r2_rare":0.8239,"s_rmse_all":0.01117,"g_rmse_all":0.00507,"s_rmse_rare":0.01877,"g_rmse_rare":0.00577},{"id":"fedavg_irm1e4","group":"irmreg","label":"fedavg · IRM ρ=10⁴","s_pearson_all":0.8241,"g_pearson_all":0.97428,"s_pearson_rare":0.714,"g_pearson_rare":0.97033,"s_r2_all":0.52463,"g_r2_all":0.93217,"s_r2_rare":0.25115,"g_r2_rare":0.90401,"s_rmse_all":0.00926,"g_rmse_all":0.00347,"s_rmse_rare":0.01672,"g_rmse_rare":0.00422},{"id":"centralized_irm1e2","group":"irmreg","label":"centralized · IRM ρ=10²","s_pearson_all":0.84214,"g_pearson_all":0.99291,"s_pearson_rare":0.74728,"g_pearson_rare":0.98858,"s_r2_all":0.3479,"g_r2_all":0.85027,"s_r2_rare":0.08011,"g_r2_rare":0.82081,"s_rmse_all":0.01246,"g_rmse_all":0.00573,"s_rmse_rare":0.0202,"g_rmse_rare":0.00586},{"id":"centralized_irm1e4","group":"irmreg","label":"centralized · IRM ρ=10⁴","s_pearson_all":0.84017,"g_pearson_all":0.99172,"s_pearson_rare":0.73832,"g_pearson_rare":0.98765,"s_r2_all":0.43084,"g_r2_all":0.9026,"s_r2_rare":0.18791,"g_r2_rare":0.87754,"s_rmse_all":0.01207,"g_rmse_all":0.00455,"s_rmse_rare":0.01897,"g_rmse_rare":0.00482},{"id":"lora_attn_ep2","group":"ft2","label":"LoRA attn · 2ep","s_pearson_all":0.83685,"g_pearson_all":0.97311,"s_pearson_rare":0.74863,"g_pearson_rare":0.95485,"s_r2_all":0.20701,"g_r2_all":0.58675,"s_r2_rare":-0.21693,"g_r2_rare":0.50272,"s_rmse_all":0.01377,"g_rmse_all":0.0089,"s_rmse_rare":0.02415,"g_rmse_rare":0.00973},{"id":"lora_head_ep2","group":"ft2","label":"LoRA head · 2ep","s_pearson_all":0.8445,"g_pearson_all":0.97247,"s_pearson_rare":0.75456,"g_pearson_rare":0.95337,"s_r2_all":0.15823,"g_r2_all":0.56565,"s_r2_rare":-0.23402,"g_r2_rare":0.45591,"s_rmse_all":0.01394,"g_rmse_all":0.0091,"s_rmse_rare":0.02444,"g_rmse_rare":0.01017},{"id":"last_mlp_ep2","group":"ft2","label":"last MLP · 2ep","s_pearson_all":0.83386,"g_pearson_all":0.97146,"s_pearson_rare":0.75317,"g_pearson_rare":0.95332,"s_r2_all":0.35147,"g_r2_all":0.55508,"s_r2_rare":-0.01537,"g_r2_rare":0.43802,"s_rmse_all":0.01379,"g_rmse_all":0.00929,"s_rmse_rare":0.02344,"g_rmse_rare":0.0103},{"id":"full_ft20","group":"ft20","label":"full fine-tune · 6.17M","s_pearson_all":0.91795,"g_pearson_all":0.90027,"s_pearson_rare":0.89238,"g_pearson_rare":0.86029,"s_r2_all":0.04261,"g_r2_all":-0.46567,"s_r2_rare":-0.47088,"g_r2_rare":-1.05506,"s_rmse_all":0.01701,"g_rmse_all":0.01693,"s_rmse_rare":0.03145,"g_rmse_rare":0.01931},{"id":"lora_attn20","group":"ft20","label":"LoRA attention · 33K","s_pearson_all":0.83784,"g_pearson_all":0.97151,"s_pearson_rare":0.75045,"g_pearson_rare":0.95306,"s_r2_all":0.28421,"g_r2_all":0.694,"s_r2_rare":-0.15975,"g_r2_rare":0.60675,"s_rmse_all":0.01238,"g_rmse_all":0.00774,"s_rmse_rare":0.02043,"g_rmse_rare":0.00864},{"id":"lora_head20","group":"ft20","label":"LoRA head · 38K","s_pearson_all":0.91981,"g_pearson_all":0.92627,"s_pearson_rare":0.87169,"g_pearson_rare":0.90339,"s_r2_all":0.48645,"g_r2_all":0.56426,"s_r2_rare":0.11496,"g_r2_rare":0.4935,"s_rmse_all":0.01087,"g_rmse_all":0.00907,"s_rmse_rare":0.01741,"g_rmse_rare":0.00974},{"id":"last_mlp20","group":"ft20","label":"last MLP · 526K","s_pearson_all":0.85327,"g_pearson_all":0.96755,"s_pearson_rare":0.76931,"g_pearson_rare":0.94757,"s_r2_all":0.4345,"g_r2_all":0.45446,"s_r2_rare":0.22507,"g_r2_rare":0.28775,"s_rmse_all":0.01385,"g_rmse_all":0.01022,"s_rmse_rare":0.0237,"g_rmse_rare":0.01162},{"id":"irm_full_ft","group":"irmft","label":"IRM + full fine-tune","s_pearson_all":0.93211,"g_pearson_all":0.89559,"s_pearson_rare":0.90459,"g_pearson_rare":0.8541,"s_r2_all":0.55199,"g_r2_all":0.10446,"s_r2_rare":0.37016,"g_r2_rare":-0.31357,"s_rmse_all":0.01209,"g_rmse_all":0.0127,"s_rmse_rare":0.02239,"g_rmse_rare":0.01564},{"id":"irm_lora_attn","group":"irmft","label":"IRM + LoRA attention","s_pearson_all":0.83726,"g_pearson_all":0.97726,"s_pearson_rare":0.75621,"g_pearson_rare":0.96383,"s_r2_all":0.38178,"g_r2_all":0.86411,"s_r2_rare":0.14621,"g_r2_rare":0.83024,"s_rmse_all":0.01031,"g_rmse_all":0.00496,"s_rmse_rare":0.01772,"g_rmse_rare":0.00566},{"id":"irm_lora_head","group":"irmft","label":"IRM + LoRA head","s_pearson_all":0.92683,"g_pearson_all":0.90697,"s_pearson_rare":0.88875,"g_pearson_rare":0.87484,"s_r2_all":0.63304,"g_r2_all":0.72488,"s_r2_rare":0.36247,"g_r2_rare":0.5641,"s_rmse_all":0.00867,"g_rmse_all":0.00729,"s_rmse_rare":0.01466,"g_rmse_rare":0.00908},{"id":"iht50","group":"iht","label":"IHT · 50%","density":0.5,"s_pearson_all":0.84654,"g_pearson_all":0.96894,"s_pearson_rare":0.76124,"g_pearson_rare":0.95079,"s_r2_all":0.37227,"g_r2_all":0.57145,"s_r2_rare":0.18661,"g_r2_rare":0.42708,"s_rmse_all":0.01337,"g_rmse_all":0.00917,"s_rmse_rare":0.02224,"g_rmse_rare":0.01041},{"id":"iht10","group":"iht","label":"IHT · 10%","density":0.1,"s_pearson_all":0.8408,"g_pearson_all":0.97223,"s_pearson_rare":0.75587,"g_pearson_rare":0.95393,"s_r2_all":0.45125,"g_r2_all":0.61728,"s_r2_rare":0.1382,"g_r2_rare":0.5053,"s_rmse_all":0.01262,"g_rmse_all":0.00851,"s_rmse_rare":0.02091,"g_rmse_rare":0.00961},{"id":"iht07","group":"iht","label":"IHT · 7%","density":0.07,"s_pearson_all":0.83533,"g_pearson_all":0.97224,"s_pearson_rare":0.75455,"g_pearson_rare":0.95462,"s_r2_all":0.46848,"g_r2_all":0.62213,"s_r2_rare":0.12826,"g_r2_rare":0.506,"s_rmse_all":0.01265,"g_rmse_all":0.00845,"s_rmse_rare":0.02092,"g_rmse_rare":0.00963},{"id":"l1_02","group":"l1","label":"L1 · λ=0.2","density":0.22,"s_pearson_all":0.84423,"g_pearson_all":0.97023,"s_pearson_rare":0.75663,"g_pearson_rare":0.95161,"s_r2_all":0.43291,"g_r2_all":0.62425,"s_r2_rare":0.18968,"g_r2_rare":0.50824,"s_rmse_all":0.01271,"g_rmse_all":0.00848,"s_rmse_rare":0.02111,"g_rmse_rare":0.00961},{"id":"l1_03","group":"l1","label":"L1 · λ=0.3","density":0.14,"s_pearson_all":0.84772,"g_pearson_all":0.97135,"s_pearson_rare":0.75642,"g_pearson_rare":0.95292,"s_r2_all":0.4626,"g_r2_all":0.63132,"s_r2_rare":0.18556,"g_r2_rare":0.53169,"s_rmse_all":0.0127,"g_rmse_all":0.00844,"s_rmse_rare":0.02073,"g_rmse_rare":0.00937},{"id":"l1_05","group":"l1","label":"L1 · λ=0.5","density":0.09,"s_pearson_all":0.84199,"g_pearson_all":0.97261,"s_pearson_rare":0.75509,"g_pearson_rare":0.95498,"s_r2_all":0.47768,"g_r2_all":0.65141,"s_r2_rare":0.15023,"g_r2_rare":0.55809,"s_rmse_all":0.0129,"g_rmse_all":0.00821,"s_rmse_rare":0.02039,"g_rmse_rare":0.0091},{"id":"irm_iht50","group":"irmiht","label":"IRM + IHT · 50%","density":0.5,"s_pearson_all":0.85419,"g_pearson_all":0.97451,"s_pearson_rare":0.76249,"g_pearson_rare":0.9607,"s_r2_all":0.48875,"g_r2_all":0.80675,"s_r2_rare":0.26872,"g_r2_rare":0.74693,"s_rmse_all":0.0103,"g_rmse_all":0.0059,"s_rmse_rare":0.01752,"g_rmse_rare":0.00688},{"id":"irm_iht10","group":"irmiht","label":"IRM + IHT · 10%","density":0.1,"s_pearson_all":0.84736,"g_pearson_all":0.97648,"s_pearson_rare":0.7621,"g_pearson_rare":0.96205,"s_r2_all":0.51105,"g_r2_all":0.83316,"s_r2_rare":0.31991,"g_r2_rare":0.77287,"s_rmse_all":0.01016,"g_rmse_all":0.00546,"s_rmse_rare":0.01704,"g_rmse_rare":0.00647},{"id":"irm_iht07","group":"irmiht","label":"IRM + IHT · 7%","density":0.07,"s_pearson_all":0.84588,"g_pearson_all":0.97758,"s_pearson_rare":0.76502,"g_pearson_rare":0.96434,"s_r2_all":0.51069,"g_r2_all":0.82431,"s_r2_rare":0.31443,"g_r2_rare":0.76963,"s_rmse_all":0.01022,"g_rmse_all":0.00552,"s_rmse_rare":0.01711,"g_rmse_rare":0.00649},{"id":"irm_l1_02","group":"irml1","label":"IRM + L1 · λ=0.2","density":0.22,"s_pearson_all":0.85137,"g_pearson_all":0.97591,"s_pearson_rare":0.76878,"g_pearson_rare":0.96244,"s_r2_all":0.50367,"g_r2_all":0.8258,"s_r2_rare":0.32655,"g_r2_rare":0.76593,"s_rmse_all":0.01019,"g_rmse_all":0.00563,"s_rmse_rare":0.017,"g_rmse_rare":0.00654},{"id":"irm_l1_03","group":"irml1","label":"IRM + L1 · λ=0.3","density":0.14,"s_pearson_all":0.84878,"g_pearson_all":0.97769,"s_pearson_rare":0.7641,"g_pearson_rare":0.96331,"s_r2_all":0.51606,"g_r2_all":0.8403,"s_r2_rare":0.32164,"g_r2_rare":0.79286,"s_rmse_all":0.01028,"g_rmse_all":0.00527,"s_rmse_rare":0.01676,"g_rmse_rare":0.00619},{"id":"irm_l1_05","group":"irml1","label":"IRM + L1 · λ=0.5","density":0.09,"s_pearson_all":0.84855,"g_pearson_all":0.97796,"s_pearson_rare":0.76239,"g_pearson_rare":0.96322,"s_r2_all":0.51457,"g_r2_all":0.84837,"s_r2_rare":0.30712,"g_r2_rare":0.80151,"s_rmse_all":0.01033,"g_rmse_all":0.00522,"s_rmse_rare":0.01664,"g_rmse_rare":0.00606},{"id":"iht10_sgd","group":"dead","label":"IHT 10% · SGD (inert)","s_pearson_all":0.84501,"g_pearson_all":0.97413,"s_pearson_rare":0.75379,"g_pearson_rare":0.9564,"s_r2_all":0.27172,"g_r2_all":0.67412,"s_r2_rare":-0.14741,"g_r2_rare":0.59066,"s_rmse_all":0.01294,"g_rmse_all":0.00801,"s_rmse_rare":0.02304,"g_rmse_rare":0.00881},{"id":"xm2","group":"xmk2","label":"XM K=2 · centralized","marker":"square","s_pearson_all":0.83175,"g_pearson_all":0.97917,"s_pearson_rare":0.74542,"g_pearson_rare":0.96945,"s_r2_all":0.41151,"g_r2_all":0.80899,"s_r2_rare":0.1592,"g_r2_rare":0.81165,"s_rmse_all":0.01391,"g_rmse_all":0.0068,"s_rmse_rare":0.01968,"g_rmse_rare":0.00602},{"id":"xm4","group":"xmk4","label":"XM K=4 · centralized","marker":"square","s_pearson_all":0.84827,"g_pearson_all":0.97134,"s_pearson_rare":0.77164,"g_pearson_rare":0.95285,"s_r2_all":0.56951,"g_r2_all":0.92296,"s_r2_rare":0.29593,"g_r2_rare":0.88157,"s_rmse_all":0.01086,"g_rmse_all":0.00424,"s_rmse_rare":0.01547,"g_rmse_rare":0.00468},{"id":"xm8","group":"xmk8","label":"XM K=8 · centralized","marker":"square","s_pearson_all":0.82761,"g_pearson_all":0.95422,"s_pearson_rare":0.72814,"g_pearson_rare":0.92866,"s_r2_all":-0.00046,"g_r2_all":0.49942,"s_r2_rare":-0.34879,"g_r2_rare":0.38877,"s_rmse_all":0.01595,"g_rmse_all":0.01094,"s_rmse_rare":0.02532,"g_rmse_rare":0.01079},{"id":"xm8_fedavg","group":"xmk8","label":"XM K=8 · fedavg","marker":"square","s_pearson_all":0.8174,"g_pearson_all":0.95842,"s_pearson_rare":0.73652,"g_pearson_rare":0.94001,"s_r2_all":0.53965,"g_r2_all":0.9069,"s_r2_rare":0.34071,"g_r2_rare":0.8575,"s_rmse_all":0.00988,"g_rmse_all":0.0047,"s_rmse_rare":0.01365,"g_rmse_rare":0.00517},{"id":"do03_only","group":"dropout","label":"dropout 0.3 only (no XM)","marker":"square","s_pearson_all":0.8446,"g_pearson_all":0.99038,"s_pearson_rare":0.75743,"g_pearson_rare":0.98463,"s_r2_all":0.49635,"g_r2_all":0.92348,"s_r2_rare":0.29928,"g_r2_rare":0.91135,"s_rmse_all":0.01235,"g_rmse_all":0.00424,"s_rmse_rare":0.01785,"g_rmse_rare":0.00413},{"id":"do01_only","group":"dropout","label":"dropout 0.1 only (no XM)","marker":"square","s_pearson_all":0.84557,"g_pearson_all":0.98177,"s_pearson_rare":0.75111,"g_pearson_rare":0.97038,"s_r2_all":-0.35235,"g_r2_all":0.35984,"s_r2_rare":-0.668,"g_r2_rare":0.26909,"s_rmse_all":0.01641,"g_rmse_all":0.01198,"s_rmse_rare":0.02512,"g_rmse_rare":0.01182},{"id":"do01_cent_k4","group":"xmk4","label":"XM K=4 · do 0.1 · centralized","marker":"square","s_pearson_all":0.82599,"g_pearson_all":0.97208,"s_pearson_rare":0.72877,"g_pearson_rare":0.95369,"s_r2_all":-2.03015,"g_r2_all":-0.73675,"s_r2_rare":-2.66723,"g_r2_rare":-0.99959,"s_rmse_all":0.025,"g_rmse_all":0.02034,"s_rmse_rare":0.03723,"g_rmse_rare":0.01972},{"id":"do01_fed_k4","group":"xmk4","label":"XM K=4 · do 0.1 · fedavg","marker":"square","s_pearson_all":0.79485,"g_pearson_all":0.94703,"s_pearson_rare":0.71051,"g_pearson_rare":0.92221,"s_r2_all":0.5117,"g_r2_all":0.85108,"s_r2_rare":0.25152,"g_r2_rare":0.76051,"s_rmse_all":0.01041,"g_rmse_all":0.00609,"s_rmse_rare":0.01394,"g_rmse_rare":0.00671},{"id":"do01_fed_irm","group":"xmirm","label":"IRM ρ=10² + XM K=4 · fedavg","marker":"square","s_pearson_all":0.83689,"g_pearson_all":0.97314,"s_pearson_rare":0.74206,"g_pearson_rare":0.95546,"s_r2_all":0.59071,"g_r2_all":0.94276,"s_r2_rare":0.37605,"g_r2_rare":0.90919,"s_rmse_all":0.00918,"g_rmse_all":0.00337,"s_rmse_rare":0.01462,"g_rmse_rare":0.00413},{"id":"lat_cent","group":"latent","label":"latent z=16 \u00b7 centralized","marker":"square","s_pearson_all":0.70241,"s_pearson_rare":0.56989,"s_r2_all":-23.01013,"s_r2_rare":-39.51914,"s_rmse_all":0.06063,"s_rmse_rare":0.10136,"g_pearson_all":0.83634,"g_pearson_rare":0.79155,"g_r2_all":-17.45376,"g_r2_rare":-26.51044,"g_rmse_all":0.06202,"g_rmse_rare":0.07209},{"id":"lat_fed_irm","group":"latent","label":"latent z=16 + IRM \u00b7 fedavg","marker":"square","s_pearson_all":0.84315,"s_pearson_rare":0.75272,"s_r2_all":0.47403,"s_r2_rare":0.13773,"s_rmse_all":0.0136,"s_rmse_rare":0.02678,"g_pearson_all":0.97258,"g_pearson_rare":0.95475,"g_r2_all":0.94018,"g_r2_rare":0.90694,"g_rmse_all":0.00347,"g_rmse_rare":0.00418},{"id":"lat_lora_ft","group":"latent","label":"latent z=16 + LoRA FT (8 sites)","marker":"square","s_pearson_all":0.88804,"s_pearson_rare":0.82623,"s_r2_all":0.71601,"s_r2_rare":0.51042,"s_rmse_all":0.01117,"s_rmse_rare":0.02272,"g_pearson_all":0.94379,"g_pearson_rare":0.91791,"g_r2_all":0.70353,"g_r2_rare":0.61438,"g_rmse_all":0.00664,"g_rmse_rare":0.00735},{"id":"fed_xm4_do03","group":"xmk4","label":"XM K=4 \u00b7 do 0.3 \u00b7 fedavg","marker":"square","s_pearson_all":0.83593,"s_pearson_rare":0.75075,"s_r2_all":0.46823,"s_r2_rare":0.15091,"s_rmse_all":0.01468,"s_rmse_rare":0.02714,"g_pearson_all":0.9638,"g_pearson_rare":0.94576,"g_r2_all":0.91971,"g_r2_rare":0.88481,"g_rmse_all":0.00418,"g_rmse_rare":0.00466}];
+
+const NS = "http://www.w3.org/2000/svg";
+const FAM = {
+  baseline: {label: "no fine-tuning", on: true},
+  irmreg:   {label: "IRM during training", on: true},
+  ft2:      {label: "fine-tuned · 2 epochs", on: false},
+  ft20:     {label: "fine-tuned · 20 epochs", on: false},
+  irmft:    {label: "IRM trunk + LoRA / full", on: true},
+  iht:      {label: "sparse IHT · plain trunk", on: false},
+  l1:       {label: "sparse L1 · plain trunk", on: false},
+  irmiht:   {label: "sparse IHT · IRM trunk", on: false},
+  irml1:    {label: "sparse L1 · IRM trunk", on: false},
+  dropout:  {label: "dropout only · K=1 (control)", on: true},
+  xmk2:     {label: "best-of-K · K=2", on: false},
+  xmk4:     {label: "best-of-K · K=4", on: true},
+  xmk8:     {label: "best-of-K · K=8", on: false},
+  xmirm:    {label: "IRM trunk + best-of-K", on: false},
+  latent:   {label: "structured latent z=16", on: false},
+  dead:     {label: "SGD arm (inert)", on: false},
+};
+const COL = g => `var(--g-${g})`;
+const METRIC = {
+  pearson: {label: "Pearson", better: "high", dp: 3,
+    blurb: "Correlation between synthetic and real prevalence across codes. Scale-invariant, so it cannot see an arm emitting the wrong overall volume — which is exactly where these methods act."},
+  r2: {label: "R² vs identity", better: "high", dp: 3, floor: -1.5,
+    blurb: "Fit against the identity line, so unlike Pearson it punishes being wrong in ABSOLUTE prevalence. Negative means worse than predicting the mean."},
+  rmse: {label: "RMSE", better: "low", dp: 4,
+    blurb: "Root mean squared prevalence error. Lower is better, so the good corner of the scatter flips to the bottom-left."},
+};
+let metric = "pearson", codeSet = "all";
+const shown = new Set(Object.keys(FAM).filter(k => FAM[k].on));
+const vis = () => PTS.filter(p => shown.has(p.group));
+const raw = (p, side) => p[`${side}_${metric}_${codeSet}`];
+// centralized scores R² = -55 against the identity line. Plotted honestly it
+// would compress every other arm into a single pixel row, so it is pinned to a
+// floor and its true value is carried in the label instead of being hidden.
+const clamp = v => { const f = METRIC[metric].floor;
+                     return (f != null && v < f) ? f : v; };
+const isClamped = p => clamp(raw(p, "s")) !== raw(p, "s")
+                    || clamp(raw(p, "g")) !== raw(p, "g");
+const gx = p => clamp(raw(p, "g"));
+const gy = p => clamp(raw(p, "s"));
+const fmt = v => v.toFixed(METRIC[metric].dp);
+
+function el(n, at, tx) {
+  const e = document.createElementNS(NS, n);
+  for (const k in at) e.setAttribute(k, at[k]);
+  if (tx != null) e.textContent = tx;
+  return e;
+}
+
+// Axis helper: a nice-ish tick step for whatever span the current metric has.
+function ticks(lo, hi) {
+  const span = hi - lo;
+  const step = span > 1.5 ? 0.5 : span > 0.45 ? 0.1 : span > 0.08 ? 0.02
+             : span > 0.02 ? 0.005 : 0.002;
+  const out = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step)
+    out.push(Math.round(v / step) * step);
+  return out;
+}
+
+function marker(g, cx, cy, p, r) {
+  r = r || 6.5;
+  const c = COL(p.group), hollow = p.group === "baseline";
+  // A square flags the one family that CHANGED THE MODEL: these carry
+  // dropout 0.3, which nothing else on this page does, so they differ from
+  // every other point in two ways rather than one.
+  if (p.marker === "square") {
+    g.appendChild(el("rect", {x: cx - r, y: cy - r, width: 2 * r, height: 2 * r,
+      rx: 2, fill: c, stroke: "var(--surface)", "stroke-width": 1.8}));
+    return;
+  }
+  g.appendChild(el("circle", {cx, cy, r,
+    fill: hollow ? "var(--surface)" : c,
+    stroke: hollow ? c : "var(--surface)", "stroke-width": hollow ? 2.5 : 1.8}));
+}
+
+function drawSG() {
+  const svg = document.getElementById("sg");
+  svg.textContent = "";
+  const W = 860, H = 600, m = {t: 20, r: 150, b: 56, l: 70};
+  const V = vis();
+  // Domain over EVERY point, not the visible ones: toggling a family off must
+  // not rescale the axes underneath the points that stayed. Otherwise two arms
+  // appear to move relative to the grid when all that changed is what else is
+  // on screen, and comparing across toggle states becomes impossible.
+  const xs = PTS.map(gx), ys = PTS.map(gy);
+  const lo = Math.min(...xs, ...ys), hi = Math.max(...xs, ...ys);
+  const pad = (hi - lo) * 0.14 || 0.02;
+  const d0 = lo - pad, d1 = hi + pad;
+  const sx = v => m.l + (v - d0) / (d1 - d0) * (W - m.l - m.r);
+  const sy = v => H - m.b - (v - d0) / (d1 - d0) * (H - m.t - m.b);
+
+  for (const t of ticks(d0, d1)) {
+    svg.appendChild(el("line", {x1: sx(t), y1: m.t, x2: sx(t), y2: H - m.b,
+      stroke: "var(--grid)", "stroke-width": 1}));
+    svg.appendChild(el("line", {x1: m.l, y1: sy(t), x2: W - m.r, y2: sy(t),
+      stroke: "var(--grid)", "stroke-width": 1}));
+    svg.appendChild(el("text", {x: sx(t), y: H - m.b + 18, "text-anchor": "middle",
+      class: "tick"}, fmt(t)));
+    svg.appendChild(el("text", {x: m.l - 9, y: sy(t) + 3.5, "text-anchor": "end",
+      class: "tick"}, fmt(t)));
+  }
+  // y = x: where a generator serves its own site exactly as well as the cohort.
+  svg.appendChild(el("line", {x1: sx(d0), y1: sy(d0), x2: sx(d1), y2: sy(d1),
+    stroke: "var(--rule)", "stroke-width": 1.5, "stroke-dasharray": "5 5"}));
+
+  const M = METRIC[metric], dir = M.better === "high" ? "→ better" : "← better";
+  svg.appendChild(el("text", {x: (m.l + W - m.r) / 2, y: H - 14,
+    "text-anchor": "middle", class: "axis-label"},
+    `Generalist · ${M.label} vs the pooled cohort  (${dir})`));
+  const yl = el("text", {x: 0, y: 0, "text-anchor": "middle", class: "axis-label",
+    transform: `translate(17 ${(m.t + H - m.b) / 2}) rotate(-90)`});
+  yl.textContent = `Specialist · ${M.label} vs each site's own fold  (${dir})`;
+  svg.appendChild(yl);
+
+  // Direct labels beat a shape legend at this point count. Dodge vertically so
+  // near-coincident arms stay readable rather than overprinting.
+  if (!V.length) {
+    svg.appendChild(el("text", {x: (m.l + W - m.r) / 2, y: (m.t + H - m.b) / 2,
+      "text-anchor": "middle", class: "axis-label"},
+      "No families selected \u2014 the axes stay put."));
+  }
+  const placed = V.map(p => ({p, x: sx(gx(p)), y: sy(gy(p))}))
+                  .sort((a, b) => a.y - b.y);
+  let lastY = -1e9;
+  for (const q of placed) {
+    const g = el("g", {});
+    marker(g, q.x, q.y, q.p);
+    const ly = Math.max(q.y + 4, lastY + 13);
+    lastY = ly;
+    const suffix = isClamped(q.p)
+      ? ` (${fmt(raw(q.p, "s"))} / ${fmt(raw(q.p, "g"))}, off-scale)` : "";
+    g.appendChild(el("text", {x: q.x + 11, y: ly, class: "ptlabel"},
+      q.p.label + suffix));
+    const t = el("title", {});
+    t.textContent = `${q.p.label}\nspecialist ${fmt(raw(q.p, "s"))} · generalist ${fmt(raw(q.p, "g"))}`
+      + (isClamped(q.p) ? "\n(pinned to the axis floor)" : "");
+    g.appendChild(t);
+    svg.appendChild(g);
+  }
+
+  const best = V.slice().sort((a, b) => M.better === "high" ? gy(b) - gy(a) : gy(a) - gy(b))[0];
+  document.getElementById("capSG").textContent =
+    `Dashed line is y = x, where a generator serves its own site exactly as well as `
+    + `the pooled cohort. Axes are fixed across every family toggle, so a point never `
+    + `moves unless the metric does. `
+    + (best ? `Best specialist shown: ${best.label} at ${fmt(gy(best))}. ` : "")
+    + M.blurb;
+}
+
+function drawDens() {
+  const svg = document.getElementById("dens");
+  svg.textContent = "";
+  const W = 860, H = 380, m = {t: 18, r: 150, b: 52, l: 70};
+  const V = PTS.filter(p => p.density != null && shown.has(p.group));
+  const trunk = PTS.find(p => p.id === "trunk");   // the adapters' actual starting point
+  // Same rule as the scatter: every sparse point sets the domain whether or not
+  // its family is currently shown, so the curve does not rescale under a toggle.
+  const ALL = PTS.filter(p => p.density != null);
+  const ys = ALL.map(gy).concat(trunk ? [gy(trunk)] : []);
+  const lo = Math.min(...ys), hi = Math.max(...ys);
+  const pad = (hi - lo) * 0.18 || 0.02;
+  const y0 = lo - pad, y1 = hi + pad;
+  // Log x: densities span 0.07 to 0.5, and linear would bunch them all left.
+  const lx = d => Math.log10(d);
+  const x0 = lx(0.05), x1 = lx(0.7);
+  const sx = d => m.l + (lx(d) - x0) / (x1 - x0) * (W - m.l - m.r);
+  const sy = v => H - m.b - (v - y0) / (y1 - y0) * (H - m.t - m.b);
+
+  for (const t of ticks(y0, y1)) {
+    svg.appendChild(el("line", {x1: m.l, y1: sy(t), x2: W - m.r, y2: sy(t),
+      stroke: "var(--grid)", "stroke-width": 1}));
+    svg.appendChild(el("text", {x: m.l - 9, y: sy(t) + 3.5, "text-anchor": "end",
+      class: "tick"}, fmt(t)));
+  }
+  for (const d of [0.07, 0.1, 0.2, 0.5]) {
+    svg.appendChild(el("line", {x1: sx(d), y1: m.t, x2: sx(d), y2: H - m.b,
+      stroke: "var(--grid)", "stroke-width": 1}));
+    svg.appendChild(el("text", {x: sx(d), y: H - m.b + 18, "text-anchor": "middle",
+      class: "tick"}, `${Math.round(d * 100)}%`));
+  }
+  if (trunk) {
+    svg.appendChild(el("line", {x1: m.l, y1: sy(gy(trunk)), x2: W - m.r, y2: sy(gy(trunk)),
+      stroke: COL("trunk"), "stroke-width": 1.5, "stroke-dasharray": "4 4"}));
+    svg.appendChild(el("text", {x: W - m.r + 8, y: sy(gy(trunk)) + 4,
+      class: "ptlabel"}, "no fine-tuning"));
+  }
+  for (const fam of ["iht", "l1", "irmiht", "irml1"]) {
+    const pts = V.filter(p => p.group === fam).sort((a, b) => a.density - b.density);
+    if (pts.length > 1) {
+      svg.appendChild(el("polyline", {
+        points: pts.map(p => `${sx(p.density)},${sy(gy(p))}`).join(" "),
+        fill: "none", stroke: COL(fam), "stroke-width": 1.5, opacity: 0.45}));
+    }
+    for (const p of pts) {
+      const g = el("g", {});
+      marker(g, sx(p.density), sy(gy(p)), p, 6);
+      const t = el("title", {});
+      t.textContent = `${p.label}\nspecialist ${fmt(gy(p))}`;
+      g.appendChild(t);
+      svg.appendChild(g);
+    }
+    if (pts.length) {
+      const last = pts[pts.length - 1];
+      svg.appendChild(el("text", {x: sx(last.density) + 11, y: sy(gy(last)) + 4,
+        class: "ptlabel", fill: COL(fam)}, FAM[fam].label));
+    }
+  }
+  svg.appendChild(el("text", {x: (m.l + W - m.r) / 2, y: H - 12,
+    "text-anchor": "middle", class: "axis-label"},
+    "Trainable density of the last MLP  (log scale, ← sparser)"));
+  const yl = el("text", {x: 0, y: 0, "text-anchor": "middle", class: "axis-label",
+    transform: `translate(17 ${(m.t + H - m.b) / 2}) rotate(-90)`});
+  yl.textContent = `Specialist · ${METRIC[metric].label}`;
+  svg.appendChild(yl);
+  document.getElementById("capD").textContent =
+    metric === "r2"
+      ? "The dose–response is clear on R²: every step sparser gains, and both "
+        + "mechanisms agree at matched density. The L1 x-positions are the MEDIAN density "
+        + "across hospitals — λ cannot fix a density, and the spread behind each "
+        + "point runs from 3% at the largest site to 82% at the smallest."
+      : "On this metric the ladder is flat — switch to R² to see the effect. "
+        + "The L1 x-positions are the median density across hospitals; λ cannot fix a "
+        + "density, and the spread behind each point runs 3% to 82% by site size.";
+}
+
+function table() {
+  const t = document.getElementById("tbl");
+  t.textContent = "";
+  const M = METRIC[metric];
+  const head = el("tr", {});
+  ["arm", "specialist", "generalist", "family"].forEach((h, i) =>
+    head.appendChild(el("th", i > 0 && i < 3 ? {class: "num"} : {}, h)));
+  const thead = el("thead", {}); thead.appendChild(head); t.appendChild(thead);
+  const tb = el("tbody", {});
+  vis().slice().sort((a, b) => M.better === "high" ? gy(b) - gy(a) : gy(a) - gy(b))
+    .forEach(p => {
+      const tr = el("tr", {});
+      tr.appendChild(el("td", {}, p.label));
+      tr.appendChild(el("td", {class: "num"}, fmt(raw(p, "s"))));
+      tr.appendChild(el("td", {class: "num"}, fmt(raw(p, "g"))));
+      tr.appendChild(el("td", {}, FAM[p.group].label));
+      tb.appendChild(tr);
+    });
+  t.appendChild(tb);
+}
+
+function chips() {
+  const box = document.getElementById("chips");
+  box.textContent = "";
+  for (const k of Object.keys(FAM)) {
+    const lab = document.createElement("label");
+    lab.className = "chip";
+    const sw = document.createElement("span");
+    sw.className = "sw"; sw.style.background = COL(k);
+    const cb = document.createElement("input");
+    cb.type = "checkbox"; cb.checked = shown.has(k);
+    cb.addEventListener("change", () => {
+      cb.checked ? shown.add(k) : shown.delete(k);
+      redraw();
+    });
+    lab.appendChild(cb); lab.appendChild(sw);
+    lab.appendChild(document.createTextNode(FAM[k].label));
+    box.appendChild(lab);
+  }
+}
+
+const T2 = {"arms":[{"id":"local","group":"baseline","label":"local-only","regime":"local (per-site)","overall":{"ap_macro":0.009162,"roc_auc_macro":0.460734,"f1_best_macro":0.022668,"f1_prev_macro":0.004855,"lift":1.426,"ceilfrac":25.04},"rare":{"ap_macro":0.004528,"roc_auc_macro":0.454506,"f1_best_macro":0.013119,"f1_prev_macro":0.001372,"lift":2.066,"ceilfrac":31.92}},{"id":"centralized","group":"baseline","label":"centralized","regime":"centralized","overall":{"ap_macro":0.010211,"roc_auc_macro":0.416916,"f1_best_macro":0.022603,"f1_prev_macro":0.005545,"lift":1.59,"ceilfrac":27.91},"rare":{"ap_macro":0.005234,"roc_auc_macro":0.409709,"f1_best_macro":0.012651,"f1_prev_macro":0.001696,"lift":2.388,"ceilfrac":36.9}},{"id":"fedavg","group":"baseline","label":"fedavg","regime":"fedavg","overall":{"ap_macro":0.009206,"roc_auc_macro":0.478792,"f1_best_macro":0.023403,"f1_prev_macro":0.00528,"lift":1.433,"ceilfrac":25.16},"rare":{"ap_macro":0.004005,"roc_auc_macro":0.468864,"f1_best_macro":0.012608,"f1_prev_macro":0.000528,"lift":1.827,"ceilfrac":28.24}},{"id":"trunk","group":"baseline","label":"trunk (40-round global)","regime":"fedavg + per-site FT","overall":{"ap_macro":0.00995,"roc_auc_macro":0.490515,"f1_best_macro":0.024521,"f1_prev_macro":0.005738,"lift":1.549,"ceilfrac":27.2},"rare":{"ap_macro":0.004518,"roc_auc_macro":0.480493,"f1_best_macro":0.013387,"f1_prev_macro":0.000635,"lift":2.061,"ceilfrac":31.85}},{"id":"irm_full_ft","group":"irmft","label":"IRM + full fine-tune","regime":"fedavg + per-site FT","overall":{"ap_macro":0.008917,"roc_auc_macro":0.449878,"f1_best_macro":0.022345,"f1_prev_macro":0.004305,"lift":1.388,"ceilfrac":24.37},"rare":{"ap_macro":0.004504,"roc_auc_macro":0.442929,"f1_best_macro":0.013072,"f1_prev_macro":0.001212,"lift":2.055,"ceilfrac":31.75}},{"id":"irm_lora_attn","group":"irmft","label":"IRM + LoRA attention","regime":"fedavg + per-site FT","overall":{"ap_macro":0.009777,"roc_auc_macro":0.475953,"f1_best_macro":0.024438,"f1_prev_macro":0.006307,"lift":1.522,"ceilfrac":26.72},"rare":{"ap_macro":0.004407,"roc_auc_macro":0.465923,"f1_best_macro":0.01348,"f1_prev_macro":0.000915,"lift":2.011,"ceilfrac":31.07}},{"id":"irm_lora_head","group":"irmft","label":"IRM + LoRA head","regime":"fedavg + per-site FT","overall":{"ap_macro":0.009681,"roc_auc_macro":0.47515,"f1_best_macro":0.023979,"f1_prev_macro":0.005994,"lift":1.507,"ceilfrac":26.46},"rare":{"ap_macro":0.004438,"roc_auc_macro":0.466081,"f1_best_macro":0.013256,"f1_prev_macro":0.001005,"lift":2.025,"ceilfrac":31.29}},{"id":"l1_02","group":"l1","label":"L1 \u00b7 \u03bb=0.2","regime":"fedavg + per-site FT","overall":{"ap_macro":0.009455,"roc_auc_macro":0.475148,"f1_best_macro":0.02333,"f1_prev_macro":0.00539,"lift":1.472,"ceilfrac":25.84},"rare":{"ap_macro":0.004454,"roc_auc_macro":0.46698,"f1_best_macro":0.013125,"f1_prev_macro":0.001063,"lift":2.032,"ceilfrac":31.4}},{"id":"l1_03","group":"l1","label":"L1 \u00b7 \u03bb=0.3","regime":"fedavg + per-site FT","overall":{"ap_macro":0.009397,"roc_auc_macro":0.472709,"f1_best_macro":0.023317,"f1_prev_macro":0.005234,"lift":1.463,"ceilfrac":25.69},"rare":{"ap_macro":0.004381,"roc_auc_macro":0.463562,"f1_best_macro":0.013023,"f1_prev_macro":0.000991,"lift":1.999,"ceilfrac":30.89}},{"id":"l1_05","group":"l1","label":"L1 \u00b7 \u03bb=0.5","regime":"fedavg + per-site FT","overall":{"ap_macro":0.00954,"roc_auc_macro":0.478957,"f1_best_macro":0.023904,"f1_prev_macro":0.005522,"lift":1.485,"ceilfrac":26.08},"rare":{"ap_macro":0.004268,"roc_auc_macro":0.469402,"f1_best_macro":0.013055,"f1_prev_macro":0.000706,"lift":1.947,"ceilfrac":30.09}},{"id":"xm2","group":"xmk2","label":"XM K=2 \u00b7 centralized","regime":"centralized","overall":{"ap_macro":0.009765,"roc_auc_macro":0.458461,"f1_best_macro":0.024669,"f1_prev_macro":0.005443,"lift":1.52,"ceilfrac":26.69},"rare":{"ap_macro":0.0048,"roc_auc_macro":0.444973,"f1_best_macro":0.014569,"f1_prev_macro":0.001927,"lift":2.19,"ceilfrac":33.84}},{"id":"xm4","group":"xmk4","label":"XM K=4 \u00b7 centralized","regime":"centralized","overall":{"ap_macro":0.013905,"roc_auc_macro":0.513625,"f1_best_macro":0.031513,"f1_prev_macro":0.012517,"lift":2.165,"ceilfrac":38.01},"rare":{"ap_macro":0.005169,"roc_auc_macro":0.495534,"f1_best_macro":0.015795,"f1_prev_macro":0.000461,"lift":2.358,"ceilfrac":36.44}},{"id":"xm8","group":"xmk8","label":"XM K=8 \u00b7 centralized","regime":"centralized","overall":{"ap_macro":0.012752,"roc_auc_macro":0.522673,"f1_best_macro":0.030633,"f1_prev_macro":0.01117,"lift":1.985,"ceilfrac":34.86},"rare":{"ap_macro":0.004887,"roc_auc_macro":0.504676,"f1_best_macro":0.014835,"f1_prev_macro":0.000712,"lift":2.229,"ceilfrac":34.45}},{"id":"xm8_fedavg","group":"xmk8","label":"XM K=8 \u00b7 fedavg","regime":"fedavg","overall":{"ap_macro":0.00824,"roc_auc_macro":0.429045,"f1_best_macro":0.021246,"f1_prev_macro":0.003926,"lift":1.283,"ceilfrac":22.52},"rare":{"ap_macro":0.003855,"roc_auc_macro":0.423194,"f1_best_macro":0.01226,"f1_prev_macro":0.000339,"lift":1.759,"ceilfrac":27.18}},{"id":"do03_only","group":"dropout","label":"dropout 0.3 only (no XM)","regime":"centralized","overall":{"ap_macro":0.010652,"roc_auc_macro":0.484177,"f1_best_macro":0.025966,"f1_prev_macro":0.007274,"lift":1.658,"ceilfrac":29.12},"rare":{"ap_macro":0.004532,"roc_auc_macro":0.469233,"f1_best_macro":0.013572,"f1_prev_macro":0.000556,"lift":2.068,"ceilfrac":31.95}},{"id":"do01_only","group":"dropout","label":"dropout 0.1 only (no XM)","regime":"centralized","overall":{"ap_macro":0.009864,"roc_auc_macro":0.502289,"f1_best_macro":0.024653,"f1_prev_macro":0.004656,"lift":1.536,"ceilfrac":26.96},"rare":{"ap_macro":0.004625,"roc_auc_macro":0.492765,"f1_best_macro":0.013975,"f1_prev_macro":0.000431,"lift":2.11,"ceilfrac":32.61}},{"id":"do01_fed_irm","group":"xmirm","label":"IRM \u03c1=10\u00b2 + XM K=4 \u00b7 fedavg","regime":"fedavg","overall":{"ap_macro":0.009453,"roc_auc_macro":0.478738,"f1_best_macro":0.024391,"f1_prev_macro":0.006248,"lift":1.472,"ceilfrac":25.84},"rare":{"ap_macro":0.004461,"roc_auc_macro":0.469374,"f1_best_macro":0.014197,"f1_prev_macro":0.001186,"lift":2.035,"ceilfrac":31.45}},{"id":"lat_cent","group":"latent","label":"latent z=16 \u00b7 centralized","regime":"centralized","overall":{"ap_macro":0.008969,"roc_auc_macro":0.411723,"f1_best_macro":0.022392,"f1_prev_macro":0.005437,"lift":1.396,"ceilfrac":24.52},"rare":{"ap_macro":0.004758,"roc_auc_macro":0.411039,"f1_best_macro":0.013999,"f1_prev_macro":0.002622,"lift":2.171,"ceilfrac":33.54}},{"id":"lat_fed_irm","group":"latent","label":"latent z=16 + IRM \u00b7 fedavg","regime":"fedavg","overall":{"ap_macro":0.011382,"roc_auc_macro":0.498932,"f1_best_macro":0.028089,"f1_prev_macro":0.009739,"lift":1.772,"ceilfrac":31.11},"rare":{"ap_macro":0.004778,"roc_auc_macro":0.487539,"f1_best_macro":0.015166,"f1_prev_macro":0.001489,"lift":2.18,"ceilfrac":33.69}},{"id":"lat_lora_ft","group":"latent","label":"latent z=16 + LoRA FT (8 sites)","regime":"fedavg + per-site FT","overall":{"ap_macro":0.010019,"roc_auc_macro":0.472184,"f1_best_macro":0.024865,"f1_prev_macro":0.006596,"lift":1.56,"ceilfrac":27.39},"rare":{"ap_macro":0.004636,"roc_auc_macro":0.462649,"f1_best_macro":0.014007,"f1_prev_macro":0.001456,"lift":2.115,"ceilfrac":32.68}},{"id":"fed_xm4_do03","group":"xmk4","label":"XM K=4 \u00b7 dropout 0.3","regime":"fedavg","overall":{"ap_macro":0.010291,"roc_auc_macro":0.459956,"f1_best_macro":0.024295,"f1_prev_macro":0.006464,"lift":1.602,"ceilfrac":28.13},"rare":{"ap_macro":0.005093,"roc_auc_macro":0.446469,"f1_best_macro":0.013363,"f1_prev_macro":0.001694,"lift":2.323,"ceilfrac":35.91}},{"id":"do01_fed_k4","group":"xmk4","label":"XM K=4 \u00b7 dropout 0.1","regime":"fedavg","overall":{"ap_macro":0.007808,"roc_auc_macro":0.435599,"f1_best_macro":0.020943,"f1_prev_macro":0.003613,"lift":1.216,"ceilfrac":21.34},"rare":{"ap_macro":0.003892,"roc_auc_macro":0.436029,"f1_best_macro":0.012457,"f1_prev_macro":0.000782,"lift":1.776,"ceilfrac":27.44}}],"refs":{"prior":{"label":"base-rate guessing","overall":{"ap_macro":0.006423,"roc_auc_macro":0.5,"f1_best_macro":0.012409,"f1_prev_macro":0.012409,"lift":1.0,"ceilfrac":17.56},"rare":{"ap_macro":0.002192,"roc_auc_macro":0.5,"f1_best_macro":0.004366,"f1_prev_macro":0.004366,"lift":1.0,"ceilfrac":15.45}},"real_local":{"label":"one site's own real records","overall":{"ap_macro":0.007872,"roc_auc_macro":0.398683,"f1_best_macro":0.021381,"f1_prev_macro":0.003729,"lift":1.226,"ceilfrac":21.52},"rare":{"ap_macro":0.004485,"roc_auc_macro":0.405094,"f1_best_macro":0.013451,"f1_prev_macro":0.001468,"lift":2.046,"ceilfrac":31.62}},"real_pooled":{"label":"all eight sites' real records","overall":{"ap_macro":0.036584,"roc_auc_macro":0.665388,"f1_best_macro":0.070861,"f1_prev_macro":0.04117,"lift":5.696,"ceilfrac":100.0},"rare":{"ap_macro":0.014184,"roc_auc_macro":0.643024,"f1_best_macro":0.039338,"f1_prev_macro":0.013214,"lift":6.471,"ceilfrac":100.0}}}};
+const T2H = {"arms":[{"id":"centralized","group":"baseline","label":"centralized","regime":"centralized","overall":{"ap_macro":0.044966,"roc_auc_macro":0.470223,"f1_best_macro":0.081054,"f1_prev_macro":0.038591,"sd_auc":0.0141,"lift":1.527,"ceilfrac":29.65},"rare":{"ap_macro":0.044966,"roc_auc_macro":0.470223,"f1_best_macro":0.081054,"f1_prev_macro":0.038591,"sd_auc":0.0141,"lift":1.527,"ceilfrac":29.65}},{"id":"fedavg","group":"baseline","label":"fedavg","regime":"fedavg","overall":{"ap_macro":0.044147,"roc_auc_macro":0.541791,"f1_best_macro":0.089164,"f1_prev_macro":0.053817,"sd_auc":0.0053,"lift":1.499,"ceilfrac":29.11},"rare":{"ap_macro":0.044147,"roc_auc_macro":0.541791,"f1_best_macro":0.089164,"f1_prev_macro":0.053817,"sd_auc":0.0053,"lift":1.499,"ceilfrac":29.11}},{"id":"fedavg_irm100","group":"irmreg","label":"fedavg + IRM \u03c1=100","regime":"fedavg","overall":{"ap_macro":0.044147,"roc_auc_macro":0.547475,"f1_best_macro":0.09272,"f1_prev_macro":0.051949,"sd_auc":0.0144,"lift":1.499,"ceilfrac":29.11},"rare":{"ap_macro":0.044147,"roc_auc_macro":0.547475,"f1_best_macro":0.09272,"f1_prev_macro":0.051949,"sd_auc":0.0144,"lift":1.499,"ceilfrac":29.11}},{"id":"xm4","group":"xmk4","label":"XM K=4 \u00b7 dropout 0.3","regime":"centralized","overall":{"ap_macro":0.064967,"roc_auc_macro":0.636849,"f1_best_macro":0.123978,"f1_prev_macro":0.082329,"sd_auc":0.013,"lift":2.206,"ceilfrac":42.84},"rare":{"ap_macro":0.064967,"roc_auc_macro":0.636849,"f1_best_macro":0.123978,"f1_prev_macro":0.082329,"sd_auc":0.013,"lift":2.206,"ceilfrac":42.84}},{"id":"do03_only","group":"dropout","label":"dropout 0.3 only (K=1)","regime":"centralized","overall":{"ap_macro":0.04771,"roc_auc_macro":0.578085,"f1_best_macro":0.099712,"f1_prev_macro":0.055424,"sd_auc":0.0098,"lift":1.62,"ceilfrac":31.46},"rare":{"ap_macro":0.04771,"roc_auc_macro":0.578085,"f1_best_macro":0.099712,"f1_prev_macro":0.055424,"sd_auc":0.0098,"lift":1.62,"ceilfrac":31.46}},{"id":"lat_fed_irm","group":"latent","label":"latent z=16 + IRM + XM","regime":"fedavg","overall":{"ap_macro":0.048774,"roc_auc_macro":0.568355,"f1_best_macro":0.10269,"f1_prev_macro":0.058254,"sd_auc":0.0072,"lift":1.656,"ceilfrac":32.16},"rare":{"ap_macro":0.048774,"roc_auc_macro":0.568355,"f1_best_macro":0.10269,"f1_prev_macro":0.058254,"sd_auc":0.0072,"lift":1.656,"ceilfrac":32.16}},{"id":"fed_xm4_do03","group":"xmk4","label":"XM K=4 \u00b7 dropout 0.3","regime":"fedavg","overall":{"ap_macro":0.047073,"roc_auc_macro":0.556935,"f1_best_macro":0.091821,"f1_prev_macro":0.053373,"sd_auc":0.0072,"lift":1.601,"ceilfrac":31.05},"rare":{"ap_macro":0.047073,"roc_auc_macro":0.556935,"f1_best_macro":0.091821,"f1_prev_macro":0.053373,"sd_auc":0.0072,"lift":1.601,"ceilfrac":31.05}},{"id":"xm8_fedavg","group":"xmk8","label":"XM K=8 \u00b7 dropout 0.3","regime":"fedavg","overall":{"ap_macro":0.043834,"roc_auc_macro":0.537963,"f1_best_macro":0.089133,"f1_prev_macro":0.047656,"sd_auc":0.0094,"lift":1.491,"ceilfrac":28.91},"rare":{"ap_macro":0.043834,"roc_auc_macro":0.537963,"f1_best_macro":0.089133,"f1_prev_macro":0.047656,"sd_auc":0.0094,"lift":1.491,"ceilfrac":28.91}},{"id":"do01_fed_k4","group":"xmk4","label":"XM K=4 \u00b7 dropout 0.1","regime":"fedavg","overall":{"ap_macro":0.045037,"roc_auc_macro":0.536978,"f1_best_macro":0.09219,"f1_prev_macro":0.052235,"sd_auc":0.0094,"lift":1.532,"ceilfrac":29.71},"rare":{"ap_macro":0.045037,"roc_auc_macro":0.536978,"f1_best_macro":0.09219,"f1_prev_macro":0.052235,"sd_auc":0.0094,"lift":1.532,"ceilfrac":29.71}}],"refs":{"prior":{"label":"base-rate guessing","overall":{"ap_macro":0.029447,"roc_auc_macro":0.5,"f1_best_macro":0.055601,"f1_prev_macro":0.055601,"sd_auc":0.0,"lift":1.0,"ceilfrac":19.42},"rare":{"ap_macro":0.029447,"roc_auc_macro":0.5,"f1_best_macro":0.055601,"f1_prev_macro":0.055601,"sd_auc":0.0,"lift":1.0,"ceilfrac":19.42}},"real_local":{"label":"one site's own real records","overall":{"ap_macro":0.030221,"roc_auc_macro":0.416833,"f1_best_macro":0.067211,"f1_prev_macro":0.021262,"sd_auc":0.0206,"lift":1.026,"ceilfrac":19.93},"rare":{"ap_macro":0.030221,"roc_auc_macro":0.416833,"f1_best_macro":0.067211,"f1_prev_macro":0.021262,"sd_auc":0.0206,"lift":1.026,"ceilfrac":19.93}},"real_pooled":{"label":"all eight sites' real records","overall":{"ap_macro":0.151643,"roc_auc_macro":0.787207,"f1_best_macro":0.235777,"f1_prev_macro":0.190368,"sd_auc":0.0042,"lift":5.15,"ceilfrac":100.0},"rare":{"ap_macro":0.151643,"roc_auc_macro":0.787207,"f1_best_macro":0.235777,"f1_prev_macro":0.190368,"sd_auc":0.0042,"lift":5.15,"ceilfrac":100.0}}}};
+
+let t2scope = "rare", t2metric = "ap_macro";
+
+// What each Test 2 metric is for. AP is the honest default at 0.3% prevalence;
+// the two derived views rescale it against anchors that mean something, rather
+// than making the numbers look better for their own sake.
+const T2M = {
+  ap_macro: {label: "Average precision", dp: 4,
+    blurb: "Area under the precision-recall curve, averaged over codes. The floor is a code's prevalence, not zero -- base-rate guessing scores 0.0022 here, so read every value against that."},
+  lift: {label: "Lift over guessing", dp: 2,
+    blurb: "The same AP divided by the base-rate floor. 1.0x is guessing; pooled real data reaches 6.5x. Identical ordering to AP, on a scale where the numbers carry meaning."},
+  ceilfrac: {label: "% of real pooled data", dp: 1,
+    blurb: "AP as a percentage of what a classifier trained on all eight sites' REAL records achieves. This is the question the project is actually asking: how much of real data does the synthetic set replace?"},
+  roc_auc_macro: {label: "ROC-AUC", dp: 3,
+    blurb: "Flattering and largely uninformative at this prevalence. Negatives swamp the ranking, so the range compresses into 0.50-0.64 and a model can look respectable while its precision is near nil. Note several arms fall BELOW 0.5 here while scoring well on AP."},
+  f1_best_macro: {label: "F1 at best threshold", dp: 4,
+    blurb: "F1 at whichever threshold suits each code best. Optimistic -- the threshold is picked after seeing the answers."},
+  f1_prev_macro: {label: "F1 at the prevalence threshold", dp: 4,
+    blurb: "F1 with the threshold fixed at each code's base rate. Less flattering than the tuned version, and closer to how a model would actually be operated."},
+};
+
+function drawT2() {
+  const svg = document.getElementById("t2");
+  svg.textContent = "";
+  const W = 860, H = 520, m = {t: 16, r: 210, b: 44, l: 210};
+  const M = T2M[t2metric];
+  const head = t2scope === "head";
+  // The head-code run scored ONE fixed set of six arms, so there is nothing to
+  // filter -- hiding a family here would just blank the panel. The tail panel
+  // still follows the family checkboxes, which cover all 14 of its arms.
+  const src = head ? T2H : T2;
+  const val = o => o[head ? "overall" : t2scope][t2metric];
+  const rows = (head ? src.arms.slice()
+                     : src.arms.filter(a => shown.has(a.group)).slice())
+                 .sort((a, b) => val(b) - val(a));
+  const refs = src.refs;
+  // Domain over EVERY arm and every reference, fixed across toggles -- same
+  // rule as the scatter, so a bar never changes length because something else
+  // was hidden.
+  const all = src.arms.map(val).concat(Object.values(refs).map(val));
+  const lo = Math.min(0, ...all), hi = Math.max(...all) * 1.08;
+  const sx = v => m.l + ((v - lo) / (hi - lo)) * (W - m.l - m.r);
+  const bh = rows.length ? Math.min(24, (H - m.t - m.b) / rows.length - 4) : 20;
+  const fmt = v => v.toFixed(M.dp);
+
+  const step = (hi - lo) > 5 ? 1 : (hi - lo) > 0.5 ? 0.1
+             : (hi - lo) > 0.05 ? 0.01 : 0.005;
+  for (let t = Math.ceil(lo / step) * step; t <= hi; t += step) {
+    svg.appendChild(el("line", {x1: sx(t), y1: m.t, x2: sx(t), y2: H - m.b,
+      stroke: "var(--grid)", "stroke-width": 1}));
+    svg.appendChild(el("text", {x: sx(t), y: H - m.b + 17, "text-anchor": "middle",
+      class: "tick"}, fmt(t)));
+  }
+  rows.forEach((a, i) => {
+    const y = m.t + i * (bh + 4);
+    const g = el("g", {});
+    g.appendChild(el("rect", {x: sx(Math.min(0, val(a))), y,
+      width: Math.max(1, sx(val(a)) - sx(Math.min(0, val(a)))),
+      height: bh, fill: COL(a.group), rx: 2}));
+    g.appendChild(el("text", {x: m.l - 9, y: y + bh * 0.72, "text-anchor": "end",
+      class: "ptlabel"}, a.label));
+    const vt = el("text", {x: sx(val(a)) + 7, y: y + bh * 0.72, class: "tick"},
+      fmt(val(a)));
+    g.appendChild(vt);
+    // Which training regime produced the arm. Without it the panel invites the
+    // wrong read: the top bar is a CENTRALIZED model sitting above federated
+    // ones, so "best arm" silently mixes best-of-K with the regime it ran under.
+    if (a.regime) {
+      let w = 46;
+      try { w = vt.getComputedTextLength() || w; } catch (e) { /* pre-layout */ }
+      g.appendChild(el("text", {x: sx(val(a)) + 15 + w, y: y + bh * 0.72,
+        class: "tick", "fill-opacity": 0.6}, a.regime));
+    }
+    const t = el("title", {});
+    t.textContent = `${a.label}\n${M.label}: ${fmt(val(a))}`;
+    g.appendChild(t);
+    svg.appendChild(g);
+  });
+  // The three rows that decide whether any of this is worth doing.
+  for (const [k, r] of Object.entries(refs)) {
+    const x = sx(val(r));
+    svg.appendChild(el("line", {x1: x, y1: m.t - 4, x2: x, y2: H - m.b,
+      stroke: "var(--ink2)", "stroke-width": 1.5, "stroke-dasharray": "4 4"}));
+    const yl = el("text", {x: 0, y: 0, class: "tick",
+      transform: `translate(${x - 5} ${H - m.b - 6}) rotate(-90)`});
+    yl.textContent = k.replace(/_/g, " ") + "  " + fmt(val(r));
+    svg.appendChild(yl);
+  }
+  svg.appendChild(el("text", {x: (m.l + W - m.r) / 2, y: H - 10,
+    "text-anchor": "middle", class: "axis-label"},
+    `${M.label}, ${head ? "30 drawn codes, \u2265 20 test positives"
+       : t2scope === "rare" ? "rare codes" : "all scored codes"}  (\u2192 better)`));
+
+  // Two blurbs assert things about 0.3%-prevalence codes. Neither holds on a
+  // pool selected for support, so state the opposite rather than leave a
+  // sentence that is simply wrong under the toggle.
+  const HEADBLURB = {
+    ap_macro: "Area under the precision-recall curve, averaged over codes. The floor is the base rate, 0.029 on this pool -- ten times the tail's, so these AP values are NOT comparable to the other two code sets.",
+    roc_auc_macro: "Informative here, unlike on the tail: with every code carrying at least 20 test positives the range opens to 0.42-0.79 and the arm ordering is stable across all three draws.",
+  };
+  const blurb = (head && HEADBLURB[t2metric]) || M.blurb;
+
+  const best = rows[0];
+  document.getElementById("capT2").textContent =
+    (best ? `Best shown: ${best.label} at ${fmt(val(best))}. ` : "")
+    + "The grey tag after each value is the TRAINING REGIME -- arms are not all "
+    + "federated, so a bar beating another can be the regime rather than the "
+    + "method. Dashed lines are the anchors: base-rate guessing, one site's own "
+    + "real records, and all eight pooled. "
+    + (head ? "A DIFFERENT POOL, so no value here is comparable to the tail "
+            + "panels -- AP's floor is the base rate, which is 0.029 here "
+            + "against 0.0067 on the tail. Mean of three draws (seeds 0-2); "
+            + "AUROC moved at most 0.02 between them. "
+            + "real_local stays below chance even here, so whatever inverts "
+            + "it is not code rarity. "
+            : "") + blurb;
+}
+
+function redraw() { drawSG(); drawDens(); drawT2(); table(); }
+
+document.getElementById("metric").addEventListener("change", e => {
+  metric = e.target.value; redraw();
+});
+document.getElementById("t2metric").addEventListener("change", e => {
+  t2metric = e.target.value; drawT2();
+});
+document.querySelectorAll("[data-t2]").forEach(b =>
+  b.addEventListener("click", () => {
+    t2scope = b.dataset.t2;
+    document.querySelectorAll("[data-t2]").forEach(o =>
+      o.setAttribute("aria-pressed", String(o === b)));
+    drawT2();
+  }));
+document.querySelectorAll(".seg button[data-set]").forEach(b =>
+  b.addEventListener("click", () => {
+    codeSet = b.dataset.set;
+    document.querySelectorAll(".seg button").forEach(o =>
+      o.setAttribute("aria-pressed", String(o === b)));
+    redraw();
+  }));
+
+chips();
+redraw();
+</script>

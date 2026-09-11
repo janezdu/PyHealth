@@ -1,0 +1,35 @@
+# How wide should the per-patient latent be, and how many candidates to select
+# over? Every latent run so far is z16 at xm4; this sweeps both axes around it.
+#
+# Settings are pinned to the existing centralized z16_xm4 anchor
+# (E2/R50/hilo8_random/privacy/nes, batch 256, lr 1e-4) so the fedavg cells here
+# sit on the same axis as what is already computed.
+#
+# dropout stays 0. With a latent, z is redrawn per candidate inside the
+# best-of-K loop (halo.py: "A DIFFERENT z per candidate is the entire
+# mechanism"), so the latent is its own source of spread and dropout is not
+# needed to make K mean something. Holding dropout at 0 keeps this sweep about
+# the latent alone.
+#
+# Watch xm_spread / xm_ent: spread ~0 means the K candidates did not separate
+# and best-of-K is best-of-1 at K times the cost.
+#
+# 6 runs. Baseline for all of them is grid_control_plain.yaml.
+
+sweep_name: latent_width_v1
+
+base:
+  profile: full
+  batch_size: 256          # matches the z16_xm4 anchor run, NOT the b128 resume note
+  regime: fedavg
+  weighting: sample
+  metrics: privacy
+  early_stop: false        # "_nes" in the run name; matches every run on this board
+  local_epochs: 2
+  n_rounds: 50
+  lr: 0.0001
+  dropout: 0.0
+
+grid:
+  latent_dim: [8, 32, 64]   # 16 already exists (centralized anchor)
+  xm_k: [4, 8]

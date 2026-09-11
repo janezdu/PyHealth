@@ -1,0 +1,36 @@
+# The ouroboros run: 8 real epochs, generate, 2 epochs on real + 50% synthetic.
+#
+# Settings identical to trunk_e10_v1 (E10/R10, fedavg, batch 256, lr 1e-4) so
+# the only difference is the self-training. The trunk scored rare Pearson
+# 0.6271 against the E2/R50 control's 0.6330 -- the epoch restructuring itself
+# costs nothing, so any movement here is attributable to the synthetic data.
+#
+# selftrain_source stays 'global' (the default): the synthetic is sampled from
+# the weights the server broadcast, so a small site mixes in information from
+# the other seven. Sampling the LOCAL model instead is the arm that separates
+# distillation from plain regularisation -- worth a second cell later, not
+# needed to answer "does 8-then-2 do anything".
+#
+# 1 run, ~15-25 min (the trunk took 11 min; generation adds 10 rounds x 8
+# clients of sampling).
+
+sweep_name: ouroboros_v1
+
+base:
+  profile: full
+  batch_size: 256
+  regime: fedavg
+  weighting: sample
+  metrics: privacy
+  early_stop: false
+  local_epochs: 10
+  n_rounds: 10
+  lr: 0.0001
+  latent_dim: 0
+  dropout: 0.0
+  xm_k: 1
+  selftrain_frac: 0.5      # half of each client's train size, generated fresh each round
+  selftrain_at: 0.8        # -> 8 real epochs, then generate, then 2 mixed
+
+grid:
+  selftrain_source: [global]
