@@ -9,10 +9,9 @@ and check that real codes survive the round trip rather than collapsing to
 """
 
 import unittest
+from typing import ClassVar
 
-import torch
-
-from pyhealth.datasets import create_sample_dataset
+from pyhealth.datasets import create_sample_dataset, get_dataloader
 from pyhealth.models import GPT2, PromptEHR
 from pyhealth.processors import (
     MultiHotProcessor,
@@ -41,6 +40,63 @@ def _dataset(schema_key, name):
         output_schema={},
         dataset_name=name,
     )
+
+
+class _Event:
+    def __init__(self, hadm_id, code=None):
+        self.hadm_id = hadm_id
+        self.icd9_code = code
+
+
+class _Patient:
+    """Minimal stand-in for pyhealth.data.Patient: admissions plus coded events."""
+
+    def __init__(self, patient_id, visits):
+        self.patient_id = patient_id
+        self._admissions = [_Event(f"h{i}") for i in range(len(visits))]
+        self._codes = [
+            _Event(f"h{i}", code)
+            for i, codes in enumerate(visits)
+            for code in codes
+        ]
+
+    def get_events(self, event_type, filters=None):
+        if event_type == "admissions":
+            return self._admissions
+        hadm = filters[0][2]
+        return [e for e in self._codes if e.hadm_id == hadm]
+
+
+class TestExtraction(unittest.TestCase):
+    """The shared __call__, and the pooling PatientCodeSetGeneration adds."""
+
+    VISITS: ClassVar[list] = [["A05B", "A05C"], ["A11D"], ["A05B"]]
+
+    def test_per_visit_tasks_keep_visit_structure(self):
+        patient = _Patient("p0", self.VISITS)
+        samples = VisitMultiHotGeneration()(patient)
+        self.assertEqual(len(samples), 1)
+        self.assertEqual(samples[0]["visits"], self.VISITS)
+        # Same extraction regardless of encoding -- only input_schema differs.
+        self.assertEqual(VisitSequenceGeneration()(patient)[0]["visits"],
+                         self.VISITS)
+
+    def test_codeset_task_pools_and_dedupes(self):
+        samples = PatientCodeSetGeneration()(_Patient("p0", self.VISITS))
+        self.assertEqual(len(samples), 1)
+        # One flat set: A05B appears in two visits and survives once.
+        self.assertEqual(samples[0]["visits"], ["A05B", "A05C", "A11D"])
+
+    def test_min_visits_counts_real_visits_before_pooling(self):
+        """Pooling must not let a 1-visit patient past a min_visits=2 filter."""
+        one_visit = _Patient("p1", [["A05B", "A05C", "A11D"]])
+        self.assertEqual(PatientCodeSetGeneration()(one_visit), [])
+        self.assertEqual(VisitMultiHotGeneration()(one_visit), [])
+
+    def test_codeless_admissions_are_dropped(self):
+        patient = _Patient("p2", [["A05B"], [], ["A11D"]])
+        self.assertEqual(VisitMultiHotGeneration()(patient)[0]["visits"],
+                         [["A05B"], ["A11D"]])
 
 
 class TestTaskEncodings(unittest.TestCase):
@@ -123,7 +179,7 @@ class TestVisitCodeIds(unittest.TestCase):
 class TestTokenGeneratorsOnIndices(unittest.TestCase):
     """GPT2 and PromptEHR serialise real codes from their own encoding."""
 
-    MODELS = [
+    MODELS: ClassVar[list] = [
         (GPT2, {"embed_dim": 16, "n_heads": 2, "n_layers": 2, "max_len": 64}),
         (PromptEHR, {"embed_dim": 16, "n_heads": 2, "n_layers": 2, "max_len": 64,
                      "prompt_length": 4}),
@@ -140,7 +196,10 @@ class TestTokenGeneratorsOnIndices(unittest.TestCase):
             with self.subTest(model=cls.__name__):
                 dataset = _dataset("nested_sequence", f"gen_{cls.__name__}")
                 model = cls(dataset=dataset, batch_size=2, epochs=1, **kwargs)
-                visits = torch.stack([dataset[i]["visits"] for i in range(2)])
+                # Patients have different visit counts, so let the dataloader
+                # pad the visit dimension rather than stacking raw samples.
+                batch = next(iter(get_dataloader(dataset, batch_size=2)))
+                visits = batch["visits"]
                 streams = self._streams(model, visits)
 
                 code_ids = [
