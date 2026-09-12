@@ -4,11 +4,11 @@ from typing import Any
 import torch
 
 from . import register_processor
-from .base_processor import CodeVocabularyMixin, FeatureProcessor
+from .base_processor import FeatureProcessor, TokenProcessorInterface
 
 
 @register_processor("nested_multihot")
-class NestedMultiHotProcessor(FeatureProcessor, CodeVocabularyMixin):
+class NestedMultiHotProcessor(FeatureProcessor, TokenProcessorInterface):
     """Nested categorical sequences as per-visit multi-hot vectors.
 
     Same input as :class:`NestedSequenceProcessor` -- a list of visits, each a
@@ -59,7 +59,8 @@ class NestedMultiHotProcessor(FeatureProcessor, CodeVocabularyMixin):
         # `padding` is accepted and ignored so this is a drop-in swap for
         # NestedSequenceProcessor in a schema. There is no inner axis to pad --
         # that is the entire point -- so honouring it would be misleading.
-        self._init_code_vocab()
+        self.code_vocab: dict[Any, int] = {"<pad>": self.PAD, "<unk>": self.UNK}
+        self._next_index = 2
         self._padding = padding
 
     def fit(self, samples: Iterable[dict[str, Any]], field: str) -> None:
@@ -80,7 +81,38 @@ class NestedMultiHotProcessor(FeatureProcessor, CodeVocabularyMixin):
                 if not isinstance(inner_seq, list):
                     continue
                 for code in inner_seq:
-                    self._observe_code(code)
+                    if code is not None and code not in self.code_vocab:
+                        self.code_vocab[code] = self._next_index
+                        self._next_index += 1
+
+    def remove(self, tokens: set[str]):
+        """Remove specified vocabularies from the processor."""
+        keep = set(self.code_vocab.keys()) - tokens | {"<pad>", "<unk>"}
+        order = [k for k, v in sorted(self.code_vocab.items(), key=lambda x: x[1])
+                 if k in keep]
+        self.code_vocab = {k: i for i, k in enumerate(order)}
+        self._next_index = len(self.code_vocab)
+
+    def retain(self, tokens: set[str]):
+        """Retain only the specified vocabularies in the processor."""
+        keep = set(self.code_vocab.keys()) & tokens | {"<pad>", "<unk>"}
+        order = [k for k, v in sorted(self.code_vocab.items(), key=lambda x: x[1])
+                 if k in keep]
+        self.code_vocab = {k: i for i, k in enumerate(order)}
+        self._next_index = len(self.code_vocab)
+
+    def add(self, tokens: set[str]):
+        """Add specified vocabularies to the processor."""
+        i = len(self.code_vocab)
+        for token in tokens:
+            if token not in self.code_vocab:
+                self.code_vocab[token] = i
+                i += 1
+        self._next_index = len(self.code_vocab)
+
+    def tokens(self) -> set[str]:
+        """Return the set of tokens in the processor's vocabulary."""
+        return set(self.code_vocab.keys())
 
     def process(self, value: list[list[Any]]) -> torch.Tensor:
         """Nested sequence -> ``(num_visits, vocab_size)`` float multi-hot.
@@ -141,6 +173,10 @@ class NestedMultiHotProcessor(FeatureProcessor, CodeVocabularyMixin):
 
     def size(self) -> int:
         """Feature width: the vocabulary, since that is the row length."""
+        return len(self.code_vocab)
+
+    def vocab_size(self) -> int:
+        """Return vocabulary size."""
         return len(self.code_vocab)
 
     def __repr__(self):

@@ -3,11 +3,11 @@ from typing import Any, Dict, List, Iterable
 import torch
 
 from . import register_processor
-from .base_processor import CodeVocabularyMixin, FeatureProcessor
+from .base_processor import FeatureProcessor, TokenProcessorInterface
 
 
 @register_processor("nested_sequence")
-class NestedSequenceProcessor(FeatureProcessor, CodeVocabularyMixin):
+class NestedSequenceProcessor(FeatureProcessor, TokenProcessorInterface):
     """
     Feature processor for nested categorical sequences with vocabulary.
 
@@ -45,7 +45,8 @@ class NestedSequenceProcessor(FeatureProcessor, CodeVocabularyMixin):
     """
 
     def __init__(self, padding: int = 0):
-        self._init_code_vocab()
+        self.code_vocab: Dict[Any, int] = {"<pad>": self.PAD, "<unk>": self.UNK}
+        self._next_index = 2
         self._max_inner_len = 1  # Maximum length of inner sequences
         self._padding = padding  # Additional padding beyond observed max
 
@@ -71,12 +72,40 @@ class NestedSequenceProcessor(FeatureProcessor, CodeVocabularyMixin):
 
                             # Build vocabulary
                             for code in inner_seq:
-                                self._observe_code(code)
+                                if code is not None and code not in self.code_vocab:
+                                    self.code_vocab[code] = self._next_index
+                                    self._next_index += 1
 
         # Store max inner length: add user-specified padding to observed maximum
         # This ensures the processor can handle sequences longer than those in training data
         observed_max = max(1, max_inner_len)
         self._max_inner_len = observed_max + self._padding
+
+    def remove(self, tokens: set[str]):
+        """Remove specified vocabularies from the processor."""
+        keep = set(self.code_vocab.keys()) - tokens | {"<pad>", "<unk>"}
+        order = [k for k, v in sorted(self.code_vocab.items(), key=lambda x: x[1]) if k in keep]
+        
+        self.code_vocab = { k : i for i, k in enumerate(order) }
+
+    def retain(self, tokens: set[str]):
+        """Retain only the specified vocabularies in the processor."""
+        keep = set(self.code_vocab.keys()) & tokens | {"<pad>", "<unk>"}
+        order = [k for k, v in sorted(self.code_vocab.items(), key=lambda x: x[1]) if k in keep]
+        
+        self.code_vocab = { k : i for i, k in enumerate(order) }
+
+    def add(self, tokens: set[str]):
+        """Add specified vocabularies to the processor."""
+        i = len(self.code_vocab)
+        for token in tokens:
+            if token not in self.code_vocab:
+                self.code_vocab[token] = i
+                i += 1
+
+    def tokens(self) -> set[str]:
+        """Return the set of tokens in the processor's vocabulary."""
+        return set(self.code_vocab.keys())
 
     def process(self, value: List[List[Any]]) -> torch.Tensor:
         """Process nested sequence into padded 2D tensor.
@@ -121,13 +150,18 @@ class NestedSequenceProcessor(FeatureProcessor, CodeVocabularyMixin):
 
         return torch.tensor(encoded_sequences, dtype=torch.long)
 
+    def vocab_size(self) -> int:
+        """Return the size of the processor's vocabulary."""
+        return len(self.code_vocab)
+
     def visit_code_ids(self, row: torch.Tensor) -> list[int]:
         """Code indices present in one processed visit row.
 
         The inverse of what :meth:`process` writes, for consumers that need a
-        code *list* rather than the tensor -- sequence generators such as GPT2
-        and PromptEHR. Each nested processor implements this for its own
-        encoding, so a model can accept either without knowing which it has.
+        code *list* rather than the tensor -- the sequence generators GPT2 and
+        PromptEHR, and :func:`pyhealth.tasks.decode_dataset`. Each nested
+        processor implements this for its own encoding, so a consumer never has
+        to guess how to read a row.
 
         Here the row already holds indices, right-padded with ``<pad>`` (0).
 
@@ -146,6 +180,10 @@ class NestedSequenceProcessor(FeatureProcessor, CodeVocabularyMixin):
     def size(self) -> int:
         """Return max inner length (embedding dimension) for unified API."""
         return self._max_inner_len
+
+    def vocab_size(self) -> int:
+        """Return vocabulary size."""
+        return len(self.code_vocab)
 
     def __repr__(self):
         return (

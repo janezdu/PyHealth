@@ -146,8 +146,8 @@ class GPT2(BaseModel):
 
         Args:
             visits: Processed visit tensor from either nested ``visits``
-                processor; the processor's ``visit_code_ids`` inverts a row. Index 0 is ``<pad>`` and is
-                skipped.
+                processor; the processor's ``visit_code_ids`` inverts a row.
+                Index 0 is ``<pad>`` and is skipped.
 
         Returns:
             input_ids: LongTensor ``(batch, L)`` token streams, right-padded.
