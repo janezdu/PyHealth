@@ -372,7 +372,7 @@ class HALO(BaseModel):
     Args:
         dataset: A fitted ``SampleDataset`` whose ``input_schema`` contains
             ``{"visits": NestedMultiHotProcessor}`` -- use the
-            :class:`~pyhealth.tasks.VisitMultiHotGeneration` task -- and whose
+            :class:`~pyhealth.tasks.EHRGenerationMIMIC3` task -- and whose
             ``output_schema`` is empty.
         embed_dim: Transformer embedding dimension (``n_embd``). Default: 768.
         n_heads: Number of attention heads. Must divide ``embed_dim``.
@@ -421,7 +421,7 @@ class HALO(BaseModel):
         if "visits" not in dataset.input_processors:
             raise ValueError(
                 "HALO expects an input feature named 'visits' backed by a "
-                "NestedMultiHotProcessor (see VisitMultiHotGeneration)."
+                "NestedMultiHotProcessor (see EHRGenerationMIMIC3)."
             )
 
         self.save_dir = save_dir
@@ -503,7 +503,7 @@ class HALO(BaseModel):
         # TODO: this counts non-empty rows and then treats the *first* n_visits
         # rows as the real ones, so a patient like [codes, empty, codes] would
         # silently lose its last visit. The pre-vectorisation loop had the same
-        # behaviour, and VisitMultiHotGeneration cannot produce an interior
+        # behaviour, and EHRGenerationMIMIC3 cannot produce an interior
         # empty visit (its __call__ skips codeless admissions), so nothing hits
         # today -- but NestedMultiHotProcessor does emit all-zero rows for empty
         # visits, so a hand-built SampleDataset can. Fix by masking on row

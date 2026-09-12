@@ -19,11 +19,14 @@ from pyhealth.processors import (
     NestedSequenceProcessor,
 )
 from pyhealth.tasks import (
+    EHRCodeSetGenerationMIMIC3,
+    EHRCodeSetGenerationMIMIC4,
     EHRGenerationMIMIC3,
-    PatientCodeSetGeneration,
-    VisitMultiHotGeneration,
-    VisitSequenceGeneration,
+    EHRGenerationMIMIC4,
+    EHRSequenceGenerationMIMIC3,
+    EHRSequenceGenerationMIMIC4,
 )
+from pyhealth.tasks.base_task import BaseTask
 
 SAMPLES = [
     {"patient_id": "p0", "visits": [["A05B", "A05C"], ["A11D"], ["C129"]]},
@@ -68,21 +71,21 @@ class _Patient:
 
 
 class TestExtraction(unittest.TestCase):
-    """The shared __call__, and the pooling PatientCodeSetGeneration adds."""
+    """Extraction, and the pooling the code-set tasks add."""
 
     VISITS: ClassVar[list] = [["A05B", "A05C"], ["A11D"], ["A05B"]]
 
     def test_per_visit_tasks_keep_visit_structure(self):
         patient = _Patient("p0", self.VISITS)
-        samples = VisitMultiHotGeneration()(patient)
+        samples = EHRGenerationMIMIC3()(patient)
         self.assertEqual(len(samples), 1)
         self.assertEqual(samples[0]["visits"], self.VISITS)
         # Same extraction regardless of encoding -- only input_schema differs.
-        self.assertEqual(VisitSequenceGeneration()(patient)[0]["visits"],
+        self.assertEqual(EHRSequenceGenerationMIMIC3()(patient)[0]["visits"],
                          self.VISITS)
 
     def test_codeset_task_pools_and_dedupes(self):
-        samples = PatientCodeSetGeneration()(_Patient("p0", self.VISITS))
+        samples = EHRCodeSetGenerationMIMIC3()(_Patient("p0", self.VISITS))
         self.assertEqual(len(samples), 1)
         # One flat set: A05B appears in two visits and survives once.
         self.assertEqual(samples[0]["visits"], ["A05B", "A05C", "A11D"])
@@ -90,12 +93,12 @@ class TestExtraction(unittest.TestCase):
     def test_min_visits_counts_real_visits_before_pooling(self):
         """Pooling must not let a 1-visit patient past a min_visits=2 filter."""
         one_visit = _Patient("p1", [["A05B", "A05C", "A11D"]])
-        self.assertEqual(PatientCodeSetGeneration()(one_visit), [])
-        self.assertEqual(VisitMultiHotGeneration()(one_visit), [])
+        self.assertEqual(EHRCodeSetGenerationMIMIC3()(one_visit), [])
+        self.assertEqual(EHRGenerationMIMIC3()(one_visit), [])
 
     def test_codeless_admissions_are_dropped(self):
         patient = _Patient("p2", [["A05B"], [], ["A11D"]])
-        self.assertEqual(VisitMultiHotGeneration()(patient)[0]["visits"],
+        self.assertEqual(EHRGenerationMIMIC3()(patient)[0]["visits"],
                          [["A05B"], ["A11D"]])
 
 
@@ -103,38 +106,42 @@ class TestTaskEncodings(unittest.TestCase):
     """Each task declares the processor its models consume."""
 
     def test_each_family_gets_its_own_encoding(self):
-        self.assertIs(
-            VisitMultiHotGeneration.input_schema["visits"], NestedMultiHotProcessor
-        )
-        self.assertIs(
-            VisitSequenceGeneration.input_schema["visits"], NestedSequenceProcessor
-        )
-        self.assertIs(
-            PatientCodeSetGeneration.input_schema["visits"], MultiHotProcessor
-        )
+        for task in (EHRGenerationMIMIC3, EHRGenerationMIMIC4):
+            self.assertIs(task.input_schema["visits"], NestedMultiHotProcessor)
+        for task in (EHRSequenceGenerationMIMIC3, EHRSequenceGenerationMIMIC4):
+            self.assertIs(task.input_schema["visits"], NestedSequenceProcessor)
+        for task in (EHRCodeSetGenerationMIMIC3, EHRCodeSetGenerationMIMIC4):
+            self.assertIs(task.input_schema["visits"], MultiHotProcessor)
 
-    def test_base_task_refuses_to_be_used_directly(self):
-        """EHRGeneration is extraction only, and says so instead of failing late."""
-        from pyhealth.tasks import EHRGeneration
+    def test_tasks_are_flat(self):
+        """No task inherits from another: the MIMIC extraction is not a base.
 
-        self.assertFalse(hasattr(EHRGeneration, "input_schema"))
-        with self.assertRaises(TypeError) as ctx:
-            EHRGeneration()
-        self.assertIn("VisitMultiHotGeneration", str(ctx.exception))
+        A parent class would invite subclassing it for eICU/OMOP, where there
+        is no ``admissions`` event type and no ``hadm_id`` -- which would
+        return no samples rather than fail.
+        """
+        tasks = [
+            EHRGenerationMIMIC3, EHRGenerationMIMIC4,
+            EHRSequenceGenerationMIMIC3, EHRSequenceGenerationMIMIC4,
+            EHRCodeSetGenerationMIMIC3, EHRCodeSetGenerationMIMIC4,
+        ]
+        for task in tasks:
+            with self.subTest(task=task.__name__):
+                self.assertEqual(task.__bases__, (BaseTask,))
+                self.assertIn("MIMIC", task.__name__)
 
-    def test_dataset_presets_stay_multihot(self):
-        """The MIMIC presets were HALO tasks and must remain so."""
-        self.assertIs(
-            EHRGenerationMIMIC3.input_schema["visits"], NestedMultiHotProcessor
-        )
-        self.assertTrue(issubclass(EHRGenerationMIMIC3, VisitMultiHotGeneration))
+    def test_task_names_are_unique(self):
+        tasks = [
+            EHRGenerationMIMIC3, EHRGenerationMIMIC4,
+            EHRSequenceGenerationMIMIC3, EHRSequenceGenerationMIMIC4,
+            EHRCodeSetGenerationMIMIC3, EHRCodeSetGenerationMIMIC4,
+        ]
+        names = [t.task_name for t in tasks]
+        self.assertEqual(len(names), len(set(names)))
 
-    def test_columns_are_settable_per_instance(self):
-        """Encoding and dataset are independent choices, not a class grid."""
-        task = VisitSequenceGeneration(code_attr="icd_code", min_visits=3)
-        self.assertEqual(task.code_attr, "icd_code")
-        self.assertEqual(task.min_visits, 3)
-        self.assertEqual(VisitSequenceGeneration.code_attr, "icd9_code")
+    def test_mimic4_reads_the_mimic4_code_column(self):
+        self.assertEqual(EHRGenerationMIMIC3.code_attr, "icd9_code")
+        self.assertEqual(EHRGenerationMIMIC4.code_attr, "icd_code")
 
 
 class TestVisitCodeIds(unittest.TestCase):

@@ -2,9 +2,9 @@
 
 This example demonstrates:
 1. Loading MIMIC-III data
-2. Applying the EHRGenerationMIMIC3 task (per-visit ICD-9 code sets,
-   multi-hot -- the encoding HALO consumes; GPT2/PromptEHR instead take
-   VisitSequenceGeneration, and MedGAN/CorGAN PatientCodeSetGeneration)
+2. Applying the EHRGenerationMIMIC3 task (per-visit ICD-9 code sets, multi-hot
+   -- the encoding HALO consumes). See gpt2_mimic3.py for the sequence form
+   GPT2/PromptEHR need, and medgan_mimic3.py for the bag-of-codes form.
 3. Creating a SampleDataset with a NestedMultiHotProcessor
 4. Training the HALO generator with its custom training loop
 5. Generating synthetic patients
