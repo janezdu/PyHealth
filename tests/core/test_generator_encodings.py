@@ -82,35 +82,41 @@ class TestTaskEncodings(unittest.TestCase):
 
 
 class TestVisitCodeIds(unittest.TestCase):
-    """Each nested processor inverts its own encoding to the same code ids."""
+    """NestedSequenceProcessor inverts its own rows for the token generators."""
 
-    def test_both_processors_agree(self):
+    def test_matches_the_multihot_columns(self):
+        """Both encodings of the same visit name the same codes.
+
+        NestedMultiHotProcessor has no visit_code_ids -- nothing consumes one --
+        so its codes are read here the way decode_dataset reads them, as the
+        row's nonzero columns.
+        """
         multihot = _dataset("nested_multihot", "vci_mh")
         indexed = _dataset("nested_sequence", "vci_ix")
-        mh_proc = multihot.input_processors["visits"]
         ix_proc = indexed.input_processors["visits"]
 
         # Same samples, same traversal order, so the vocabularies must match --
         # that is what makes the per-visit comparison below meaningful.
-        self.assertEqual(mh_proc.code_vocab, ix_proc.code_vocab)
+        self.assertEqual(multihot.input_processors["visits"].code_vocab,
+                         ix_proc.code_vocab)
 
         for i in range(len(SAMPLES)):
             mh_row = multihot[i]["visits"]
             ix_row = indexed[i]["visits"]
             for visit in range(mh_row.shape[0]):
-                # Multi-hot returns vocabulary order, the index form charted
-                # order, so compare as sets.
+                # Multi-hot columns come out in vocabulary order, the index form
+                # in charted order, so compare as sets.
                 self.assertEqual(
-                    set(mh_proc.visit_code_ids(mh_row[visit])),
+                    set(mh_row[visit].nonzero(as_tuple=True)[0].tolist()),
                     set(ix_proc.visit_code_ids(ix_row[visit])),
                 )
 
-    def test_multihot_ids_are_not_all_unk(self):
-        """Reading a multi-hot row's values instead of its column indices."""
-        processor = _dataset("nested_multihot", "vci_unk").input_processors["visits"]
+    def test_padding_is_dropped_not_read_as_a_code(self):
+        processor = _dataset("nested_sequence", "vci_pad").input_processors["visits"]
         row = processor.process([["A05B", "A05C"]])[0]
         ids = processor.visit_code_ids(row)
         self.assertEqual(len(ids), 2)
+        self.assertNotIn(processor.PAD, ids)
         self.assertNotIn(processor.UNK, ids)
 
 

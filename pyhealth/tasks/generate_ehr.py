@@ -384,18 +384,25 @@ def decode_dataset(sample_dataset, feature_key: str = "visits") -> list[dict]:
     Returns:
         List of ``{"visits": [[code_str, ...], ...]}`` records.
 
+    Raises:
+        TypeError: If ``feature_key`` is not backed by a
+            :class:`~pyhealth.processors.NestedMultiHotProcessor`.
+
     Examples:
         >>> from pyhealth.tasks.generate_ehr import decode_dataset
         >>> records = decode_dataset(samples)
         >>> records[0]["visits"][0]
         ['4019', '25000']
     """
-    processor = sample_dataset.input_processors[feature_key]
-    if not hasattr(processor, "visit_code_ids"):
-        raise ValueError(
-            "decode_dataset needs a per-visit processor that can invert its own "
-            f"encoding (a visit_code_ids method); got {type(processor).__name__}. "
-            "PatientCodeSetGeneration has no visit axis to decode."
+    # split_by_patient hands back a torch Subset, which carries no processors
+    # of its own -- decoding a split is the common case, so resolve through it.
+    source = getattr(sample_dataset, "dataset", sample_dataset)
+    processor = source.input_processors[feature_key]
+    if not isinstance(processor, NestedMultiHotProcessor):
+        raise TypeError(
+            f"decode_dataset inverts the multi-hot encoding, but '{feature_key}' "
+            f"is a {type(processor).__name__}. Use VisitMultiHotGeneration, or "
+            "read the codes off the index tensor directly."
         )
     index_to_code = {idx: code for code, idx in processor.code_vocab.items()}
 
@@ -403,13 +410,13 @@ def decode_dataset(sample_dataset, feature_key: str = "visits") -> list[dict]:
     for i in range(len(sample_dataset)):
         sample = sample_dataset[i]
         visits: list[list[str]] = []
-        # The processor knows how to read its own rows -- multi-hot columns or
-        # padded indices -- so this works for either per-visit task.
+        # Each row is a multi-hot vector over the vocabulary, so the codes
+        # present are its nonzero columns -- the values are all 1.0.
         for row in sample[feature_key]:
             codes = [
-                index_to_code[idx]
-                for idx in processor.visit_code_ids(row)
-                if index_to_code.get(idx) not in (None, "<pad>", "<unk>")
+                index_to_code[int(col)]
+                for col in row.nonzero(as_tuple=True)[0].tolist()
+                if index_to_code.get(int(col)) not in (None, "<pad>", "<unk>")
             ]
             if codes:
                 visits.append(codes)

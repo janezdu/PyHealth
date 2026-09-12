@@ -11,12 +11,14 @@ This example demonstrates:
 6. Evaluating the synthetic data with the generative metrics suite
 """
 
-import pandas as pd
-
 from pyhealth.datasets import MIMIC3Dataset, split_by_patient
 from pyhealth.metrics.generative import evaluate_synthetic_ehr
 from pyhealth.models import HALO
-from pyhealth.tasks import EHRGenerationMIMIC3
+from pyhealth.tasks import (
+    EHRGenerationMIMIC3,
+    decode_dataset,
+    to_evaluation_dataframe,
+)
 
 if __name__ == "__main__":
     # STEP 1: Load MIMIC-III base dataset
@@ -84,35 +86,16 @@ if __name__ == "__main__":
     # train_df, test_df and syn_df below all share this exact schema. `labels`
     # is a placeholder here: privacy metrics ignore it and the utility metric
     # overwrites it with the next-visit prediction target.
-    index_to_code = {
-        v: k for k, v in sample_dataset.input_processors["visits"].code_vocab.items()
-    }
-
-    def real_subset_to_records(subset):
-        # NestedMultiHotProcessor encodes each patient as a dense
-        # (num_visits, vocab_size) multi-hot tensor, so the set of codes in a
-        # visit is the set of *nonzero column indices* -- not the tensor
-        # values themselves.
-        for sample in subset:
-            pid = str(sample["patient_id"])
-            for t, visit in enumerate(sample["visits"]):
-                for idx in visit.nonzero(as_tuple=True)[0].tolist():
-                    code = index_to_code.get(idx)
-                    if code in (None, "<pad>", "<unk>"):
-                        continue
-                    yield {"id": pid, "time": t, "visit_codes": code, "labels": 0}
-
-    def synthetic_to_records(patients):
-        for p in patients:
-            pid = str(p["patient_id"])
-            for t, visit in enumerate(p["visits"]):
-                for code in visit:
-                    yield {"id": pid, "time": t, "visit_codes": code, "labels": 0}
-
+    # Both conversions already live in the task module, so use them rather
+    # than re-deriving the encoding here:
+    #   decode_dataset       processed (or split) SampleDataset -> code records
+    #   to_evaluation_dataframe  records (real or synthetic) -> the long form
+    # Patients are renumbered 0, 1, 2, ... because synthetic patients do not
+    # correspond to real ones; the metrics only need a grouping key.
     schema = {"visit_codes": str, "labels": int, "time": int, "id": str}
-    train_df = pd.DataFrame(real_subset_to_records(train_dataset)).astype(schema)
-    test_df = pd.DataFrame(real_subset_to_records(test_dataset)).astype(schema)
-    syn_df = pd.DataFrame(synthetic_to_records(synthetic)).astype(schema)
+    train_df = to_evaluation_dataframe(decode_dataset(train_dataset)).astype(schema)
+    test_df = to_evaluation_dataframe(decode_dataset(test_dataset)).astype(schema)
+    syn_df = to_evaluation_dataframe(synthetic).astype(schema)
     print(
         f"\nEval rows -- train: {len(train_df)}, test: {len(test_df)}, "
         f"synthetic: {len(syn_df)}"

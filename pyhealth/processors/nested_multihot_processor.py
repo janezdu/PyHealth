@@ -149,28 +149,6 @@ class NestedMultiHotProcessor(FeatureProcessor, TokenProcessorInterface):
                               torch.ones(len(idx)))
         return out
 
-    def visit_code_ids(self, row: torch.Tensor) -> list[int]:
-        """Code indices present in one processed visit row.
-
-        The inverse of what :meth:`process` writes. Here the row is a multi-hot
-        vector, so the codes are its *nonzero column indices* -- reading the
-        values themselves would yield 1.0 (i.e. ``<unk>``) for every code.
-
-        Codes come back in vocabulary order, not charted order, and repeats are
-        already collapsed; multi-hot records presence, not sequence or count.
-
-        Args:
-            row: 1D multi-hot tensor of width ``vocab_size``, one visit.
-
-        Returns:
-            Code indices present in the visit, ascending.
-
-        Examples:
-            >>> processor.visit_code_ids(torch.tensor([0., 0., 1., 0., 1.]))
-            [2, 4]
-        """
-        return row.nonzero(as_tuple=True)[0].tolist()
-
     def size(self) -> int:
         """Feature width: the vocabulary, since that is the row length."""
         return len(self.code_vocab)
