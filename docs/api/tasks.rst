@@ -141,7 +141,7 @@ a quick reference:
      - Cumulative visit history (drug recommendation, readmission)
    * - ``"nested_multihot"``
      - ``NestedMultiHotProcessor``
-     - Per-visit code sets (generative EHR)
+     - Per-visit code sets (HALO; see ``VisitMultiHotGeneration``)
    * - ``"tensor"``
      - ``TensorProcessor``
      - Aggregated numeric values (e.g. last lab value per item)

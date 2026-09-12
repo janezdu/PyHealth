@@ -55,6 +55,9 @@ from .generate_ehr import (
     EHRGeneration,
     EHRGenerationMIMIC3,
     EHRGenerationMIMIC4,
+    PatientCodeSetGeneration as PatientCodeSetGeneration,
+    VisitMultiHotGeneration as VisitMultiHotGeneration,
+    VisitSequenceGeneration as VisitSequenceGeneration,
     decode_dataset,
     to_evaluation_dataframe,
 )

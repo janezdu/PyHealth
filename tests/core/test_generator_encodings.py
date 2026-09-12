@@ -1,10 +1,11 @@
-"""Every generator sharing EHRGeneration must read the task's encoding.
+"""Each generator family gets the encoding it actually consumes.
 
-HALO, GPT2 and PromptEHR all consume ``EHRGeneration``, so changing that task's
-``input_schema`` changes what all three receive. The failure mode this guards
-is silent: a multi-hot row read as raw values yields 1.0 for every present
-code, and 1 is ``<unk>``, so a model would train happily on nothing but unknown
-codes. These tests assert the real codes survive, under either encoding.
+Extraction is shared across the EHR-generation tasks, the encoding is not:
+HALO reads multi-hot rows, GPT2/PromptEHR read code indices, MedGAN/CorGAN read
+one pooled set per patient. Pairing a model with the wrong task does not raise
+-- the shapes and dtypes stay valid -- so these tests pin the pairing itself,
+and check that real codes survive the round trip rather than collapsing to
+<unk>.
 """
 
 import unittest
@@ -13,6 +14,17 @@ import torch
 
 from pyhealth.datasets import create_sample_dataset
 from pyhealth.models import GPT2, PromptEHR
+from pyhealth.processors import (
+    MultiHotProcessor,
+    NestedMultiHotProcessor,
+    NestedSequenceProcessor,
+)
+from pyhealth.tasks import (
+    EHRGenerationMIMIC3,
+    PatientCodeSetGeneration,
+    VisitMultiHotGeneration,
+    VisitSequenceGeneration,
+)
 
 SAMPLES = [
     {"patient_id": "p0", "visits": [["A05B", "A05C"], ["A11D"], ["C129"]]},
@@ -29,6 +41,44 @@ def _dataset(schema_key, name):
         output_schema={},
         dataset_name=name,
     )
+
+
+class TestTaskEncodings(unittest.TestCase):
+    """Each task declares the processor its models consume."""
+
+    def test_each_family_gets_its_own_encoding(self):
+        self.assertIs(
+            VisitMultiHotGeneration.input_schema["visits"], NestedMultiHotProcessor
+        )
+        self.assertIs(
+            VisitSequenceGeneration.input_schema["visits"], NestedSequenceProcessor
+        )
+        self.assertIs(
+            PatientCodeSetGeneration.input_schema["visits"], MultiHotProcessor
+        )
+
+    def test_base_task_refuses_to_be_used_directly(self):
+        """EHRGeneration is extraction only, and says so instead of failing late."""
+        from pyhealth.tasks import EHRGeneration
+
+        self.assertFalse(hasattr(EHRGeneration, "input_schema"))
+        with self.assertRaises(TypeError) as ctx:
+            EHRGeneration()
+        self.assertIn("VisitMultiHotGeneration", str(ctx.exception))
+
+    def test_dataset_presets_stay_multihot(self):
+        """The MIMIC presets were HALO tasks and must remain so."""
+        self.assertIs(
+            EHRGenerationMIMIC3.input_schema["visits"], NestedMultiHotProcessor
+        )
+        self.assertTrue(issubclass(EHRGenerationMIMIC3, VisitMultiHotGeneration))
+
+    def test_columns_are_settable_per_instance(self):
+        """Encoding and dataset are independent choices, not a class grid."""
+        task = VisitSequenceGeneration(code_attr="icd_code", min_visits=3)
+        self.assertEqual(task.code_attr, "icd_code")
+        self.assertEqual(task.min_visits, 3)
+        self.assertEqual(VisitSequenceGeneration.code_attr, "icd9_code")
 
 
 class TestVisitCodeIds(unittest.TestCase):
@@ -56,7 +106,7 @@ class TestVisitCodeIds(unittest.TestCase):
                 )
 
     def test_multihot_ids_are_not_all_unk(self):
-        """The specific regression: reading values instead of column indices."""
+        """Reading a multi-hot row's values instead of its column indices."""
         processor = _dataset("nested_multihot", "vci_unk").input_processors["visits"]
         row = processor.process([["A05B", "A05C"]])[0]
         ids = processor.visit_code_ids(row)
@@ -64,8 +114,8 @@ class TestVisitCodeIds(unittest.TestCase):
         self.assertNotIn(processor.UNK, ids)
 
 
-class TestGeneratorsAcceptEitherEncoding(unittest.TestCase):
-    """GPT2 and PromptEHR serialise real codes from either processor."""
+class TestTokenGeneratorsOnIndices(unittest.TestCase):
+    """GPT2 and PromptEHR serialise real codes from their own encoding."""
 
     MODELS = [
         (GPT2, {"embed_dim": 16, "n_heads": 2, "n_layers": 2, "max_len": 64}),
@@ -82,7 +132,7 @@ class TestGeneratorsAcceptEitherEncoding(unittest.TestCase):
     def test_codes_survive_serialisation(self):
         for cls, kwargs in self.MODELS:
             with self.subTest(model=cls.__name__):
-                dataset = _dataset("nested_multihot", f"gen_{cls.__name__}")
+                dataset = _dataset("nested_sequence", f"gen_{cls.__name__}")
                 model = cls(dataset=dataset, batch_size=2, epochs=1, **kwargs)
                 visits = torch.stack([dataset[i]["visits"] for i in range(2)])
                 streams = self._streams(model, visits)
@@ -94,8 +144,6 @@ class TestGeneratorsAcceptEitherEncoding(unittest.TestCase):
                     if t < model.code_vocab_size and t != 0
                 ]
                 self.assertTrue(code_ids, "no code tokens were emitted at all")
-                # The bug turned every code into <unk>; a real stream carries
-                # several distinct codes.
                 self.assertGreater(
                     len(set(code_ids) - {model.visits_processor.UNK}),
                     1,

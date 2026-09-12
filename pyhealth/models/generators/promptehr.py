@@ -3,7 +3,7 @@
 This is a PyHealth ``BaseModel`` port of PromptEHR (Wang & Sun, EMNLP'22,
 https://github.com/RyanWangZf/PromptEHR), wrapped so it consumes the standard
 ``dataset -> set_task -> SampleDataset -> model`` pipeline and shares the same
-:class:`~pyhealth.tasks.EHRGeneration` task as
+:class:`~pyhealth.tasks.VisitSequenceGeneration` task as
 :class:`~pyhealth.models.HALO` and :class:`~pyhealth.models.GPT2`.
 
 PromptEHR treats sequential EHRs as a *neural database* and learns to fill in
@@ -17,7 +17,7 @@ reference implementation are preserved here:
   the way :class:`~pyhealth.models.GPT2` wraps ``GPT2LMHeadModel``.
 * **Prompt learning.** The reference reparameterizes a learnable prompt from
   patient baseline demographics and prepends it to the encoder/decoder
-  (``ConditionalPrompt``). PyHealth's :class:`~pyhealth.tasks.EHRGeneration`
+  (``ConditionalPrompt``). PyHealth's :class:`~pyhealth.tasks.VisitSequenceGeneration`
   task is *unconditional* (only ``visits``, no baseline features -- exactly like
   HALO/GPT2), so the prompt reduces to a learnable continuous **soft prefix**
   prepended to the encoder. This is the prompt-tuning core without the
@@ -35,7 +35,7 @@ Each patient's visits are serialized into a single code stream::
     [CODE_PROMPT]  <codes of visit 1>  [VISIT_DELIM]  <codes of visit 2>  ...  [EOS]
 
 The reference handles several code types (diagnosis / procedure / drug / lab)
-each with its own modality prompt token; the PyHealth ``EHRGeneration`` task
+each with its own modality prompt token; the PyHealth ``VisitSequenceGeneration`` task
 exposes a single ``visits`` modality, so a single ``[CODE_PROMPT]`` token marks
 it. The code vocabulary is taken from the dataset's
 ``visits`` processor (which already reserves index 0 for ``<pad>`` and
@@ -63,12 +63,13 @@ class PromptEHR(BaseModel):
     Trains a BART denoising autoencoder with a learnable soft prompt on patient
     visit-code streams, then generates synthetic patients by prompt-conditioned
     encoder-decoder sampling. Generation is **unconditional** (no demographic
-    conditioning), matching the :class:`~pyhealth.tasks.EHRGeneration` task.
+    conditioning), matching the :class:`~pyhealth.tasks.VisitSequenceGeneration` task.
 
     Args:
         dataset: A fitted ``SampleDataset`` whose ``input_schema`` contains
-            ``{"visits": NestedMultiHotProcessor}`` (or the equivalent
-            ``NestedSequenceProcessor``) and whose ``output_schema`` is empty.
+            ``{"visits": NestedSequenceProcessor}`` -- use the
+            :class:`~pyhealth.tasks.VisitSequenceGeneration` task -- and whose
+            ``output_schema`` is empty.
         embed_dim: BART model dimension (``d_model``). Must be divisible by
             ``n_heads``. Default: 256.
         n_heads: Number of attention heads (encoder and decoder). Default: 8.
@@ -127,7 +128,7 @@ class PromptEHR(BaseModel):
         if "visits" not in dataset.input_processors:
             raise ValueError(
                 "PromptEHR expects an input feature named 'visits' backed by a "
-                "NestedSequenceProcessor or NestedMultiHotProcessor."
+                "NestedSequenceProcessor (see VisitSequenceGeneration)."
             )
         if not hasattr(dataset.input_processors["visits"], "visit_code_ids"):
             # Without this the visit row would be read as raw values. Under a
@@ -137,7 +138,7 @@ class PromptEHR(BaseModel):
                 f"PromptEHR needs a 'visits' processor that can invert its own "
                 f"encoding (a visit_code_ids method); got "
                 f"{type(dataset.input_processors['visits']).__name__}. Use "
-                "NestedSequenceProcessor or NestedMultiHotProcessor."
+                "NestedSequenceProcessor, via the VisitSequenceGeneration task."
             )
 
         self.save_dir = save_dir

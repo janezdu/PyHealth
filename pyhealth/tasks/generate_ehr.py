@@ -1,14 +1,28 @@
 """EHR sequence-generation tasks for PyHealth generative models.
 
-This is the shared task for every generator in
-:mod:`pyhealth.models.generators` (HALO, MedGAN, CorGAN, PromptEHR, ...). It
-extracts, for each patient, the ordered list of visits where each visit is the
-list of medical codes recorded in that admission. The single input feature
-``visits`` is processed by :class:`~pyhealth.processors.NestedMultiHotProcessor`;
-there is no prediction label, so ``output_schema`` is empty.
+These back every generator in :mod:`pyhealth.models.generators`. They extract,
+for each patient, the ordered list of visits where each visit is the list of
+medical codes recorded in that admission. There is no prediction label, so
+``output_schema`` is empty.
 
-:class:`EHRGeneration` holds all the extraction logic; dataset-specific
-subclasses only declare which event type and code attribute to read.
+Extraction is shared -- :class:`EHRGeneration` holds all of it -- but the
+encoding is not, because each generator family reads its codes in a different
+shape:
+
+- :class:`VisitMultiHotGeneration` -- one multi-hot row per visit, for HALO,
+  whose transformer consumes multi-hot vectors directly.
+- :class:`VisitSequenceGeneration` -- per-visit code indices, for the token
+  models GPT2 and PromptEHR, which flatten visits into streams of code ids.
+- :class:`PatientCodeSetGeneration` -- one pooled code set per patient, for the
+  bag-of-codes models MedGAN and CorGAN, which have no visit axis.
+
+Match the task to the model. Handing a model the wrong encoding does not raise:
+the numbers still have the right shape and dtype, so training runs and produces
+a confidently wrong result. That is why these are separate classes rather than
+one task with a flag.
+
+``event_type`` / ``code_attr`` select the dataset's coding columns and can be
+passed to any of them, so the encoding and the dataset are independent choices.
 
 Evaluating generated data
 -------------------------
@@ -67,7 +81,11 @@ from collections.abc import Callable
 from typing import ClassVar
 
 from pyhealth.data.data import Patient
-from pyhealth.processors import NestedMultiHotProcessor
+from pyhealth.processors import (
+    MultiHotProcessor,
+    NestedMultiHotProcessor,
+    NestedSequenceProcessor,
+)
 
 from .base_task import BaseTask
 
@@ -75,50 +93,78 @@ logger = logging.getLogger(__name__)
 
 
 class EHRGeneration(BaseTask):
-    """Generic per-visit code-sequence task for unconditional EHR generators.
+    """Per-visit code extraction for unconditional EHR generators.
 
     Builds one sample per qualifying patient: the ordered list of visits, each
     visit being the list of codes (read from ``code_attr`` on ``event_type``
     events) recorded in that admission. Patients with fewer than ``min_visits``
     qualifying visits are skipped.
 
-    Subclass and override the class attributes for a specific dataset, or set
-    them on an instance. The defaults read MIMIC-III ICD-9 diagnosis codes.
+    **This class does not set an** ``input_schema`` **and cannot be used
+    directly.** Extraction is shared, but each generator family wants the codes
+    in a different shape, and handing a model the wrong one fails silently
+    rather than loudly. Pick the subclass that matches your model:
+
+    ==============================  =====================  ==================
+    Task                            Encoding               Models
+    ==============================  =====================  ==================
+    :class:`VisitMultiHotGeneration`  per-visit multi-hot  HALO
+    :class:`VisitSequenceGeneration`  per-visit indices    GPT2, PromptEHR
+    :class:`PatientCodeSetGeneration` one set per patient  MedGAN, CorGAN
+    ==============================  =====================  ==================
 
     Args:
-        task_name: Name of the task.
-        input_schema: ``{"visits": NestedMultiHotProcessor}``.
-        output_schema: empty (generative task, no labels).
-        event_type: Event type to pull per admission. Default
-            ``"diagnoses_icd"``.
-        code_attr: Event attribute holding the code string. Default
-            ``"icd9_code"``.
-        min_visits: Minimum qualifying visits to keep a patient. Default 2.
+        code_mapping: Optional vocabulary mapping, see :class:`BaseTask`.
+        event_type: Event type to pull per admission. Defaults to the class
+            attribute (``"diagnoses_icd"``).
+        code_attr: Event attribute holding the code string. Defaults to the
+            class attribute (``"icd9_code"``).
+        min_visits: Minimum qualifying visits to keep a patient. Defaults to
+            the class attribute (2).
 
     Examples:
-        >>> from pyhealth.datasets import MIMIC3Dataset
-        >>> from pyhealth.tasks import EHRGeneration
-        >>> ds = MIMIC3Dataset(root="...", tables=["diagnoses_icd"], dev=True)
-        >>> samples = ds.set_task(EHRGeneration())
-        >>> samples[0]["visits"].shape  # (num_visits, vocab_size) multi-hot
-        torch.Size([3, 512])
+        >>> from pyhealth.tasks import VisitSequenceGeneration
+        >>> task = VisitSequenceGeneration(code_attr="icd_code")
+        >>> task.code_attr
+        'icd_code'
     """
 
     task_name: str = "ehr_generation"
-    input_schema: ClassVar[dict[str, str | type]] = {
-        "visits": NestedMultiHotProcessor
-    }
     output_schema: ClassVar[dict[str, str | type]] = {}
 
     event_type: str = "diagnoses_icd"
     code_attr: str = "icd9_code"
     min_visits: int = 2
 
-    def __call__(self, patient: Patient) -> list[dict]:
-        """Extract the per-visit code sequence for a patient."""
+    def __init__(
+        self,
+        code_mapping=None,
+        event_type: str | None = None,
+        code_attr: str | None = None,
+        min_visits: int | None = None,
+    ) -> None:
+        if not hasattr(type(self), "input_schema"):
+            raise TypeError(
+                f"{type(self).__name__} does not declare an encoding. "
+                "EHRGeneration only holds the shared extraction logic -- use "
+                "VisitMultiHotGeneration (HALO), VisitSequenceGeneration "
+                "(GPT2, PromptEHR) or PatientCodeSetGeneration (MedGAN, "
+                "CorGAN), whichever matches your model."
+            )
+        super().__init__(code_mapping=code_mapping)
+        # Per-instance overrides, so a dataset preset is a constructor argument
+        # rather than yet another subclass in the encoding x dataset grid.
+        if event_type is not None:
+            self.event_type = event_type
+        if code_attr is not None:
+            self.code_attr = code_attr
+        if min_visits is not None:
+            self.min_visits = min_visits
+
+    def _visits(self, patient: Patient) -> list[list[str]]:
+        """Ordered per-admission code lists, empty admissions dropped."""
         visits: list[list[str]] = []
-        admissions = patient.get_events(event_type="admissions")
-        for admission in admissions:
+        for admission in patient.get_events(event_type="admissions"):
             events = patient.get_events(
                 event_type=self.event_type,
                 filters=[("hadm_id", "==", admission.hadm_id)],
@@ -130,15 +176,92 @@ class EHRGeneration(BaseTask):
             ]
             if codes:
                 visits.append(codes)
+        return visits
 
+    def __call__(self, patient: Patient) -> list[dict]:
+        """Extract the per-visit code sequence for a patient."""
+        visits = self._visits(patient)
         if len(visits) < self.min_visits:
             return []
-
         return [{"patient_id": patient.patient_id, "visits": visits}]
 
 
-class EHRGenerationMIMIC3(EHRGeneration):
-    """EHR generation task for MIMIC-III (ICD-9 diagnosis codes).
+class VisitMultiHotGeneration(EHRGeneration):
+    """Per-visit code sets as multi-hot rows. For HALO.
+
+    HALO's transformer consumes a multi-hot vector per context position, so
+    this hands it exactly that and no repacking happens on the way in.
+
+    Examples:
+        >>> from pyhealth.tasks import VisitMultiHotGeneration
+        >>> samples = dataset.set_task(VisitMultiHotGeneration())
+        >>> samples[0]["visits"].shape  # (num_visits, vocab_size)
+        torch.Size([3, 512])
+    """
+
+    task_name: str = "ehr_generation_visit_multihot"
+    input_schema: ClassVar[dict[str, str | type]] = {
+        "visits": NestedMultiHotProcessor
+    }
+
+
+class VisitSequenceGeneration(EHRGeneration):
+    """Per-visit code indices, right-padded. For GPT2 and PromptEHR.
+
+    Both are token-sequence models: they flatten each visit into a stream of
+    code ids. Indices are what they need, so this avoids encoding to multi-hot
+    and decoding straight back.
+
+    Examples:
+        >>> from pyhealth.tasks import VisitSequenceGeneration
+        >>> samples = dataset.set_task(VisitSequenceGeneration())
+        >>> samples[0]["visits"].shape  # (num_visits, max_codes_per_visit)
+        torch.Size([3, 12])
+    """
+
+    task_name: str = "ehr_generation_visit_sequence"
+    input_schema: ClassVar[dict[str, str | type]] = {
+        "visits": NestedSequenceProcessor
+    }
+
+
+class PatientCodeSetGeneration(EHRGeneration):
+    """One code set per patient, visit structure discarded. For MedGAN/CorGAN.
+
+    Bag-of-codes generators emit a single aggregate vector per patient, so the
+    visit axis is collapsed here rather than inside the model. ``min_visits``
+    still applies -- it filters on the patient's real visit count before the
+    codes are pooled.
+
+    Note:
+        Because the visit axis is gone, the next-visit utility metric in
+        :mod:`pyhealth.metrics.generative` is not meaningful for these models;
+        see this module's header.
+
+    Examples:
+        >>> from pyhealth.tasks import PatientCodeSetGeneration
+        >>> samples = dataset.set_task(PatientCodeSetGeneration())
+        >>> samples[0]["visits"].shape  # (vocab_size,)
+        torch.Size([512])
+    """
+
+    task_name: str = "ehr_generation_patient_codeset"
+    input_schema: ClassVar[dict[str, str | type]] = {"visits": MultiHotProcessor}
+
+    def __call__(self, patient: Patient) -> list[dict]:
+        """Pool every visit's codes into one per-patient set."""
+        visits = self._visits(patient)
+        if len(visits) < self.min_visits:
+            return []
+        codes = sorted({code for visit in visits for code in visit})
+        return [{"patient_id": patient.patient_id, "visits": codes}]
+
+
+class EHRGenerationMIMIC3(VisitMultiHotGeneration):
+    """EHR generation task for MIMIC-III (ICD-9 diagnosis codes), for HALO.
+
+    A :class:`VisitMultiHotGeneration` preset. For GPT2/PromptEHR on MIMIC-III
+    use ``VisitSequenceGeneration()``, whose defaults are already MIMIC-III's.
 
     Examples:
         >>> from pyhealth.datasets import MIMIC3Dataset
@@ -155,8 +278,11 @@ class EHRGenerationMIMIC3(EHRGeneration):
     code_attr: str = "icd9_code"
 
 
-class EHRGenerationMIMIC4(EHRGeneration):
-    """EHR generation task for MIMIC-IV (ICD diagnosis codes).
+class EHRGenerationMIMIC4(VisitMultiHotGeneration):
+    """EHR generation task for MIMIC-IV (ICD diagnosis codes), for HALO.
+
+    A :class:`VisitMultiHotGeneration` preset. For another encoding on MIMIC-IV
+    pass the same columns, e.g. ``VisitSequenceGeneration(code_attr="icd_code")``.
 
     Examples:
         >>> from pyhealth.datasets import MIMIC4Dataset
@@ -265,21 +391,25 @@ def decode_dataset(sample_dataset, feature_key: str = "visits") -> list[dict]:
         ['4019', '25000']
     """
     processor = sample_dataset.input_processors[feature_key]
+    if not hasattr(processor, "visit_code_ids"):
+        raise ValueError(
+            "decode_dataset needs a per-visit processor that can invert its own "
+            f"encoding (a visit_code_ids method); got {type(processor).__name__}. "
+            "PatientCodeSetGeneration has no visit axis to decode."
+        )
     index_to_code = {idx: code for code, idx in processor.code_vocab.items()}
 
     records: list[dict] = []
     for i in range(len(sample_dataset)):
         sample = sample_dataset[i]
         visits: list[list[str]] = []
-        # Each row is a multi-hot vector over the vocabulary, so the codes
-        # present are its non-zero columns. (Reading the values as indices --
-        # which the index-based encoding required -- would see only 0s and 1s
-        # here and decode every visit as empty.)
+        # The processor knows how to read its own rows -- multi-hot columns or
+        # padded indices -- so this works for either per-visit task.
         for row in sample[feature_key]:
             codes = [
-                index_to_code[int(col)]
-                for col in row.nonzero().flatten().tolist()
-                if index_to_code.get(int(col)) not in (None, "<pad>", "<unk>")
+                index_to_code[idx]
+                for idx in processor.visit_code_ids(row)
+                if index_to_code.get(idx) not in (None, "<pad>", "<unk>")
             ]
             if codes:
                 visits.append(codes)

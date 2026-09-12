@@ -3,8 +3,10 @@
 A simple decoder-only baseline that mirrors the standalone reference script
 ``generate_synthetic_mimic3_gpt2.py`` (``--mode transformer_baseline``) but
 plugged into the standard PyHealth ``dataset -> set_task -> SampleDataset ->
-model`` pipeline. It consumes the same :class:`~pyhealth.tasks.EHRGeneration`
-task as :class:`~pyhealth.models.HALO`.
+model`` pipeline. It consumes the
+:class:`~pyhealth.tasks.VisitSequenceGeneration` task -- the same extraction
+:class:`~pyhealth.models.HALO` uses, but emitting code indices rather than
+multi-hot rows, since a causal LM reads token ids.
 
 Each patient's visits are flattened into a single token stream::
 
@@ -39,8 +41,9 @@ class GPT2(BaseModel):
 
     Args:
         dataset: A fitted ``SampleDataset`` whose ``input_schema`` contains
-            ``{"visits": NestedMultiHotProcessor}`` (or the equivalent
-            ``NestedSequenceProcessor``) and whose ``output_schema`` is empty.
+            ``{"visits": NestedSequenceProcessor}`` -- use the
+            :class:`~pyhealth.tasks.VisitSequenceGeneration` task -- and whose
+            ``output_schema`` is empty.
         embed_dim: GPT-2 embedding dimension (``n_embd``). Must be divisible by
             ``n_heads``. Default: 512.
         n_heads: Number of attention heads. Default: 8.
@@ -86,7 +89,7 @@ class GPT2(BaseModel):
         if "visits" not in dataset.input_processors:
             raise ValueError(
                 "GPT2 expects an input feature named 'visits' backed by a "
-                "NestedSequenceProcessor or NestedMultiHotProcessor."
+                "NestedSequenceProcessor (see VisitSequenceGeneration)."
             )
         if not hasattr(dataset.input_processors["visits"], "visit_code_ids"):
             # Without this the visit row would be read as raw values. Under a
@@ -96,7 +99,7 @@ class GPT2(BaseModel):
                 f"GPT2 needs a 'visits' processor that can invert its own "
                 f"encoding (a visit_code_ids method); got "
                 f"{type(dataset.input_processors['visits']).__name__}. Use "
-                "NestedSequenceProcessor or NestedMultiHotProcessor."
+                "NestedSequenceProcessor, via the VisitSequenceGeneration task."
             )
 
         self.save_dir = save_dir
