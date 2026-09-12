@@ -3,11 +3,15 @@ from typing import Any, Dict, List, Optional, Tuple, Iterable
 import torch
 
 from . import register_processor
-from .base_processor import FeatureProcessor, ModalityType, TemporalFeatureProcessor, TokenProcessorInterface
+from .base_processor import (
+    CodeVocabularyMixin,
+    ModalityType,
+    TemporalFeatureProcessor,
+)
 
 
 @register_processor("stagenet")
-class StageNetProcessor(TemporalFeatureProcessor, TokenProcessorInterface):
+class StageNetProcessor(TemporalFeatureProcessor, CodeVocabularyMixin):
     """
     Feature processor for StageNet CODE inputs with coupled value/time data.
 
@@ -55,8 +59,7 @@ class StageNetProcessor(TemporalFeatureProcessor, TokenProcessorInterface):
     """
 
     def __init__(self, padding: int = 0):
-        self.code_vocab: Dict[Any, int] = {"<pad>": self.PAD, "<unk>": self.UNK}
-        self._next_index = 2
+        self._init_code_vocab()
         self._is_nested = None  # Will be determined during fit
         # Max inner sequence length for nested codes
         self._max_nested_len = None
@@ -101,47 +104,17 @@ class StageNetProcessor(TemporalFeatureProcessor, TokenProcessorInterface):
                         # Track max inner length
                         max_inner_len = max(max_inner_len, len(inner_list))
                         for code in inner_list:
-                            if code is not None and code not in self.code_vocab:
-                                self.code_vocab[code] = self._next_index
-                                self._next_index += 1
+                            self._observe_code(code)
                 else:
                     # Flat codes
                     for code in value_data:
-                        if code is not None and code not in self.code_vocab:
-                            self.code_vocab[code] = self._next_index
-                            self._next_index += 1
+                        self._observe_code(code)
 
         # Store max nested length: add user-specified padding to observed maximum
         # This ensures the processor can handle sequences longer than those in training data
         if self._is_nested:
             observed_max = max(1, max_inner_len)
             self._max_nested_len = observed_max + self._padding
-
-    def remove(self, tokens: set[str]):
-        """Remove specified vocabularies from the processor."""
-        keep = set(self.code_vocab.keys()) - tokens | {"<pad>", "<unk>"}
-        order = [k for k, v in sorted(self.code_vocab.items(), key=lambda x: x[1]) if k in keep]
-        
-        self.code_vocab = { k : i for i, k in enumerate(order) }
-
-    def retain(self, tokens: set[str]):
-        """Retain only the specified vocabularies in the processor."""
-        keep = set(self.code_vocab.keys()) & tokens | {"<pad>", "<unk>"}
-        order = [k for k, v in sorted(self.code_vocab.items(), key=lambda x: x[1]) if k in keep]
-        
-        self.code_vocab = { k : i for i, k in enumerate(order) }
-
-    def add(self, tokens: set[str]):
-        """Add specified vocabularies to the processor."""
-        i = len(self.code_vocab)
-        for token in tokens:
-            if token not in self.code_vocab:
-                self.code_vocab[token] = i
-                i += 1
-
-    def tokens(self) -> set[str]:
-        """Return the set of tokens in the processor's vocabulary."""
-        return set(self.code_vocab.keys())
 
     def process(
         self, value: Tuple[Optional[List], List]
@@ -220,10 +193,6 @@ class StageNetProcessor(TemporalFeatureProcessor, TokenProcessorInterface):
             encoded_sequences.append(indices)
 
         return torch.tensor(encoded_sequences, dtype=torch.long)
-
-    def vocab_size(self) -> int:
-        """Return the size of the processor's vocabulary."""
-        return len(self.code_vocab)
 
     def size(self) -> int:
         """Return vocabulary size."""

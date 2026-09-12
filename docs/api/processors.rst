@@ -27,6 +27,12 @@ Available Processors
 - ``SequenceProcessor``: For categorical sequences (e.g., medical codes like diagnoses, procedures)
 - ``NestedSequenceProcessor``: For nested categorical sequences (e.g., drug recommendation with visit history)
 - ``NestedMultiHotProcessor``: For nested categorical sequences as per-visit multi-hot vectors (e.g., generative EHR models)
+
+Processors that map codes to indices share one vocabulary implementation,
+``CodeVocabularyMixin`` (``pyhealth.processors.base_processor``): it provides
+``add`` / ``remove`` / ``retain`` / ``tokens`` / ``vocab_size`` and the
+``<pad>``=0, ``<unk>``=1 convention. A new code processor should mix it in
+rather than reimplementing them.
 - ``NestedFloatsProcessor``: For nested numerical sequences with optional forward-fill
 
 **Label Processors:**

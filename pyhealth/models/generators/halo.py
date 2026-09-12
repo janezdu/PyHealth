@@ -365,13 +365,13 @@ class HALO(BaseModel):
 
     The model infers its code vocabulary from the fitted ``SampleDataset``:
     ``code_vocab_size = dataset.input_processors["visits"].vocab_size()``
-    (the ``NestedSequenceProcessor`` vocab, which already reserves index 0 for
+    (the ``NestedMultiHotProcessor`` vocab, which already reserves index 0 for
     ``<pad>`` and index 1 for ``<unk>``). Three special tokens are appended for
     start-of-sequence, end-of-sequence, and pad-visit.
 
     Args:
         dataset: A fitted ``SampleDataset`` whose ``input_schema`` contains
-            ``{"visits": NestedSequenceProcessor}`` and whose ``output_schema``
+            ``{"visits": NestedMultiHotProcessor}`` and whose ``output_schema``
             is empty.
         embed_dim: Transformer embedding dimension (``n_embd``). Default: 768.
         n_heads: Number of attention heads. Must divide ``embed_dim``.
@@ -420,7 +420,7 @@ class HALO(BaseModel):
         if "visits" not in dataset.input_processors:
             raise ValueError(
                 "HALO expects an input feature named 'visits' backed by a "
-                "NestedSequenceProcessor."
+                "NestedMultiHotProcessor."
             )
 
         self.save_dir = save_dir
@@ -428,7 +428,7 @@ class HALO(BaseModel):
         self._epochs = epochs
         self._lr = lr
 
-        # Code vocab from the NestedSequenceProcessor (includes <pad>, <unk>).
+        # Code vocab from the NestedMultiHotProcessor (includes <pad>, <unk>).
         self.visits_processor = dataset.input_processors["visits"]
         code_vocab_size = self.visits_processor.vocab_size()
         label_vocab_size = 0  # unconditional generation -- no output labels
@@ -498,6 +498,15 @@ class HALO(BaseModel):
 
         # Real visits per patient, for the whole batch at once. An all-zero row
         # is an empty visit, exactly as a row of <pad> indices was before.
+        #
+        # TODO: this counts non-empty rows and then treats the *first* n_visits
+        # rows as the real ones, so a patient like [codes, empty, codes] would
+        # silently lose its last visit. The pre-vectorisation loop had the same
+        # behaviour, and EHRGeneration cannot produce an interior empty visit
+        # (its __call__ skips admissions with no codes), so nothing hits this
+        # today -- but NestedMultiHotProcessor does emit all-zero rows for empty
+        # visits, so a hand-built SampleDataset can. Fix by masking on row
+        # position rather than row count.
         n_visits = (visits.sum(dim=-1) > 0).sum(dim=1)
         n_visits = n_visits.clamp(max=cfg.n_ctx - 2)             # (batch,)
 
@@ -532,8 +541,8 @@ class HALO(BaseModel):
         """Forward pass.
 
         Args:
-            visits: LongTensor ``(batch, max_visits, max_codes_per_visit)`` from
-                the ``NestedSequenceProcessor``.
+            visits: FloatTensor ``(batch, max_visits, code_vocab_size)`` from
+                the ``NestedMultiHotProcessor``, 1.0 where a code is present.
             **kwargs: Any other batch keys are ignored.
 
         Returns:

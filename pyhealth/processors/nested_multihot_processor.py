@@ -4,11 +4,11 @@ from typing import Any
 import torch
 
 from . import register_processor
-from .base_processor import FeatureProcessor, TokenProcessorInterface
+from .base_processor import CodeVocabularyMixin, FeatureProcessor
 
 
 @register_processor("nested_multihot")
-class NestedMultiHotProcessor(FeatureProcessor, TokenProcessorInterface):
+class NestedMultiHotProcessor(FeatureProcessor, CodeVocabularyMixin):
     """Nested categorical sequences as per-visit multi-hot vectors.
 
     Same input as :class:`NestedSequenceProcessor` -- a list of visits, each a
@@ -59,8 +59,7 @@ class NestedMultiHotProcessor(FeatureProcessor, TokenProcessorInterface):
         # `padding` is accepted and ignored so this is a drop-in swap for
         # NestedSequenceProcessor in a schema. There is no inner axis to pad --
         # that is the entire point -- so honouring it would be misleading.
-        self.code_vocab: dict[Any, int] = {"<pad>": self.PAD, "<unk>": self.UNK}
-        self._next_index = 2
+        self._init_code_vocab()
         self._padding = padding
 
     def fit(self, samples: Iterable[dict[str, Any]], field: str) -> None:
@@ -81,38 +80,7 @@ class NestedMultiHotProcessor(FeatureProcessor, TokenProcessorInterface):
                 if not isinstance(inner_seq, list):
                     continue
                 for code in inner_seq:
-                    if code is not None and code not in self.code_vocab:
-                        self.code_vocab[code] = self._next_index
-                        self._next_index += 1
-
-    def remove(self, tokens: set[str]):
-        """Remove specified vocabularies from the processor."""
-        keep = set(self.code_vocab.keys()) - tokens | {"<pad>", "<unk>"}
-        order = [k for k, v in sorted(self.code_vocab.items(), key=lambda x: x[1])
-                 if k in keep]
-        self.code_vocab = {k: i for i, k in enumerate(order)}
-        self._next_index = len(self.code_vocab)
-
-    def retain(self, tokens: set[str]):
-        """Retain only the specified vocabularies in the processor."""
-        keep = set(self.code_vocab.keys()) & tokens | {"<pad>", "<unk>"}
-        order = [k for k, v in sorted(self.code_vocab.items(), key=lambda x: x[1])
-                 if k in keep]
-        self.code_vocab = {k: i for i, k in enumerate(order)}
-        self._next_index = len(self.code_vocab)
-
-    def add(self, tokens: set[str]):
-        """Add specified vocabularies to the processor."""
-        i = len(self.code_vocab)
-        for token in tokens:
-            if token not in self.code_vocab:
-                self.code_vocab[token] = i
-                i += 1
-        self._next_index = len(self.code_vocab)
-
-    def tokens(self) -> set[str]:
-        """Return the set of tokens in the processor's vocabulary."""
-        return set(self.code_vocab.keys())
+                    self._observe_code(code)
 
     def process(self, value: list[list[Any]]) -> torch.Tensor:
         """Nested sequence -> ``(num_visits, vocab_size)`` float multi-hot.
@@ -149,12 +117,30 @@ class NestedMultiHotProcessor(FeatureProcessor, TokenProcessorInterface):
                               torch.ones(len(idx)))
         return out
 
+    def visit_code_ids(self, row: torch.Tensor) -> list[int]:
+        """Code indices present in one processed visit row.
+
+        The inverse of what :meth:`process` writes. Here the row is a multi-hot
+        vector, so the codes are its *nonzero column indices* -- reading the
+        values themselves would yield 1.0 (i.e. ``<unk>``) for every code.
+
+        Codes come back in vocabulary order, not charted order, and repeats are
+        already collapsed; multi-hot records presence, not sequence or count.
+
+        Args:
+            row: 1D multi-hot tensor of width ``vocab_size``, one visit.
+
+        Returns:
+            Code indices present in the visit, ascending.
+
+        Examples:
+            >>> processor.visit_code_ids(torch.tensor([0., 0., 1., 0., 1.]))
+            [2, 4]
+        """
+        return row.nonzero(as_tuple=True)[0].tolist()
+
     def size(self) -> int:
         """Feature width: the vocabulary, since that is the row length."""
-        return len(self.code_vocab)
-
-    def vocab_size(self) -> int:
-        """Return vocabulary size."""
         return len(self.code_vocab)
 
     def __repr__(self):

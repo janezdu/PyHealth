@@ -38,7 +38,7 @@ The reference handles several code types (diagnosis / procedure / drug / lab)
 each with its own modality prompt token; the PyHealth ``EHRGeneration`` task
 exposes a single ``visits`` modality, so a single ``[CODE_PROMPT]`` token marks
 it. The code vocabulary is taken from the dataset's
-``NestedSequenceProcessor`` (which already reserves index 0 for ``<pad>`` and
+``visits`` processor (which already reserves index 0 for ``<pad>`` and
 index 1 for ``<unk>``); five special tokens (BOS, EOS, VISIT_DELIM, MASK,
 CODE_PROMPT) are appended, and ``<pad>`` (index 0) is reused as the pad token.
 """
@@ -67,8 +67,8 @@ class PromptEHR(BaseModel):
 
     Args:
         dataset: A fitted ``SampleDataset`` whose ``input_schema`` contains
-            ``{"visits": NestedSequenceProcessor}`` and whose ``output_schema``
-            is empty.
+            ``{"visits": NestedMultiHotProcessor}`` (or the equivalent
+            ``NestedSequenceProcessor``) and whose ``output_schema`` is empty.
         embed_dim: BART model dimension (``d_model``). Must be divisible by
             ``n_heads``. Default: 256.
         n_heads: Number of attention heads (encoder and decoder). Default: 8.
@@ -127,7 +127,17 @@ class PromptEHR(BaseModel):
         if "visits" not in dataset.input_processors:
             raise ValueError(
                 "PromptEHR expects an input feature named 'visits' backed by a "
-                "NestedSequenceProcessor."
+                "NestedSequenceProcessor or NestedMultiHotProcessor."
+            )
+        if not hasattr(dataset.input_processors["visits"], "visit_code_ids"):
+            # Without this the visit row would be read as raw values. Under a
+            # multi-hot encoding every value is 1.0, so every code would silently
+            # become <unk> and training would look fine while learning nothing.
+            raise ValueError(
+                f"PromptEHR needs a 'visits' processor that can invert its own "
+                f"encoding (a visit_code_ids method); got "
+                f"{type(dataset.input_processors['visits']).__name__}. Use "
+                "NestedSequenceProcessor or NestedMultiHotProcessor."
             )
 
         self.save_dir = save_dir
@@ -139,7 +149,7 @@ class PromptEHR(BaseModel):
         self.mean_span_len = mean_span_len
         self.prompt_length = prompt_length
 
-        # Code vocab from the NestedSequenceProcessor (includes <pad>=0, <unk>=1).
+        # Code vocab from the visits processor (includes <pad>=0, <unk>=1).
         self.visits_processor = dataset.input_processors["visits"]
         self.code_vocab_size = self.visits_processor.vocab_size()
         # Append five special tokens after the code vocab; reuse <pad>=0 as PAD.
@@ -197,7 +207,7 @@ class PromptEHR(BaseModel):
             n_visits = int((visits[i].sum(dim=-1) > 0).sum().item())
             seq: List[int] = [self.code_prompt_id]
             for j in range(n_visits):
-                codes = [int(c) for c in visits[i, j].tolist() if c > 0]
+                codes = self.visits_processor.visit_code_ids(visits[i, j])
                 seq.extend(codes)
                 if j < n_visits - 1:
                     seq.append(self.delim_id)
@@ -313,8 +323,8 @@ class PromptEHR(BaseModel):
         """Forward pass (denoising seq2seq reconstruction).
 
         Args:
-            visits: LongTensor ``(batch, max_visits, max_codes_per_visit)`` from
-                the ``NestedSequenceProcessor``.
+            visits: Processed visit tensor from either nested ``visits``
+                processor; the processor's ``visit_code_ids`` inverts a row.
             **kwargs: Any other batch keys are ignored.
 
         Returns:

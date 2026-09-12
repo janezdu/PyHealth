@@ -3,11 +3,11 @@ from typing import Any, Dict, List, Iterable, Optional, Tuple
 import torch
 
 from . import register_processor
-from .base_processor import FeatureProcessor, TokenProcessorInterface
+from .base_processor import CodeVocabularyMixin, FeatureProcessor
 
 
 @register_processor("sequence")
-class SequenceProcessor(FeatureProcessor, TokenProcessorInterface):
+class SequenceProcessor(FeatureProcessor, CodeVocabularyMixin):
     """Feature processor for encoding categorical sequences.
 
     Encodes medical codes (e.g., diagnoses, procedures) into numerical
@@ -29,8 +29,7 @@ class SequenceProcessor(FeatureProcessor, TokenProcessorInterface):
     """
 
     def __init__(self, code_mapping: Optional[Tuple[str, str]] = None):
-        self.code_vocab: Dict[Any, int] = {"<pad>": self.PAD, "<unk>": self.UNK}
-        self._next_index = 2
+        self._init_code_vocab()
         self._mapper = None
         if code_mapping is not None:
             from pyhealth.medcode import CrossMap
@@ -83,34 +82,6 @@ class SequenceProcessor(FeatureProcessor, TokenProcessorInterface):
                     indices.append(self.code_vocab["<unk>"])
 
         return torch.tensor(indices, dtype=torch.long)
-    
-    def remove(self, tokens: set[str]):
-        """Remove specified vocabularies from the processor."""
-        keep = set(self.code_vocab.keys()) - tokens | {"<pad>", "<unk>"}
-        order = [k for k, v in sorted(self.code_vocab.items(), key=lambda x: x[1]) if k in keep]
-        self.code_vocab = { k : i for i, k in enumerate(order) }
-
-    def retain(self, tokens: set[str]):
-        """Retain only the specified vocabularies in the processor."""
-        keep = set(self.code_vocab.keys()) & tokens | {"<pad>", "<unk>"}
-        order = [k for k, v in sorted(self.code_vocab.items(), key=lambda x: x[1]) if k in keep]
-        self.code_vocab = { k : i for i, k in enumerate(order) }
-
-    def add(self, tokens: set[str]):
-        """Add specified vocabularies to the processor."""
-        i = len(self.code_vocab)
-        for token in tokens:
-            if token not in self.code_vocab:
-                self.code_vocab[token] = i
-                i += 1
-
-    def tokens(self) -> set[str]:
-        """Return the set of tokens in the processor's vocabulary."""
-        return set(self.code_vocab.keys())
-
-    def vocab_size(self) -> int:
-        """Return the size of the processor's vocabulary."""
-        return len(self.code_vocab)
 
     def size(self):
         return len(self.code_vocab)

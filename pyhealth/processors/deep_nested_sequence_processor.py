@@ -3,11 +3,11 @@ from typing import Any, Dict, List, Iterable
 import torch
 
 from . import register_processor
-from .base_processor import FeatureProcessor, TokenProcessorInterface
+from .base_processor import CodeVocabularyMixin, FeatureProcessor
 
 
 @register_processor("deep_nested_sequence")
-class DeepNestedSequenceProcessor(FeatureProcessor, TokenProcessorInterface):
+class DeepNestedSequenceProcessor(FeatureProcessor, CodeVocabularyMixin):
     """
     Feature processor for deeply nested categorical sequences with vocabulary.
 
@@ -45,8 +45,7 @@ class DeepNestedSequenceProcessor(FeatureProcessor, TokenProcessorInterface):
     """
 
     def __init__(self):
-        self.code_vocab: Dict[Any, int] = {"<pad>": self.PAD, "<unk>": self.UNK}
-        self._next_index = 2
+        self._init_code_vocab()
         self._max_middle_len = 1  # Maximum length of middle sequences (e.g. visits)
         self._max_inner_len = 1   # Maximum length of inner sequences (e.g. codes per visit)
 
@@ -78,38 +77,10 @@ class DeepNestedSequenceProcessor(FeatureProcessor, TokenProcessorInterface):
 
                                     # Build vocabulary
                                     for code in inner_seq:
-                                        if code is not None and code not in self.code_vocab:
-                                            self.code_vocab[code] = self._next_index
-                                            self._next_index += 1
+                                        self._observe_code(code)
 
         self._max_middle_len = max(1, max_middle_len)
         self._max_inner_len = max(1, max_inner_len)
-
-    def remove(self, tokens: set[str]):
-        """Remove specified vocabularies from the processor."""
-        keep = set(self.code_vocab.keys()) - tokens | {"<pad>", "<unk>"}
-        order = [k for k, v in sorted(self.code_vocab.items(), key=lambda x: x[1]) if k in keep]
-        
-        self.code_vocab = { k : i for i, k in enumerate(order) }
-
-    def retain(self, tokens: set[str]):
-        """Retain only the specified vocabularies in the processor."""
-        keep = set(self.code_vocab.keys()) & tokens | {"<pad>", "<unk>"}
-        order = [k for k, v in sorted(self.code_vocab.items(), key=lambda x: x[1]) if k in keep]
-        
-        self.code_vocab = { k : i for i, k in enumerate(order) }
-
-    def add(self, tokens: set[str]):
-        """Add specified vocabularies to the processor."""
-        i = len(self.code_vocab)
-        for token in tokens:
-            if token not in self.code_vocab:
-                self.code_vocab[token] = i
-                i += 1
-
-    def tokens(self) -> set[str]:
-        """Return the set of tokens in the processor's vocabulary."""
-        return set(self.code_vocab.keys())
 
     def process(self, value: List[List[List[Any]]]) -> torch.Tensor:
         """Process deep nested sequence into padded 3D tensor.
@@ -173,17 +144,9 @@ class DeepNestedSequenceProcessor(FeatureProcessor, TokenProcessorInterface):
 
         return torch.tensor(encoded_groups, dtype=torch.long)
 
-    def vocab_size(self) -> int:
-        """Return the size of the processor's vocabulary."""
-        return len(self.code_vocab)
-
     def size(self) -> int:
         """Return max inner length (embedding dimension) for unified API."""
         return self._max_inner_len
-
-    def vocab_size(self) -> int:
-        """Return vocabulary size."""
-        return len(self.code_vocab)
 
     def __repr__(self):
         return (

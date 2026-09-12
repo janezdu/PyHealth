@@ -196,6 +196,88 @@ class TokenProcessorInterface(ABC):
         pass
 
 
+class CodeVocabularyMixin(TokenProcessorInterface):
+    """Concrete ``<pad>``/``<unk>`` code vocabulary, shared by code processors.
+
+    Every processor that maps medical codes to indices needs the same four
+    operations -- build, add, remove, retain -- and each one used to carry its
+    own copy. ``SequenceProcessor``, ``NestedSequenceProcessor``,
+    ``DeepNestedSequenceProcessor``, ``NestedMultiHotProcessor`` and
+    ``StageNetProcessor`` held five verbatim duplicates of the same code.
+
+    Deliberately a mixin and not a base class. Several models dispatch on
+    ``isinstance(processor, NestedSequenceProcessor)`` to decide whether to
+    apply ``nn.Embedding``, so making one code processor inherit from another
+    would silently reroute it. Sharing the implementation without touching the
+    inheritance chain keeps that dispatch honest.
+
+    Subclasses call :meth:`_init_code_vocab` from ``__init__`` and
+    :meth:`_observe_code` from their own ``fit`` traversal, which differs by
+    nesting depth and so is not shared here.
+
+    Examples:
+        >>> class MyProcessor(FeatureProcessor, CodeVocabularyMixin):
+        ...     def __init__(self):
+        ...         self._init_code_vocab()
+        ...     def fit(self, samples, field):
+        ...         for sample in samples:
+        ...             for code in sample[field]:
+        ...                 self._observe_code(code)
+        ...     def process(self, value):
+        ...         return [self.code_vocab.get(c, self.UNK) for c in value]
+        >>> processor = MyProcessor()
+        >>> processor.fit([{"codes": ["A", "B"]}], "codes")
+        >>> processor.vocab_size()
+        4
+        >>> processor.code_vocab["A"]
+        2
+    """
+
+    code_vocab: dict[Any, int]
+
+    def _init_code_vocab(self) -> None:
+        """Seed the vocabulary with ``<pad>`` (0) and ``<unk>`` (1)."""
+        self.code_vocab = {"<pad>": self.PAD, "<unk>": self.UNK}
+        self._next_index = 2
+
+    def _observe_code(self, code: Any) -> None:
+        """Add one code to the vocabulary if it is new and not ``None``."""
+        if code is not None and code not in self.code_vocab:
+            self.code_vocab[code] = self._next_index
+            self._next_index += 1
+
+    def _reindex(self, keep: set) -> None:
+        """Rebuild the vocabulary over ``keep``, preserving relative order."""
+        order = [
+            k
+            for k, _ in sorted(self.code_vocab.items(), key=lambda kv: kv[1])
+            if k in keep
+        ]
+        self.code_vocab = {k: i for i, k in enumerate(order)}
+        self._next_index = len(self.code_vocab)
+
+    def remove(self, tokens: set[str]) -> None:
+        """Remove specified vocabularies from the processor."""
+        self._reindex(set(self.code_vocab.keys()) - tokens | {"<pad>", "<unk>"})
+
+    def retain(self, tokens: set[str]) -> None:
+        """Retain only the specified vocabularies in the processor."""
+        self._reindex(set(self.code_vocab.keys()) & tokens | {"<pad>", "<unk>"})
+
+    def add(self, tokens: set[str]) -> None:
+        """Add specified vocabularies to the processor."""
+        for token in tokens:
+            self._observe_code(token)
+
+    def tokens(self) -> set[str]:
+        """Return the set of tokens in the processor's vocabulary."""
+        return set(self.code_vocab.keys())
+
+    def vocab_size(self) -> int:
+        """Return the size of the processor's vocabulary."""
+        return len(self.code_vocab)
+
+
 class TemporalFeatureProcessor(FeatureProcessor):
     """Abstract base class for processors whose features are paired with timestamps.
 
