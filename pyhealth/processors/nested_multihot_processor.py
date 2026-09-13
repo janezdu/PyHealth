@@ -1,4 +1,5 @@
-from typing import Any, Dict, Iterable, List
+from collections.abc import Iterable
+from typing import Any
 
 import torch
 
@@ -58,11 +59,11 @@ class NestedMultiHotProcessor(FeatureProcessor, TokenProcessorInterface):
         # `padding` is accepted and ignored so this is a drop-in swap for
         # NestedSequenceProcessor in a schema. There is no inner axis to pad --
         # that is the entire point -- so honouring it would be misleading.
-        self.code_vocab: Dict[Any, int] = {"<pad>": self.PAD, "<unk>": self.UNK}
+        self.code_vocab: dict[Any, int] = {"<pad>": self.PAD, "<unk>": self.UNK}
         self._next_index = 2
         self._padding = padding
 
-    def fit(self, samples: Iterable[Dict[str, Any]], field: str) -> None:
+    def fit(self, samples: Iterable[dict[str, Any]], field: str) -> None:
         """Build the vocabulary. Inner length is irrelevant here, so unlike
         ``NestedSequenceProcessor`` nothing is measured about visit width.
 
@@ -113,7 +114,7 @@ class NestedMultiHotProcessor(FeatureProcessor, TokenProcessorInterface):
         """Return the set of tokens in the processor's vocabulary."""
         return set(self.code_vocab.keys())
 
-    def process(self, value: List[List[Any]]) -> torch.Tensor:
+    def process(self, value: list[list[Any]]) -> torch.Tensor:
         """Nested sequence -> ``(num_visits, vocab_size)`` float multi-hot.
 
         Built with one ``scatter_`` per visit rather than per-code assignment,

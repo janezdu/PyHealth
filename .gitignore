@@ -163,3 +163,17 @@ examples/fedpyhealth/cohorts/*.json
 !examples/fedpyhealth/cohorts/standard_8.json
 # Overleaf/GitHub paper repo (separate git repo)
 /paper/
+
+# Local / personal (never commit)
+CLAUDE.local.md
+.claude/settings.local.json
+
+# Local test fixtures (download separately; not part of the repo)
+test-resources/core/chestxray14/
+test-resources/meds_demo/
+
+# Local Python environments (not .venv — that pattern is already ignored)
+.venv312/
+
+# Tool caches
+.ruff_cache/
