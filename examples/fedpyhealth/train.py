@@ -2297,7 +2297,7 @@ if __name__ == "__main__":
                     ckpt_every=cfg["ckpt_every"], resume=cfg["resume"],
                     fingerprint=fingerprint,
                     snapshot_every=cfg["snapshot_every"],
-                    val_dataset=pooled_val if es_cfg else None,
+                    val_dataset=pooled_val,
                     stopper=(EarlyStopper(cfg["es_patience"],
                                           cfg["es_min_delta"],
                                           cfg["es_min_steps"])
@@ -2331,7 +2331,7 @@ if __name__ == "__main__":
                            # the question it answers is a cohort-wide one, and
                            # 1,217 patients make a far steadier signal than any
                            # single hospital's slice.
-                           val_dataset=pooled_val if es_cfg else None,
+                           val_dataset=pooled_val,
                            stopper=(EarlyStopper(cfg["es_patience"],
                                                  cfg["es_min_delta"],
                                                  cfg["es_min_steps"])

@@ -218,6 +218,21 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--skip-real-local", action="store_true",
                    help="skip the 8 real_local classifiers (saves time on a "
                         "re-score where that baseline is already known)")
+    p.add_argument("--classifier", default="rnn", choices=["rnn", "logreg"],
+                   help="downstream model. 'rnn' (default) is what every "
+                        "existing result used, so it stays the default. "
+                        "'logreg' fits one L2 logistic regression per code on "
+                        "bag-of-codes features: capacity matched to a few "
+                        "hundred training records, deterministic, CPU-only, "
+                        "and it discards visit order -- which costs almost "
+                        "nothing at 1.31 visits per patient. Read the "
+                        "real_local row first: if it beats prior under logreg "
+                        "but not under the RNN, the RNN was overfitting.")
+    p.add_argument("--logreg-c", type=float, default=1.0,
+                   help="inverse L2 strength for --classifier logreg. Lower "
+                        "regularises harder, which is the knob that matters "
+                        "for the smallest sites (142 records).")
+    p.add_argument("--logreg-max-iter", type=int, default=2000)
     p.add_argument("--epochs", type=int, default=10)
     p.add_argument("--batch-size", type=int, default=64)
     p.add_argument("--embedding-dim", type=int, default=128)
@@ -433,6 +448,71 @@ def make_dataset(records, input_proc, label_proc):
         task_name="rare_code_multilabel",
         in_memory=True,
     )
+
+
+def bag_of_codes(records, input_proc) -> np.ndarray:
+    """Binary patient x vocabulary matrix -- set membership, order discarded.
+
+    The RNN's whole justification is sequence, and this cohort has almost none:
+    mean 1.31 visits per patient, 79.4% single-visit. Flattening to a bag
+    therefore throws away very little, and what it buys is a model whose
+    capacity matches the sample size.
+
+    Codes outside the fitted vocabulary land in the <unk> column rather than
+    being dropped, matching what ``NestedSequenceProcessor`` does for the RNN --
+    a generator inventing codes real training never saw must not silently gain
+    a cleaner feature vector than one that does not.
+    """
+    vocab = input_proc.code_vocab
+    unk = vocab.get("<unk>", 1)
+    X = np.zeros((len(records), len(vocab)), dtype=np.float32)
+    for i, rec in enumerate(records):
+        for visit in rec["visits"]:
+            for code in visit:
+                X[i, vocab.get(code, unk)] = 1.0
+    return X
+
+
+def train_and_score_logreg(
+    train_records, val_records, input_proc, label_proc, args, tag: str
+) -> np.ndarray:
+    """One L2 logistic regression per label column, on bag-of-codes features.
+
+    Why this exists: the RNN control ``real_local`` -- a hospital's OWN REAL
+    records -- scores AUROC 0.40 on the pooled validation set, below chance and
+    below every synthetic arm. A real-data control that cannot beat guessing
+    means the classifier is the problem, not the generators. 142-1832 training
+    records with a 128-dim recurrent model, ten epochs and no early stopping is
+    a textbook overfitting setup, and this is the direct test of that reading:
+    if ``real_local`` climbs above ``prior`` here, the RNN was memorising.
+
+    A column with one class present is unfittable; those keep the training-set
+    prevalence as a constant score, which is exactly what the ``prior`` arm
+    does, so they neither help nor hurt an arm's macro mean.
+    """
+    from sklearn.linear_model import LogisticRegression
+
+    Xtr, Xva = bag_of_codes(train_records, input_proc), bag_of_codes(
+        val_records, input_proc)
+    Ytr = np.stack([label_proc.process(r["rare_labels"]).numpy()
+                    for r in train_records])
+    y_prob = np.zeros((len(val_records), Ytr.shape[1]), dtype=np.float64)
+    degenerate = 0
+    for j in range(Ytr.shape[1]):
+        col = Ytr[:, j]
+        if col.min() == col.max():
+            y_prob[:, j] = float(col.mean())
+            degenerate += 1
+            continue
+        clf = LogisticRegression(
+            C=args.logreg_c, max_iter=args.logreg_max_iter,
+            class_weight="balanced", solver="liblinear", random_state=SEED)
+        clf.fit(Xtr, col)
+        y_prob[:, j] = clf.predict_proba(Xva)[:, 1]
+    print(f"  [{tag}] logreg on {len(train_records)} records, "
+          f"{Ytr.shape[1] - degenerate}/{Ytr.shape[1]} columns fittable",
+          flush=True)
+    return y_prob
 
 
 def train_and_score(
@@ -959,8 +1039,12 @@ def main(argv=None) -> None:
                       flush=True)
                 continue
 
-            y_prob = train_and_score(
-                recs, val_dataset, input_proc, label_proc, args, name)
+            if args.classifier == "logreg":
+                y_prob = train_and_score_logreg(
+                    recs, val_records, input_proc, label_proc, args, name)
+            else:
+                y_prob = train_and_score(
+                    recs, val_dataset, input_proc, label_proc, args, name)
             scores = per_code_scores(y_true, y_prob, order)
             recall = {f"recall_at_{k}": recall_at_k(y_true, y_prob, k)
                       for k in ks}
@@ -1001,6 +1085,7 @@ def main(argv=None) -> None:
         "fold": args.fold,
         "hospitals": hospitals,
         "min_positives": args.min_positives,
+        "classifier": args.classifier,
         "code_pool": args.code_pool,
         "n_pooled_rare_codes": len(support),
         "n_scored_codes": len(scored),
