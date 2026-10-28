@@ -177,3 +177,7 @@ test-resources/meds_demo/
 
 # Tool caches
 .ruff_cache/
+
+# Generated Synthea outputs and dataset caches
+.artifacts/
+examples/.artifacts/

@@ -1,3 +1,4 @@
+import copy
 import logging
 import os
 from datetime import datetime
@@ -11,11 +12,25 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from tqdm.autonotebook import trange
 
-from pyhealth.metrics import (binary_metrics_fn, multiclass_metrics_fn,
-                              multilabel_metrics_fn, regression_metrics_fn)
+from pyhealth.metrics import (
+    binary_metrics_fn,
+    multiclass_metrics_fn,
+    multilabel_metrics_fn,
+    regression_metrics_fn,
+    timeseries_binary_metrics_fn,
+    timeseries_regression_metrics_fn,
+)
 from pyhealth.utils import create_directory
 
 logger = logging.getLogger(__name__)
+
+
+def _cpu_state_dict(model: nn.Module) -> dict:
+    """A detached CPU copy of the model's state, safe from later updates."""
+    return {
+        key: value.detach().to("cpu", copy=True) if torch.is_tensor(value) else copy.deepcopy(value)
+        for key, value in model.state_dict().items()
+    }
 
 
 def is_best(best_score: float, score: float, monitor_criterion: str) -> bool:
@@ -38,6 +53,22 @@ def set_logger(log_path: str) -> None:
 
 
 def get_metrics_fn(mode: str) -> Callable:
+    """Returns the metrics function for a model mode.
+
+    Args:
+        mode: One of ``"binary"``, ``"multiclass"``, ``"multilabel"``,
+            ``"regression"``, ``"timeseries_binary"`` or
+            ``"timeseries_regression"``.
+
+    Returns:
+        The function computing the metrics of that mode. The ``timeseries_*``
+        modes take one array per sample over its labeled steps.
+
+    Examples:
+        >>> from pyhealth.trainer import get_metrics_fn
+        >>> get_metrics_fn("timeseries_binary").__name__
+        'timeseries_binary_metrics_fn'
+    """
     if mode == "binary":
         return binary_metrics_fn
     elif mode == "multiclass":
@@ -46,6 +77,10 @@ def get_metrics_fn(mode: str) -> Callable:
         return multilabel_metrics_fn
     elif mode == "regression":
         return regression_metrics_fn
+    elif mode == "timeseries_binary":
+        return timeseries_binary_metrics_fn
+    elif mode == "timeseries_regression":
+        return timeseries_regression_metrics_fn
     else:
         raise ValueError(f"Mode {mode} is not supported")
 
@@ -64,6 +99,13 @@ class Trainer:
         enable_logging: Whether to enable logging. Default is True.
         output_path: Path to save the output. Default is "./output".
         exp_name: Name of the experiment. Default is current datetime.
+
+    Examples:
+        >>> from pyhealth.trainer import Trainer
+        >>> trainer = Trainer(model=model, metrics=["pr_auc", "roc_auc"])  # doctest: +SKIP
+        >>> trainer.train(train_loader, val_loader, epochs=5)  # doctest: +SKIP
+        >>> trainer.evaluate(test_loader)  # doctest: +SKIP
+        {'pr_auc': ..., 'roc_auc': ..., 'loss': ...}
     """
 
     def __init__(
@@ -126,6 +168,7 @@ class Trainer:
         monitor_criterion: str = "max",
         load_best_model_at_last: bool = True,
         patience=None,
+        keep_best_in_memory: bool = True,
     ):
         """Trains the model.
 
@@ -145,7 +188,27 @@ class Trainer:
                 Default is True.
             patience: Number of epochs to wait for improvement before early stopping.
                 Default is None, which means no early stopping.
+            keep_best_in_memory: When ``monitor`` is set and the trainer has no
+                output directory (``enable_logging=False``), keep a CPU copy of
+                the best epoch's weights in memory so ``load_best_model_at_last``
+                can restore them. This costs one extra copy of the model's
+                weights in CPU memory; set False to save it, in which case the
+                last epoch's weights are kept (with a warning). With an output
+                directory the best weights are saved to ``best.ckpt`` instead.
+                Default is True.
+
+        Raises:
+            TypeError: If the model is fit outside the trainer (it sets
+                ``fit_outside_trainer``, e.g. ``XGBoostModel``); call
+                ``model.fit(...)`` instead.
         """
+        if getattr(self.model, "fit_outside_trainer", False):
+            name = type(self.model).__name__
+            raise TypeError(
+                f"{name} has no parameters for Trainer.train to optimize. Fit it "
+                f"with model.fit(train_dataloader, val_dataloader), then use "
+                f"Trainer.evaluate / inference / save_ckpt as usual."
+            )
         if optimizer_params is None:
             optimizer_params = {"lr": 1e-3}
 
@@ -180,6 +243,19 @@ class Trainer:
         # initialize
         data_iterator = iter(train_dataloader)
         best_score = -1 * float("inf") if monitor_criterion == "max" else float("inf")
+        best_state = None
+        restore_from_memory = (
+            load_best_model_at_last
+            and monitor is not None
+            and val_dataloader is not None
+            and self.exp_path is None
+        )
+        if restore_from_memory and not keep_best_in_memory:
+            logger.warning(
+                "No output directory and keep_best_in_memory=False: the model "
+                "will keep the last epoch's weights, not the best epoch's."
+            )
+            restore_from_memory = False
         if steps_per_epoch is None:
             steps_per_epoch = len(train_dataloader)
         global_step = 0
@@ -240,6 +316,8 @@ class Trainer:
                         patience_counter = 0
                         if self.exp_path is not None:
                             self.save_ckpt(os.path.join(self.exp_path, "best.ckpt"))
+                        elif restore_from_memory:
+                            best_state = _cpu_state_dict(self.model)
                     else:
                         patience_counter += 1
                         # early stopping
@@ -254,6 +332,9 @@ class Trainer:
             os.path.join(self.exp_path, "best.ckpt")):
             logger.info("Loaded best model")
             self.load_ckpt(os.path.join(self.exp_path, "best.ckpt"))
+        elif restore_from_memory and best_state is not None:
+            logger.info("Loaded best model (kept in memory)")
+            self.model.load_state_dict(best_state)
 
         # test
         if test_dataloader is not None:
@@ -276,6 +357,8 @@ class Trainer:
         Returns:
             y_true_all: List of true labels.
             y_prob_all: List of predicted probabilities.
+                For the per-step ``timeseries_*`` modes, both are lists with
+                one array per sample, over its labeled time steps.
             loss_mean: Mean loss over batches.
             additional_outputs (only if requested): Dict of additional results.
             patient_ids (only if requested): List of patient ids in the same order as y_true_all/y_prob_all.
@@ -286,24 +369,36 @@ class Trainer:
         patient_ids = []
         if additional_outputs is not None:
             additional_outputs = {k: [] for k in additional_outputs}
+        per_step = self.model.mode in ("timeseries_binary", "timeseries_regression")
         self.model.eval()
         for data in tqdm(dataloader, desc="Evaluation"):
             with torch.no_grad():
                 output = self.model(**data)
                 loss = output["loss"]
-                y_true = output["y_true"].cpu().numpy()
-                y_prob = output["y_prob"].cpu().numpy()
                 loss_all.append(loss.item())
-                y_true_all.append(y_true)
-                y_prob_all.append(y_prob)
+                if per_step:
+                    # Temporary workaround to avoid breaking the existing API:
+                    # samples differ in length, so keep each sample's labeled
+                    # steps as a separate array. A more unified handling of
+                    # padded/masked outputs is a follow-up.
+                    value, mask = (t.cpu().numpy() for t in output["y_true"])
+                    y_prob = output["y_prob"].cpu().numpy()[:, : value.shape[1], 0]
+                    for i in range(len(value)):
+                        labeled = mask[i] > 0
+                        y_true_all.append(value[i][labeled])
+                        y_prob_all.append(y_prob[i][labeled])
+                else:
+                    y_true_all.append(output["y_true"].cpu().numpy())
+                    y_prob_all.append(output["y_prob"].cpu().numpy())
                 if additional_outputs is not None:
                     for key in additional_outputs.keys():
                         additional_outputs[key].append(output[key].cpu().numpy())
             if return_patient_ids:
                 patient_ids.extend(data["patient_id"])
         loss_mean = sum(loss_all) / len(loss_all)
-        y_true_all = np.concatenate(y_true_all, axis=0)
-        y_prob_all = np.concatenate(y_prob_all, axis=0)
+        if not per_step:
+            y_true_all = np.concatenate(y_true_all, axis=0)
+            y_prob_all = np.concatenate(y_prob_all, axis=0)
         outputs = [y_true_all, y_prob_all, loss_mean]
         if additional_outputs is not None:
             additional_outputs = {key: np.concatenate(val)
