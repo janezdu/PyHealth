@@ -199,6 +199,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         "the drawn codes, not a census, so run several "
                         "--eval-seed values and report the spread. 0 (default) "
                         "keeps the K-fold behaviour")
+    p.add_argument("--eval-code-order", default="random",
+                   choices=["random", "top"],
+                   help="how --n-eval-codes picks its codes. 'random' "
+                        "(default) draws them with --eval-seed. 'top' takes "
+                        "the N scoreable codes with the MOST positives in "
+                        "--fold -- the head of the distribution, fixed rather "
+                        "than drawn, so --eval-seed has no effect on it")
     p.add_argument("--eval-seed", type=int, default=0,
                    help="which draw --n-eval-codes takes. Changing it changes "
                         "the evaluation set, so results across seeds are "
@@ -215,6 +222,46 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--pooled-budget", type=int, default=0,
                    help="records for the real_pooled ceiling. 0 = all of them "
                         "(the ceiling is supposed to show what pooling buys)")
+    p.add_argument("--rlsp", action="store_true",
+                   help="add REAL-LOCAL + SYNTHETIC-POOLED arms: one "
+                        "classifier per hospital trained on that site's own "
+                        "real records TOGETHER WITH the regime's pooled "
+                        "synthetic set. This is the deployment case -- a site "
+                        "keeps its data and additionally takes what the "
+                        "federation generated -- where every other synthetic "
+                        "arm asks whether synthetic REPLACES real. Compare each "
+                        "rlsp:<regime>:<hid> against real_local:<hid>, not "
+                        "against the pooled arms: below its own real_local "
+                        "means the synthetic data is hurting that site. Costs "
+                        "8 more classifiers per regime.")
+    p.add_argument("--rlsp-weight", type=float, default=0.0,
+                   help="with --rlsp, the fraction of each mixed arm's "
+                        "training records that should be REAL. 0 (default) "
+                        "keeps the natural mixture, which is 80-98%% synthetic "
+                        "by volume because a small site has 142 real patients "
+                        "against ~6,600 synthetic ones. 0.5 gives the halves "
+                        "equal weight. The TOTAL record count is held at the "
+                        "natural mixture's size -- real is duplicated up and "
+                        "synthetic subsampled down -- so this isolates the "
+                        "ratio rather than confounding it with more data.")
+    p.add_argument("--rlsp-weight-mode", default="upsample",
+                   choices=["upsample", "fixed"],
+                   help="how --rlsp-weight hits its ratio. 'upsample' "
+                        "(default) keeps ALL synthetic and duplicates real up "
+                        "to match -- the plain reading of a sample weight, and "
+                        "for logreg identical to one. 'fixed' holds the total "
+                        "row count at the natural mixture's size by "
+                        "subsampling synthetic, which discards 38-49%% of it "
+                        "at these cohort sizes; use it as a matched-size "
+                        "control, not as the primary arm.")
+    p.add_argument("--rlsp-dup-control", action="store_true",
+                   help="with --rlsp, add rlsp_dup:<regime>:<hid>: that site's "
+                        "OWN real records duplicated up to the same row count "
+                        "as its rlsp mixture, with no synthetic data at all. "
+                        "Same rows, same optimizer steps, no new information, "
+                        "so it separates 'synthetic helps' from 'more rows "
+                        "help'. Compare real_local -> rlsp_dup -> rlsp. Costs "
+                        "8 more classifiers per regime.")
     p.add_argument("--skip-real-local", action="store_true",
                    help="skip the 8 real_local classifiers (saves time on a "
                         "re-score where that baseline is already known)")
@@ -425,6 +472,111 @@ def budgeted(
     rng = np.random.default_rng(seed)
     chosen = rng.choice(len(pids), size=budget, replace=False)
     return {pids[int(i)]: trajectories[pids[int(i)]] for i in sorted(chosen)}
+
+
+def reweight_mix(real: Dict[str, list], synth: Dict[str, list], frac: float,
+                 seed: int, mode: str = "fixed"
+                 ) -> Tuple[Dict[str, list], int, int]:
+    """Mix real and synthetic so ``frac`` of the training MASS is real.
+
+    The natural RLSP mixture is 80-98% synthetic by volume -- a site with 142
+    real patients gets ~6,600 synthetic ones -- so its real signal can be
+    swamped regardless of how good either half is. This makes the ratio a knob
+    rather than an accident of cohort size.
+
+    Two ways to hit the ratio, and they answer different questions:
+
+    * ``mode="upsample"`` keeps every synthetic record and duplicates real up
+      to match. Nothing is discarded. Duplicating the same 142 patients adds no
+      INFORMATION -- with logreg it is exactly a sample weight, and the fit is
+      identical to one -- so the larger row count here is not the training-set
+      size effect that drives these scores; that effect is about distinct
+      samples. This is the plain reading of "weight real at 50%".
+    * ``mode="fixed"`` holds the total row count at the natural mixture's size,
+      subsampling synthetic down to make room. That DOES discard data -- 38-49%
+      of the synthetic pool at these cohort sizes -- so a loss under it is
+      ambiguous between "reweighting did not help" and "the dropped synthetic
+      was useful". It is here as the matched-size control.
+
+    Duplicated real patients get suffixed ids so they survive as distinct rows.
+    One caveat for the RNN under ``upsample``: more rows at a fixed epoch count
+    means more optimizer steps overall, which is a training-length change even
+    though it is not an information change.
+
+    Args:
+        real: ``{patient_id: visits}`` for the site's own real records.
+        synth: ``{patient_id: visits}`` for the pooled synthetic set.
+        frac: Target fraction of records that should be real, in (0, 1).
+        seed: Seed for the synthetic subsample.
+        mode: ``"upsample"`` or ``"fixed"``, as above.
+
+    Returns:
+        ``(mixed, n_real_rows, n_synth_rows)``.
+    """
+    if mode == "upsample":
+        # Real is scaled so it holds `frac` of the mass against ALL of synth.
+        want_syn = len(synth)
+        want_real = max(1, int(round(want_syn * frac / (1.0 - frac))))
+        total = want_real + want_syn
+    else:
+        total = len(real) + len(synth)
+        want_real = max(1, int(round(total * frac)))
+        want_syn = max(0, total - want_real)
+
+    out: Dict[str, list] = {}
+    src = sorted(real)
+    for j in range(want_real):
+        pid = src[j % len(src)]
+        key = pid if j < len(src) else f"{pid}#r{j // len(src)}"
+        out[key] = real[pid]
+
+    syn_ids = sorted(synth)
+    if want_syn < len(syn_ids):
+        rng = np.random.default_rng(seed)
+        keep = rng.choice(len(syn_ids), size=want_syn, replace=False)
+        syn_ids = [syn_ids[int(k)] for k in sorted(keep)]
+    for pid in syn_ids:
+        out[pid] = synth[pid]
+    return out, want_real, len(syn_ids)
+
+
+def upsample_real(real: Dict[str, list], target: int) -> Dict[str, list]:
+    """Duplicate a site's own real records up to ``target`` rows, no synthetic.
+
+    The row-count control for RLSP. An ``rlsp:<regime>:<hid>`` arm differs from
+    ``real_local:<hid>`` in TWO ways at once: it adds synthetic patients, and it
+    has ~40x more training rows. For a classifier that overfits 142 records --
+    which the appendix already says this RNN does -- row count alone lifts the
+    score, so the two explanations are confounded.
+
+    This arm holds the row count at the mixture's size and removes the
+    synthetic half, duplicating the site's own patients to fill it. Same number
+    of rows, same optimizer steps, ZERO new information. Read it as:
+
+        real_local        -> rlsp_dup    what more ROWS buy
+        rlsp_dup          -> rlsp        what SYNTHETIC PATIENTS buy
+
+    If ``rlsp_dup`` lands at ``rlsp``, the synthetic data contributed padding.
+    If ``rlsp`` clears it, the generated patients carry information the site
+    did not already have, which is the claim the project is making.
+
+    Duplicates get suffixed ids so they survive as distinct rows, matching
+    ``reweight_mix``.
+
+    Args:
+        real: ``{patient_id: visits}`` for the site's own real records.
+        target: Row count to fill, normally ``len(own) + len(pooled_syn)``.
+
+    Returns:
+        ``{patient_id: visits}`` with ``target`` rows drawn from ``real``.
+    """
+    src = sorted(real)
+    out: Dict[str, list] = {}
+    for j in range(max(target, len(src))):
+        pid = src[j % len(src)]
+        key = pid if j < len(src) else f"{pid}#d{j // len(src)}"
+        out[key] = real[pid]
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -811,7 +963,14 @@ def main(argv=None) -> None:
                 f"codes scoreable on {args.fold}; lower it or lower "
                 "--min-positives."
             )
-        scored = sample_eval_codes(scored, args.n_eval_codes, args.eval_seed)
+        if args.eval_code_order == "top":
+            # Most-supported first; ties broken by code so the set is
+            # deterministic across runs and machines.
+            scored = sorted(scored, key=lambda c: (-support.get(c, 0), c)
+                            )[:args.n_eval_codes]
+        else:
+            scored = sample_eval_codes(scored, args.n_eval_codes,
+                                       args.eval_seed)
         args.mask_folds = 1
         kept = 1 - len(scored) / pool_size
         band_counts: Dict[str, int] = {}
@@ -924,6 +1083,57 @@ def main(argv=None) -> None:
             arm_meta[name] = {"family": f"tstr:{regime}",
                               "hospital": None if shared else key,
                               "save_dir": save_dir}
+
+    # RLSP -- real local + synthetic pooled. The deployment case: a hospital
+    # keeps its own real records AND takes the federation's synthetic set, one
+    # classifier per site, scored on the pooled validation fold like every
+    # other arm.
+    #
+    # This is the only arm here that answers "should a site adopt this", and it
+    # is the comparison the project exists for. Every other synthetic arm asks
+    # whether synthetic REPLACES real, which nobody actually wants to do.
+    #
+    # Read it against real_local for that site, not against the pooled arms: the
+    # question is whether adding synthetic HELPS the site, so the counterfactual
+    # is that site without it. A site whose RLSP score sits below its own
+    # real_local is being hurt by the synthetic data.
+    #
+    # The real half is NOT re-budgeted. real_local already took `budget`
+    # records, which for every site in this cohort is all of them, so capping
+    # again would only differ if a site had more real patients than the budget.
+    if args.rlsp:
+        for regime in list(regime_shared):
+            pooled_syn = {}
+            for name, traj in list(arms.items()):
+                if name == f"tstr:{regime}" or name.startswith(f"tstr:{regime}:"):
+                    pooled_syn.update(traj)
+            if not pooled_syn:
+                continue
+            for i, hid in enumerate(hospitals):
+                own = budgeted({p: real[p] for p in train_by_hospital[hid]},
+                               budget, seed=SEED + i)
+                name = f"rlsp:{regime}:{hid}"
+                # Synthetic patient ids are already namespaced by
+                # `synthetic_arms`, so the two dicts cannot collide.
+                mixed = {**own, **pooled_syn}
+                n_real, n_syn = len(own), len(pooled_syn)
+                if args.rlsp_weight > 0:
+                    mixed, n_real, n_syn = reweight_mix(
+                        own, pooled_syn, args.rlsp_weight, SEED + i,
+                        args.rlsp_weight_mode)
+                arms[name] = mixed
+                arm_meta[name] = {"family": f"rlsp:{regime}", "hospital": hid,
+                                  "n_real": n_real, "n_synth": n_syn,
+                                  "rlsp_weight": args.rlsp_weight or None}
+                if args.rlsp_dup_control:
+                    dup_name = f"rlsp_dup:{regime}:{hid}"
+                    arms[dup_name] = upsample_real(own, len(mixed))
+                    arm_meta[dup_name] = {
+                        "family": f"rlsp_dup:{regime}", "hospital": hid,
+                        "n_real": len(arms[dup_name]), "n_synth": 0,
+                        "n_distinct_real": len(own)}
+            print(f"rlsp {regime}: 8 classifiers, each "
+                  f"{len(pooled_syn)} synthetic + that site's real")
 
     # Uncapped, how much data each arm got IS the independent variable, so it
     # travels with every result rather than living only in a log line.
@@ -1086,7 +1296,11 @@ def main(argv=None) -> None:
         "hospitals": hospitals,
         "min_positives": args.min_positives,
         "classifier": args.classifier,
+        "rlsp": args.rlsp,
+        "rlsp_weight": args.rlsp_weight,
+        "rlsp_weight_mode": args.rlsp_weight_mode if args.rlsp_weight else None,
         "code_pool": args.code_pool,
+        "eval_code_order": args.eval_code_order,
         "n_pooled_rare_codes": len(support),
         "n_scored_codes": len(scored),
         "n_dropped_low_support": dropped,

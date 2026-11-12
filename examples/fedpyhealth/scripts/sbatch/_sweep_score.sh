@@ -24,8 +24,20 @@ while IFS='=' read -r arm dir; do
 done < "$MANIFEST"
 # Anchors: the centralized best-of-K pair every federated number is read
 # against, rescored here so the comparison lives in ONE file.
-RUNS="$RUNS --run xm4=_outputs/centralized_E2_R50_hilo8_random_privacy_nes_do0.3_xm4_save"
-RUNS="$RUNS --run do03_only=_outputs/centralized_E2_R50_hilo8_random_privacy_nes_do0.3_save"
+#
+# Prefixed ref: because a sweep may well contain an arm called xm4 itself -- the
+# reweighted sweep did -- and two --run entries sharing a name silently collapse
+# to one, leaving no way to tell from the output which checkpoint was scored.
+add_ref () {
+    if grep -q "^$1=" "$MANIFEST"; then
+        echo "  anchor $1 renamed to ref_$1 (the sweep has its own $1)" >&2
+        RUNS="$RUNS --run ref_$1=$2"
+    else
+        RUNS="$RUNS --run $1=$2"
+    fi
+}
+add_ref xm4 _outputs/centralized_E2_R50_hilo8_random_privacy_nes_do0.3_xm4_save
+add_ref do03_only _outputs/centralized_E2_R50_hilo8_random_privacy_nes_do0.3_save
 echo "scoring:$RUNS"
 
 for scope in hospital pooled; do

@@ -201,7 +201,10 @@ def save_results_json(path: str, cfg: dict, info: Dict[str, dict],
     knob_keys = ("profile", "regime", "weighting", "local_epochs", "n_rounds",
                  "ft_epochs", "lr", "embed_dim", "n_heads", "n_layers", "n_ctx",
                  "batch_size", "num_synth", "synth_per_hospital", "metrics",
-                 "cohort_cache")
+                 "cohort_cache",
+                 # Literature-baseline knobs, so a results row records which
+                 # setting produced it rather than only the regime name.
+                 "fedprox_mu", "ditto_lambda", "kd_lambda")
     payload = {
         # Kind is stamped so a file pointed at directly still identifies itself;
         # the runs/ vs tests/ split is what keeps the two shapes from mixing.

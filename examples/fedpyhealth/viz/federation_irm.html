@@ -1,0 +1,536 @@
+<!doctype html>
+<!--
+  Hand-written explainer: what federation is doing in this project, and what
+  the IRM penalty adds to it. Conceptual, not data-driven -- there is no
+  payload and no template, so this page is edited directly.
+
+  No CDN, no external CSS, no separate JS -- must open from a file:// path on
+  a laptop with no network. See viz/README.md for why an editor's HTML
+  preview pane renders this blank.
+
+  Cohort numbers quoted below are hilo8_random, from notes/CHEATSHEET.md.
+  Aggregates only: no hospital rows beyond the published size table, no
+  patient-level anything, no paths.
+-->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Federation and IRM — what the experiment is doing</title>
+<style>
+  :root {
+    --bg:#fbfbfa; --fg:#1c1b19; --muted:#6b6862; --line:#dedbd4; --card:#fff;
+    --k1:#b8563e; --k2:#2f6f7e; --ref:#9a968e;
+    /* ordinal ramp: isolated -> fully pooled (see viz/README.md design notes) */
+    --r1:#cfe0e6; --r2:#8fbccb; --r3:#4e8fa5; --r4:#245b6e;
+    --wash:#f2efe9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:#191817; --fg:#eceae6; --muted:#a29e96; --line:#343230; --card:#211f1e;
+      --k1:#e08466; --k2:#6fb6c6; --ref:#6b6862;
+      --r1:#2a3f47; --r2:#3f6b7c; --r3:#6aa6ba; --r4:#a6d2de;
+      --wash:#232120;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg:#191817; --fg:#eceae6; --muted:#a29e96; --line:#343230; --card:#211f1e;
+    --k1:#e08466; --k2:#6fb6c6; --ref:#6b6862;
+    --r1:#2a3f47; --r2:#3f6b7c; --r3:#6aa6ba; --r4:#a6d2de;
+    --wash:#232120;
+  }
+  body { background:var(--bg); color:var(--fg); margin:0;
+         font:14px/1.55 ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif; }
+  .wrap { max-width:1080px; margin:0 auto; padding:32px 24px 72px; }
+  h1 { font-size:1.45rem; font-weight:650; margin:0 0 6px; letter-spacing:-.01em; }
+  .sub { color:var(--muted); margin:0 0 26px; max-width:66ch; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px;
+          padding:18px 20px 16px; margin:0 0 20px; }
+  .card h2 { font-size:1rem; font-weight:600; margin:0 0 2px; }
+  .card h3 { font-size:.86rem; font-weight:600; margin:18px 0 4px; }
+  p.note { color:var(--muted); font-size:.83rem; margin:0 0 14px; max-width:72ch; }
+  p { max-width:72ch; }
+  svg { display:block; width:100%; height:auto; margin:6px 0 4px; }
+  .fig-cap { color:var(--muted); font-size:.78rem; margin:2px 0 0; max-width:74ch; }
+  code { font:.86em ui-monospace,SFMono-Regular,Menlo,monospace;
+         background:var(--wash); padding:1px 4px; border-radius:3px; }
+  .eq { background:var(--wash); border-radius:6px; padding:12px 14px; margin:10px 0;
+        font:.9rem ui-monospace,SFMono-Regular,Menlo,monospace; overflow-x:auto;
+        border-left:3px solid var(--k2); }
+  .scroll { overflow-x:auto; }
+  table { border-collapse:collapse; font-size:.82rem; width:100%; }
+  th,td { text-align:left; padding:6px 10px; border-bottom:1px solid var(--line);
+          vertical-align:top; }
+  td.num, th.num { text-align:right; white-space:nowrap; }
+  th { color:var(--muted); font-weight:600; }
+  .warn { border-left:3px solid var(--k1); padding-left:12px; }
+  .legend { display:flex; gap:16px; font-size:.8rem; color:var(--muted);
+            margin:6px 0 0; flex-wrap:wrap; }
+  .swatch { display:inline-block; width:11px; height:11px; border-radius:2px;
+            vertical-align:-1px; margin-right:5px; }
+  ul { max-width:72ch; padding-left:20px; }
+  li { margin:4px 0; }
+  .two { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:18px; }
+  .pill { display:inline-block; font-size:.72rem; letter-spacing:.04em;
+          text-transform:uppercase; color:var(--muted); border:1px solid var(--line);
+          border-radius:99px; padding:1px 8px; margin-left:6px; vertical-align:2px; }
+</style>
+<div class="wrap">
+
+<h1>Federation and IRM</h1>
+<p class="sub">What this experiment is actually doing: eight hospitals that cannot pool their
+patients, one generative model trained across them, and an invariance penalty that asks the
+model to stop learning hospital-specific habits. Cohort is <code>hilo8_random</code> (eICU).</p>
+
+<!-- ============================================================ 1 -->
+<div class="card">
+  <h2>1 · The setup in one breath</h2>
+  <p class="note">The goal is a model that <em>generates synthetic patient records</em> — not one
+  that predicts a label. Synthetic records are useful because they can be shared when the real
+  ones cannot. The question is whether training that generator across hospitals beats training
+  it at each hospital alone.</p>
+
+  <svg viewBox="0 0 960 250" role="img" aria-label="Eight hospitals hold their own data; only model weights move to a central server.">
+    <defs>
+      <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+        <path d="M0 0 L10 5 L0 10 z" fill="var(--k2)"/>
+      </marker>
+      <marker id="arm" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+        <path d="M0 0 L10 5 L0 10 z" fill="var(--muted)"/>
+      </marker>
+      <marker id="ark1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+        <path d="M0 0 L10 5 L0 10 z" fill="var(--k1)"/>
+      </marker>
+    </defs>
+
+    <!-- hospitals -->
+    <g font-size="11" text-anchor="middle">
+      <g>
+        <rect x="20" y="40" width="96" height="54" rx="7" fill="var(--wash)" stroke="var(--line)"/>
+        <text x="68" y="60" fill="var(--fg)" font-weight="600">hosp 458</text>
+        <text x="68" y="76" fill="var(--muted)">1,832 train</text>
+      </g>
+      <g>
+        <rect x="20" y="104" width="96" height="54" rx="7" fill="var(--wash)" stroke="var(--line)"/>
+        <text x="68" y="124" fill="var(--fg)" font-weight="600">hosp 188</text>
+        <text x="68" y="140" fill="var(--muted)">1,620 train</text>
+      </g>
+      <g>
+        <rect x="20" y="168" width="96" height="54" rx="7" fill="var(--wash)" stroke="var(--line)"/>
+        <text x="68" y="188" fill="var(--fg)" font-weight="600">hosp 429</text>
+        <text x="68" y="204" fill="var(--muted)">142 train</text>
+      </g>
+      <text x="68" y="24" fill="var(--muted)">8 sites · 202–2,617 patients</text>
+      <text x="68" y="240" fill="var(--muted)">…and 5 more</text>
+    </g>
+
+    <!-- barrier -->
+    <line x1="176" y1="18" x2="176" y2="238" stroke="var(--k1)" stroke-width="2" stroke-dasharray="5 5"/>
+    <text x="186" y="34" font-size="11" fill="var(--k1)" font-weight="600">data may not cross</text>
+
+    <!-- blocked data arrow -->
+    <path d="M120 131 L168 131" stroke="var(--k1)" stroke-width="1.6" fill="none" marker-end="url(#ark1)"/>
+    <text x="144" y="123" font-size="10" fill="var(--k1)" text-anchor="middle">records ✗</text>
+
+    <!-- weights path -->
+    <path d="M120 67 C 260 67, 300 110, 386 124" stroke="var(--k2)" stroke-width="1.6" fill="none" marker-end="url(#ar)"/>
+    <path d="M120 195 C 260 195, 300 146, 386 136" stroke="var(--k2)" stroke-width="1.6" fill="none" marker-end="url(#ar)"/>
+    <text x="270" y="102" font-size="11" fill="var(--k2)" text-anchor="middle" font-weight="600">weights ✓</text>
+
+    <!-- server -->
+    <rect x="390" y="96" width="132" height="68" rx="8" fill="var(--card)" stroke="var(--k2)" stroke-width="1.6"/>
+    <text x="456" y="122" font-size="12" text-anchor="middle" fill="var(--fg)" font-weight="600">server</text>
+    <text x="456" y="140" font-size="11" text-anchor="middle" fill="var(--muted)">averages weights</text>
+    <text x="456" y="154" font-size="11" text-anchor="middle" fill="var(--muted)">holds no data</text>
+
+    <!-- global model -->
+    <path d="M526 130 L586 130" stroke="var(--muted)" stroke-width="1.5" fill="none" marker-end="url(#arm)"/>
+    <rect x="590" y="96" width="146" height="68" rx="8" fill="var(--wash)" stroke="var(--line)"/>
+    <text x="663" y="120" font-size="12" text-anchor="middle" fill="var(--fg)" font-weight="600">HALO generator</text>
+    <text x="663" y="137" font-size="11" text-anchor="middle" fill="var(--muted)">4-layer transformer</text>
+    <text x="663" y="151" font-size="11" text-anchor="middle" fill="var(--muted)">921-code vocabulary</text>
+
+    <!-- synthetic -->
+    <path d="M740 130 L800 130" stroke="var(--muted)" stroke-width="1.5" fill="none" marker-end="url(#arm)"/>
+    <rect x="804" y="96" width="136" height="68" rx="8" fill="var(--card)" stroke="var(--line)"/>
+    <text x="872" y="120" font-size="12" text-anchor="middle" fill="var(--fg)" font-weight="600">synthetic patients</text>
+    <text x="872" y="137" font-size="11" text-anchor="middle" fill="var(--muted)">shareable</text>
+    <text x="872" y="151" font-size="11" text-anchor="middle" fill="var(--muted)">then scored</text>
+  </svg>
+  <p class="fig-cap">Federated learning's one trick: move the model to the data instead of the
+  data to the model. The red line is a legal and ethical boundary, not a technical one — which is
+  why the interesting questions are all about what the averaging costs you.</p>
+
+  <h3>Why these eight hospitals</h3>
+  <p class="note">Deliberately uneven: four large sites (≥1,500 patients) and four small ones, a
+  <strong>13× spread</strong> from 202 to 2,617 patients. 12,156 patients total, 8,509 of them in
+  the train split. That imbalance is the point — a small site is exactly the one that should
+  benefit from federation, and exactly the one that gets drowned out by weighted averaging.</p>
+</div>
+
+<!-- ============================================================ 2 -->
+<div class="card">
+  <h2>2 · One FedAvg round</h2>
+  <p class="note">FedAvg is a loop of four steps, repeated 50 times. Nothing leaves a hospital
+  except a weight vector.</p>
+
+  <svg viewBox="0 0 960 300" role="img" aria-label="The four steps of a FedAvg round: broadcast, local training, upload, weighted average.">
+    <defs>
+      <marker id="cyc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+        <path d="M0 0 L10 5 L0 10 z" fill="var(--k2)"/>
+      </marker>
+    </defs>
+
+    <!-- step 1 -->
+    <rect x="18" y="86" width="176" height="96" rx="8" fill="var(--card)" stroke="var(--line)"/>
+    <circle cx="44" cy="112" r="11" fill="var(--k2)"/>
+    <text x="44" y="116" font-size="12" text-anchor="middle" fill="var(--card)" font-weight="700">1</text>
+    <text x="64" y="116" font-size="12.5" fill="var(--fg)" font-weight="600">broadcast θ</text>
+    <text x="34" y="140" font-size="11" fill="var(--muted)">server sends the current</text>
+    <text x="34" y="156" font-size="11" fill="var(--muted)">global weights to all 8</text>
+    <text x="34" y="172" font-size="11" fill="var(--muted)">hospitals</text>
+
+    <!-- step 2 -->
+    <rect x="248" y="86" width="196" height="96" rx="8" fill="var(--card)" stroke="var(--line)"/>
+    <circle cx="274" cy="112" r="11" fill="var(--k2)"/>
+    <text x="274" y="116" font-size="12" text-anchor="middle" fill="var(--card)" font-weight="700">2</text>
+    <text x="294" y="116" font-size="12.5" fill="var(--fg)" font-weight="600">train locally</text>
+    <text x="264" y="140" font-size="11" fill="var(--muted)">each site runs 2 epochs on</text>
+    <text x="264" y="156" font-size="11" fill="var(--muted)">its own records → θ₁ … θ₈,</text>
+    <text x="264" y="172" font-size="11" fill="var(--muted)">which have <tspan fill="var(--k1)" font-weight="600">drifted apart</tspan></text>
+
+    <!-- step 3 -->
+    <rect x="498" y="86" width="176" height="96" rx="8" fill="var(--card)" stroke="var(--line)"/>
+    <circle cx="524" cy="112" r="11" fill="var(--k2)"/>
+    <text x="524" y="116" font-size="12" text-anchor="middle" fill="var(--card)" font-weight="700">3</text>
+    <text x="544" y="116" font-size="12.5" fill="var(--fg)" font-weight="600">upload θₖ</text>
+    <text x="514" y="140" font-size="11" fill="var(--muted)">weights only — no records,</text>
+    <text x="514" y="156" font-size="11" fill="var(--muted)">no counts, no identifiers</text>
+
+    <!-- step 4 -->
+    <rect x="728" y="86" width="214" height="96" rx="8" fill="var(--card)" stroke="var(--line)"/>
+    <circle cx="754" cy="112" r="11" fill="var(--k2)"/>
+    <text x="754" y="116" font-size="12" text-anchor="middle" fill="var(--card)" font-weight="700">4</text>
+    <text x="774" y="116" font-size="12.5" fill="var(--fg)" font-weight="600">weighted average</text>
+    <text x="744" y="140" font-size="11" fill="var(--muted)">θ ← Σ (nₖ/n) · θₖ</text>
+    <text x="744" y="158" font-size="11" fill="var(--muted)">hospital 458 carries 13× the</text>
+    <text x="744" y="174" font-size="11" fill="var(--muted)">vote of hospital 429</text>
+
+    <!-- arrows between -->
+    <path d="M198 134 L242 134" stroke="var(--k2)" stroke-width="1.5" fill="none" marker-end="url(#cyc)"/>
+    <path d="M448 134 L492 134" stroke="var(--k2)" stroke-width="1.5" fill="none" marker-end="url(#cyc)"/>
+    <path d="M678 134 L722 134" stroke="var(--k2)" stroke-width="1.5" fill="none" marker-end="url(#cyc)"/>
+
+    <!-- loop back -->
+    <path d="M835 186 C 835 244, 700 252, 480 252 C 260 252, 106 244, 106 190"
+          stroke="var(--k2)" stroke-width="1.5" fill="none" stroke-dasharray="4 4" marker-end="url(#cyc)"/>
+    <text x="480" y="272" font-size="11.5" text-anchor="middle" fill="var(--k2)" font-weight="600">× 50 rounds</text>
+
+    <text x="18" y="40" font-size="11.5" fill="var(--muted)">Compute is matched across every regime: 50 rounds × 2 local epochs = 100 passes per client,</text>
+    <text x="18" y="58" font-size="11.5" fill="var(--muted)">the same 100 epochs the centralized and local baselines get. Nobody wins on raw compute.</text>
+  </svg>
+  <p class="fig-cap">Step 2 is where the trouble starts. Between broadcasts, each hospital's copy
+  of the model quietly re-specialises to its own case mix — <em>client drift</em> — and step 4
+  averages those divergent copies as if they were small perturbations of one model.</p>
+</div>
+
+<!-- ============================================================ 3 -->
+<div class="card">
+  <h2>3 · The four regimes, as a ladder</h2>
+  <p class="note">Everything in this project is a comparison between four points on one axis:
+  how much the hospitals share. Colour is an ordinal ramp because the ordering <em>is</em> the
+  story.</p>
+
+  <svg viewBox="0 0 960 218" role="img" aria-label="Four training regimes ordered from isolated to fully pooled.">
+    <line x1="60" y1="176" x2="900" y2="176" stroke="var(--line)" stroke-width="1.5"/>
+    <text x="60" y="202" font-size="11.5" fill="var(--muted)">isolated</text>
+    <text x="900" y="202" font-size="11.5" fill="var(--muted)" text-anchor="end">fully pooled</text>
+
+    <g text-anchor="middle">
+      <!-- local -->
+      <rect x="62" y="52" width="176" height="104" rx="8" fill="var(--r1)" stroke="var(--line)"/>
+      <text x="150" y="76" font-size="12.5" font-weight="700" fill="var(--fg)">local</text>
+      <text x="150" y="98" font-size="11" fill="var(--fg)">8 models</text>
+      <text x="150" y="116" font-size="11" fill="var(--fg)">each sees only</text>
+      <text x="150" y="132" font-size="11" fill="var(--fg)">its own site</text>
+      <circle cx="150" cy="176" r="5.5" fill="var(--r1)" stroke="var(--fg)" stroke-width="1"/>
+
+      <!-- fedavg_ft -->
+      <rect x="252" y="52" width="176" height="104" rx="8" fill="var(--r2)" stroke="var(--line)"/>
+      <text x="340" y="76" font-size="12.5" font-weight="700" fill="var(--fg)">fedavg_ft</text>
+      <text x="340" y="98" font-size="11" fill="var(--fg)">8 models</text>
+      <text x="340" y="116" font-size="11" fill="var(--fg)">shared trunk, then</text>
+      <text x="340" y="132" font-size="11" fill="var(--fg)">fine-tuned per site</text>
+      <circle cx="340" cy="176" r="5.5" fill="var(--r2)" stroke="var(--fg)" stroke-width="1"/>
+
+      <!-- fedavg -->
+      <rect x="442" y="52" width="176" height="104" rx="8" fill="var(--r3)" stroke="var(--line)"/>
+      <text x="530" y="76" font-size="12.5" font-weight="700" fill="var(--card)">fedavg</text>
+      <text x="530" y="98" font-size="11" fill="var(--card)">1 model</text>
+      <text x="530" y="116" font-size="11" fill="var(--card)">weights averaged,</text>
+      <text x="530" y="132" font-size="11" fill="var(--card)">data never moves</text>
+      <circle cx="530" cy="176" r="5.5" fill="var(--r3)" stroke="var(--fg)" stroke-width="1"/>
+
+      <!-- centralized -->
+      <rect x="632" y="52" width="176" height="104" rx="8" fill="var(--r4)" stroke="var(--line)"/>
+      <text x="720" y="76" font-size="12.5" font-weight="700" fill="var(--card)">centralized</text>
+      <text x="720" y="98" font-size="11" fill="var(--card)">1 model</text>
+      <text x="720" y="116" font-size="11" fill="var(--card)">all 8,509 records</text>
+      <text x="720" y="132" font-size="11" fill="var(--card)">in one pile</text>
+      <circle cx="720" cy="176" r="5.5" fill="var(--r4)" stroke="var(--fg)" stroke-width="1"/>
+    </g>
+
+    <text x="822" y="80" font-size="11" fill="var(--muted)">↖ the two ends are</text>
+    <text x="822" y="96" font-size="11" fill="var(--muted)">baselines, not</text>
+    <text x="822" y="112" font-size="11" fill="var(--muted)">deployable options:</text>
+    <text x="822" y="128" font-size="11" fill="var(--muted)">centralized would</text>
+    <text x="822" y="144" font-size="11" fill="var(--muted)">require pooling.</text>
+
+    <text x="60" y="30" font-size="11.5" fill="var(--muted)">FedAvg only earns its keep if it beats <tspan font-weight="600" fill="var(--fg)">local</tspan> — otherwise a hospital should just train alone — while staying near <tspan font-weight="600" fill="var(--fg)">centralized</tspan>, the no-privacy ceiling.</text>
+  </svg>
+</div>
+
+<!-- ============================================================ 4 -->
+<div class="card">
+  <h2>4 · What IRM is for<span class="pill">the invariance penalty</span></h2>
+  <p class="note">FedAvg gives you one model. It does not give you a model that learned the
+  <em>right</em> things. IRM — Invariant Risk Minimization — is a penalty that pushes the model
+  toward patterns that hold at <strong>every</strong> hospital, and away from patterns that are
+  artefacts of one site's population, coding habits, or specialty mix.</p>
+
+  <svg viewBox="0 0 960 300" role="img" aria-label="Spurious versus invariant codes across two hospitals, and the IRM penalty that separates them.">
+    <text x="20" y="26" font-size="12.5" font-weight="600" fill="var(--fg)">Two kinds of pattern, and why the model cannot tell them apart on its own</text>
+
+    <!-- left: spurious -->
+    <rect x="20" y="42" width="440" height="140" rx="8" fill="var(--card)" stroke="var(--k1)" stroke-width="1.4"/>
+    <text x="38" y="66" font-size="12" font-weight="700" fill="var(--k1)">SPURIOUS</text>
+    <text x="126" y="66" font-size="11.5" fill="var(--muted)">rare here, routine there</text>
+
+    <g font-size="11">
+      <rect x="38" y="80" width="180" height="80" rx="6" fill="var(--wash)" stroke="var(--line)"/>
+      <text x="128" y="100" font-size="11" text-anchor="middle" fill="var(--fg)" font-weight="600">cardiac site</text>
+      <rect x="54" y="112" width="148" height="12" rx="3" fill="var(--r3)"/>
+      <text x="128" y="145" font-size="10.5" text-anchor="middle" fill="var(--muted)">code X: common</text>
+
+      <rect x="262" y="80" width="180" height="80" rx="6" fill="var(--wash)" stroke="var(--line)"/>
+      <text x="352" y="100" font-size="11" text-anchor="middle" fill="var(--fg)" font-weight="600">general ICU</text>
+      <rect x="278" y="112" width="16" height="12" rx="3" fill="var(--r3)"/>
+      <text x="352" y="145" font-size="10.5" text-anchor="middle" fill="var(--muted)">code X: rare</text>
+    </g>
+    <text x="240" y="176" font-size="10.5" text-anchor="middle" fill="var(--k1)">the model should <tspan font-weight="600">not</tspan> bake this in</text>
+
+    <!-- right: invariant -->
+    <rect x="500" y="42" width="440" height="140" rx="8" fill="var(--card)" stroke="var(--k2)" stroke-width="1.4"/>
+    <text x="518" y="66" font-size="12" font-weight="700" fill="var(--k2)">INVARIANT</text>
+    <text x="608" y="66" font-size="11.5" fill="var(--muted)">rare everywhere, for real clinical reasons</text>
+
+    <g font-size="11">
+      <rect x="518" y="80" width="180" height="80" rx="6" fill="var(--wash)" stroke="var(--line)"/>
+      <text x="608" y="100" font-size="11" text-anchor="middle" fill="var(--fg)" font-weight="600">cardiac site</text>
+      <rect x="534" y="112" width="18" height="12" rx="3" fill="var(--r3)"/>
+      <text x="608" y="145" font-size="10.5" text-anchor="middle" fill="var(--muted)">code Y: rare</text>
+
+      <rect x="742" y="80" width="180" height="80" rx="6" fill="var(--wash)" stroke="var(--line)"/>
+      <text x="832" y="100" font-size="11" text-anchor="middle" fill="var(--fg)" font-weight="600">general ICU</text>
+      <rect x="758" y="112" width="20" height="12" rx="3" fill="var(--r3)"/>
+      <text x="832" y="145" font-size="10.5" text-anchor="middle" fill="var(--muted)">code Y: rare</text>
+    </g>
+    <text x="720" y="176" font-size="10.5" text-anchor="middle" fill="var(--k2)">this is the signal worth transferring</text>
+
+    <!-- bottom: the mechanism -->
+    <rect x="20" y="202" width="920" height="84" rx="8" fill="var(--wash)" stroke="var(--line)"/>
+    <text x="40" y="226" font-size="11.5" font-weight="600" fill="var(--fg)">The trick:</text>
+    <text x="108" y="226" font-size="11.5" fill="var(--fg)">stick a dummy scalar <tspan font-family="ui-monospace,monospace" font-weight="700">w</tspan>, pinned at 1.0, on the model's output logits. Ask each hospital:</text>
+    <text x="40" y="250" font-size="11.5" fill="var(--muted)">“given your data, would you rather turn <tspan font-family="ui-monospace,monospace" font-weight="700">w</tspan> up or down?” — that answer is a single number, <tspan font-family="ui-monospace,monospace">∇</tspan><tspan font-family="ui-monospace,monospace" baseline-shift="sub" font-size="9">w</tspan><tspan font-family="ui-monospace,monospace">Rₖ</tspan>.</text>
+    <text x="40" y="272" font-size="11.5" fill="var(--fg)">If <tspan font-weight="600">every</tspan> hospital is already content with <tspan font-family="ui-monospace,monospace" font-weight="700">w = 1</tspan>, the representation is invariant and the penalty is zero.</text>
+  </svg>
+
+  <div class="eq">
+    min<sub>θ</sub>  Σ<sub>k=1..8</sub> [ R<sub>k</sub>(θ)  +  ρ · ‖ ∇<sub>w|w=1</sub> R<sub>k</sub>(w · θ) ‖² ]
+    <br><span style="color:var(--muted)">R<sub>k</sub> = hospital k's own loss   ·   ρ = penalty weight (the one knob that needs a sweep)</span>
+  </div>
+
+  <h3>The part that makes it free</h3>
+  <p class="note">The penalty sits <strong>inside</strong> the sum — it is per-hospital, then
+  added up. So each client can compute its own <code>R<sub>k</sub></code> and its own penalty
+  from the broadcast weights and its own data, with no knowledge of any other site. The FedAvg
+  protocol does not change by one byte; the only thing that changes is each client's local loss
+  function. <span style="color:var(--muted)">(Two scalars per client per round are sent anyway,
+  purely for monitoring — you cannot tune ρ without watching the risk and penalty terms
+  separately.)</span></p>
+</div>
+
+<!-- ============================================================ 5 -->
+<div class="card">
+  <h2>5 · Where federation and IRM collide</h2>
+  <p class="note">This is the interesting bit, and the part that is genuinely a research
+  question rather than an implementation detail.</p>
+
+  <svg viewBox="0 0 960 236" role="img" aria-label="Centralized IRM evaluates the penalty at shared parameters; FedAvg evaluates it at drifted local parameters.">
+    <!-- centralized -->
+    <text x="20" y="28" font-size="12" font-weight="700" fill="var(--k2)">Centralized IRM asks the right question</text>
+    <circle cx="140" cy="76" r="9" fill="var(--k2)"/>
+    <text x="140" y="60" font-size="11" text-anchor="middle" fill="var(--fg)">θ</text>
+    <g stroke="var(--k2)" stroke-width="1.3" fill="none" stroke-dasharray="3 3">
+      <path d="M140 76 L300 56"/><path d="M140 76 L300 76"/><path d="M140 76 L300 96"/>
+    </g>
+    <text x="316" y="60" font-size="11" fill="var(--muted)">penalty for hosp 458, measured at θ</text>
+    <text x="316" y="80" font-size="11" fill="var(--muted)">penalty for hosp 188, measured at θ</text>
+    <text x="316" y="100" font-size="11" fill="var(--muted)">penalty for hosp 429, measured at θ</text>
+    <text x="640" y="80" font-size="11.5" fill="var(--k2)" font-weight="600">← all at the same point</text>
+
+    <line x1="20" y1="126" x2="940" y2="126" stroke="var(--line)"/>
+
+    <!-- federated -->
+    <text x="20" y="152" font-size="12" font-weight="700" fill="var(--k1)">FedAvg + IRM asks a weaker one</text>
+    <circle cx="140" cy="196" r="9" fill="var(--muted)"/>
+    <text x="140" y="180" font-size="11" text-anchor="middle" fill="var(--fg)">θ</text>
+    <g stroke="var(--k1)" stroke-width="1.3" fill="none">
+      <path d="M140 196 L292 172"/><path d="M140 196 L292 196"/><path d="M140 196 L292 220"/>
+    </g>
+    <circle cx="298" cy="172" r="6" fill="var(--k1)"/>
+    <circle cx="298" cy="196" r="6" fill="var(--k1)"/>
+    <circle cx="298" cy="220" r="6" fill="var(--k1)"/>
+    <text x="316" y="176" font-size="11" fill="var(--muted)">2 local epochs → θ₄₅₈, <tspan fill="var(--k1)">then</tspan> penalty</text>
+    <text x="316" y="200" font-size="11" fill="var(--muted)">2 local epochs → θ₁₈₈, <tspan fill="var(--k1)">then</tspan> penalty</text>
+    <text x="316" y="224" font-size="11" fill="var(--muted)">2 local epochs → θ₄₂₉, <tspan fill="var(--k1)">then</tspan> penalty</text>
+    <text x="640" y="200" font-size="11.5" fill="var(--k1)" font-weight="600">← each at its own drifted point</text>
+  </svg>
+  <p class="fig-cap">Local drift lets each site partially re-fit its own environment <em>before</em>
+  the penalty is ever computed — which is precisely the thing IRM exists to prevent. Hence the
+  mitigations: run <code>local_epochs=1</code> to keep the drift short, or evaluate the penalty
+  once at the broadcast θ and hold it fixed, or run centralized+IRM as the drift-free oracle.</p>
+
+  <h3 class="warn" style="border-left:3px solid var(--k1);padding-left:12px;">A second wrinkle: invariance without a label</h3>
+  <p class="note">Textbook IRM assumes a stable mechanism <code>P(Y | Φ(X))</code> across
+  environments. HALO is <strong>unconditional</strong> — there is no Y. The nearest thing is
+  next-code-given-history, so what the penalty actually enforces is <em>“the conditional code
+  distribution given patient history is the same at every hospital.”</em> But site-specific case
+  mix is exactly what differs across these eight hospitals, and one of the two evaluation axes
+  rewards reproducing it. <strong>IRM is being asked to penalise the model for doing well on one
+  of its own metrics.</strong> That is not a bug in the design — it is the hypothesis.</p>
+</div>
+
+<!-- ============================================================ 6 -->
+<div class="card">
+  <h2>6 · The pre-registered prediction</h2>
+  <p class="note">Because of that tension, IRM should move the two evaluation targets in
+  <em>opposite</em> directions. Writing it down before looking is what makes the result mean
+  something.</p>
+
+  <svg viewBox="0 0 960 250" role="img" aria-label="IRM should hurt the specialist target and help the generalist target.">
+    <defs>
+      <marker id="down" viewBox="0 0 10 10" refX="5" refY="9" markerWidth="7" markerHeight="7" orient="auto">
+        <path d="M0 0 L10 0 L5 10 z" fill="var(--k1)"/>
+      </marker>
+      <marker id="up" viewBox="0 0 10 10" refX="5" refY="1" markerWidth="7" markerHeight="7" orient="auto">
+        <path d="M0 10 L10 10 L5 0 z" fill="var(--k2)"/>
+      </marker>
+    </defs>
+
+    <rect x="40" y="30" width="420" height="190" rx="8" fill="var(--card)" stroke="var(--line)"/>
+    <text x="250" y="58" font-size="12.5" text-anchor="middle" font-weight="700" fill="var(--fg)">SPECIALIST</text>
+    <text x="250" y="78" font-size="11" text-anchor="middle" fill="var(--muted)">each site scored against its own test fold</text>
+    <text x="250" y="94" font-size="11" text-anchor="middle" fill="var(--muted)"><tspan font-family="ui-monospace,monospace">--real-scope hospital</tspan></text>
+    <path d="M250 118 L250 172" stroke="var(--k1)" stroke-width="2.5" fill="none" marker-end="url(#down)"/>
+    <text x="250" y="200" font-size="12" text-anchor="middle" fill="var(--k1)" font-weight="700">should get WORSE</text>
+    <text x="250" y="216" font-size="10.5" text-anchor="middle" fill="var(--muted)">invariance forbids site-specific fitting</text>
+
+    <rect x="500" y="30" width="420" height="190" rx="8" fill="var(--card)" stroke="var(--line)"/>
+    <text x="710" y="58" font-size="12.5" text-anchor="middle" font-weight="700" fill="var(--fg)">GENERALIST</text>
+    <text x="710" y="78" font-size="11" text-anchor="middle" fill="var(--muted)">all sites scored against the pooled test fold</text>
+    <text x="710" y="94" font-size="11" text-anchor="middle" fill="var(--muted)"><tspan font-family="ui-monospace,monospace">--real-scope pooled</tspan></text>
+    <path d="M710 172 L710 118" stroke="var(--k2)" stroke-width="2.5" fill="none" marker-end="url(#up)"/>
+    <text x="710" y="200" font-size="12" text-anchor="middle" fill="var(--k2)" font-weight="700">should get BETTER</text>
+    <text x="710" y="216" font-size="10.5" text-anchor="middle" fill="var(--muted)">what survives averaging is what generalises</text>
+  </svg>
+
+  <h3>The same split, on the rare codes</h3>
+  <p class="note">The cohort manifest already carries the two code sets this prediction needs,
+  which makes it a free subgroup analysis rather than a new experiment:</p>
+  <div class="scroll">
+  <table>
+    <tr><th>set</th><th class="num">codes</th><th>in IRM's vocabulary</th><th>prediction</th></tr>
+    <tr>
+      <td><code>pooled_rare</code> minus <code>global_rare</code></td>
+      <td class="num">73</td>
+      <td>rare at one site, common elsewhere → <strong style="color:var(--k1)">spurious</strong></td>
+      <td>IRM hurts these</td>
+    </tr>
+    <tr>
+      <td><code>global_rare</code></td>
+      <td class="num">475</td>
+      <td>rare everywhere → <strong style="color:var(--k2)">invariant</strong></td>
+      <td>IRM helps these</td>
+    </tr>
+    <tr>
+      <td><code>pooled_rare</code> (union)</td>
+      <td class="num">548</td>
+      <td>the headline rare set</td>
+      <td>net of the two</td>
+    </tr>
+  </table>
+  </div>
+  <p class="note" style="margin-top:12px;">If both targets move the same way, the story is either
+  more interesting than the hypothesis or something is broken — and both are worth knowing. If
+  IRM moves <em>either</em> axis cleanly, that is the result.</p>
+</div>
+
+<!-- ============================================================ 7 -->
+<div class="card">
+  <h2>7 · How anything gets scored</h2>
+  <p class="note">A generator has no accuracy. Two proxies stand in for it, and they answer
+  different questions — which is why the dashboard plots them against each other rather than
+  averaging them.</p>
+
+  <div class="two">
+    <div>
+      <h3 style="margin-top:4px;">Test 1 — prevalence fidelity</h3>
+      <p class="note">Generate synthetic patients, count how often each code appears, and compare
+      that to the real rate. <em>Does the synthetic population look like the real one?</em>
+      Reported as correlation across codes, overall and restricted to the rare tail.</p>
+    </div>
+    <div>
+      <h3 style="margin-top:4px;">Test 2 — TSTR utility</h3>
+      <p class="note">Train a downstream classifier on synthetic records, test it on real ones.
+      <em>Is the synthetic data good enough to do work with?</em> Train-on-synthetic,
+      test-on-real.</p>
+    </div>
+  </div>
+
+  <div class="warn" style="margin-top:8px;">
+    <p class="note" style="margin-bottom:0;"><strong>Two standing caveats</strong>, repeated here
+    because they change how every number on the other pages should be read.
+    <br><br>
+    <strong>1.</strong> The Test 2 downstream task is not currently working — every arm scores
+    below chance on AUROC, inverted rather than merely weak. The leading hypothesis is a masking
+    artefact: a patient carrying more rare codes has more stripped from their input, so the
+    classifier reads them as low-risk.
+    <br><br>
+    <strong>2.</strong> The two axes are not matched the same way. Prevalence is capped at 2,000
+    synthetic patients per hospital for every regime; TSTR is uncapped, so <code>centralized</code>
+    and <code>fedavg</code> trained on 16,000 records against <code>local</code> and
+    <code>fedavg_ft</code>'s 2,000. Part of the vertical spread is data volume, not generator
+    quality.</p>
+  </div>
+</div>
+
+<!-- ============================================================ 8 -->
+<div class="card">
+  <h2>8 · Where to go next</h2>
+  <div class="scroll">
+  <table>
+    <tr><th>page</th><th>what it shows</th></tr>
+    <tr><td><a href="index.html">index.html</a></td><td>the fidelity-vs-utility scatter — all four regimes on both axes at once</td></tr>
+    <tr><td><a href="irm_specialist_generalist.html">irm_specialist_generalist.html</a></td><td>the specialist/generalist prediction from §6, measured</td></tr>
+    <tr><td><a href="cohort_eda.html">cohort_eda.html</a></td><td>per-rare-code trajectory lengths and the Test 2 masking diagnostic</td></tr>
+    <tr><td><a href="rare_code_tail.html">rare_code_tail.html</a></td><td>the rare-code prevalence tail, and which codes an eval draw actually lands on</td></tr>
+    <tr><td><a href="mechanisms.html">mechanisms.html</a></td><td>dropout, latent width, best-of-K — separate baseline, not comparable to the board</td></tr>
+  </table>
+  </div>
+  <p class="note" style="margin-top:14px;">The prose sources for this page are
+  <code>notes/irm-federated.md</code> (the derivation, the split-batch estimator, the ρ schedule)
+  and <code>notes/CHEATSHEET.md</code> (every number quoted above). Numbers are tied to
+  <code>hilo8_random</code> — rebuilding the cohort re-splits the data and redefines the rare-code
+  set, which makes all of them stale at once.</p>
+</div>
+
+</div>

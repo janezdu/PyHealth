@@ -50,13 +50,34 @@ GLOBAL_CKPT = {
     "centralized": "centralized_state.pt",
     "fedavg": "fedavg_state.pt",
     "fedavg_ft": "fedavg_state.pt",
+    # Every literature baseline runs FedAvg first, so they all leave the same
+    # global checkpoint behind. What differs is whether anything personal sits
+    # on top of it -- see PER_HOSPITAL_CKPT.
+    "fedprox": "fedavg_state.pt",
+    "ditto": "fedavg_state.pt",
+    "perada": "fedavg_state.pt",
+    "perada_fl": "fedavg_state.pt",   # the frozen trunk PerAda's adapters sit on
+    "fedrep": "fedavg_state.pt",
+    "lg_fedavg": "fedavg_state.pt",
 }
 PER_HOSPITAL_CKPT = {
     "local": "local_{hid}.pt",
     "fedavg_ft": "ft_{hid}.pt",
+    # Ditto and PerAda personalize by fine-tuning; FedRep and LG-FedAvg
+    # personalize by holding parameters out of the average. Both end up writing
+    # one full state dict per hospital under the same name.
+    "ditto": "ft_{hid}.pt",
+    "perada": "ft_{hid}.pt",
+    "perada_fl": "ft_{hid}.pt",       # trunk + that hospital's personal adapter
+    "fedrep": "ft_{hid}.pt",
+    "lg_fedavg": "ft_{hid}.pt",
 }
 # Regimes whose per-hospital synthetic data comes from one shared generator.
-SINGLE_MODEL = ("centralized", "fedavg")
+# FedProx belongs here and the other four baselines do not: FedProx constrains
+# the rounds but still ends with a single global model, while the rest hand each
+# hospital its own. Getting this wrong collapses eight personalized generators
+# into one classifier in Test 2 without any error.
+SINGLE_MODEL = ("centralized", "fedavg", "fedprox")
 
 
 def load_run_config(save_dir: str, run_name: str = None) -> dict:

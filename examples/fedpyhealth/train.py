@@ -39,6 +39,7 @@ import torch
 
 from utils.cohort import (
     DEFAULT_CACHE_DIR,
+    _to_sample_dataset,
     mix_synthetic,
     read_trajectories,
     load_clients,
@@ -54,9 +55,18 @@ from utils.cohort import (
 # This file still calls the other two at the end of a run so a single job
 # produces a complete result, but each is independently runnable against a
 # finished run's save_dir.
+from utils.dpaccount import sgm_epsilon
+from utils.dpfed import adapt_clip, dp_aggregate, effective_sigma, sgm_aggregate
+from utils.fedparts import (
+    describe as describe_parts,
+    merge_state as merge_parts,
+    personal_keys,
+    split_state as split_parts,
+)
 from generate import proportional_pool, write_synthetic
 from eval import evaluate_and_save
 from pyhealth.models import HALO
+from pyhealth.models.generators.fedreg import clear_prox_ref, set_prox_ref
 
 # --- configuration ----------------------------------------------------------
 # The cohort, the split and the vocabulary all come from the cache; nothing in
@@ -197,7 +207,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         "each hospital by its sample count; 'uniform' weights every "
                         "hospital equally. Only affects fedavg / fedavg_ft.")
     p.add_argument("--regime",
-                   choices=["fedavg", "fedavg_ft", "centralized", "local"],
+                   choices=["fedavg", "fedavg_ft", "centralized", "local",
+                            "fedprox", "ditto", "perada", "perada_fl",
+                            "fedrep", "lg_fedavg"],
                    default=None,
                    help="training regime: fedavg (default) trains one model with "
                         "FedAvg across hospital clients; fedavg_ft additionally "
@@ -229,6 +241,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                    help="resume from the on-disk checkpoint if present (all "
                         "four regimes checkpoint; local keeps one file per "
                         "hospital and skips the ones already finished)")
+    p.add_argument("--init-from", default=None,
+                   help="warm-start every model from another run's trained "
+                        "weights: a save dir (its centralized_state.pt or "
+                        "fedavg_state.pt) or a .pt file. Unlike --resume this "
+                        "starts a NEW run -- round 0, its own save_dir -- and the "
+                        "source may come from a different cohort, e.g. a "
+                        "public-hospital checkpoint fine-tuned on the private "
+                        "sites. Refused unless the source's vocabulary and "
+                        "architecture match this run's. run_name gets a "
+                        "_from<cohort>R<rounds>E<epochs> suffix.")
     p.add_argument("--rare-upweight", action="store_true", default=None,
                    help="weight each patient's loss by the rarity of the codes "
                         "they carry AT THEIR OWN HOSPITAL: w = 1 + sum of "
@@ -252,7 +274,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         "within-visit causality. The trunk is frozen either way, "
                         "so the federated signal survives. Only affects the "
                         "fine-tuning stage -- the FedAvg rounds before it, and "
-                        "any IRM penalty on them, are untouched.")
+                        "any IRM penalty on them, are untouched. With "
+                        "--init-from and --regime centralized/local/fedavg it "
+                        "instead freezes the warm-started trunk for the WHOLE "
+                        "run; under fedavg only the adapter is then averaged, "
+                        "i.e. only the adapter is communicated.")
     p.add_argument("--adapter-rank", type=int, default=None,
                    help="LoRA rank (default 8). Ignored by --adapter last_mlp.")
     p.add_argument("--adapter-mu", type=float, default=None,
@@ -390,6 +416,76 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         "the REVERSE: start at rho and anneal down to 1, which "
                         "tests whether the penalty only has to shape the early "
                         "representation. See irm_rho_at.")
+    # ---- literature baselines -------------------------------------------- #
+    # These four regimes are points on the same line: each controls only HOW FAR
+    # a client may sit from the shared model, by magnitude (ditto, fedprox) or
+    # by capacity (fedrep, lg_fedavg, perada). They exist to be compared
+    # against, not to win.
+    p.add_argument("--fedprox-mu", type=float, default=None,
+                   help="FedProx (Li et al., MLSys 2020): weight of "
+                        "(mu/2)||w - w_broadcast||^2 added to each client's "
+                        "LOCAL loss every round, so no client drifts far from "
+                        "the server within a round. Not personalization -- "
+                        "there is still one global model at the end. Distinct "
+                        "from --adapter-mu, which is an L2 toward ZERO applied "
+                        "only during fine-tuning.\n\n"
+                        "MIND THE UNITS. The penalty is a SUM over ~6.2M "
+                        "parameters; the risk it joins is a MEAN over elements "
+                        "and settles near 5e-4. A per-parameter drift of only "
+                        "0.001 already makes the penalty ~6, so mu=0.01 -- a "
+                        "reasonable value in the paper, where losses are O(1) "
+                        "-- contributes ~0.03 here and swamps the risk sixty "
+                        "times over. The first sweep at mu=0.01 pinned the "
+                        "model to the broadcast weights and emitted 17.7 codes "
+                        "per visit against a real 12.5. Useful values here are "
+                        "around 1e-6.")
+    p.add_argument("--ditto-lambda", type=float, default=None,
+                   help="Ditto (Li et al., ICML 2021): weight of "
+                        "(lambda/2)||v - w*||^2 while fine-tuning each "
+                        "hospital's personal model v, where w* is the frozen "
+                        "final FedAvg global. lambda=0 is exactly plain "
+                        "fedavg_ft; large lambda pins every site to the global. "
+                        "NOTE this is the post-hoc form -- the paper interleaves "
+                        "the v update with each round -- which is what the "
+                        "equal-budget rule here allows.")
+    p.add_argument("--kd-lambda", type=float, default=None,
+                   help="PerAda (Xie et al., CVPR 2024): weight of the "
+                        "knowledge-distillation term pulling a hospital's "
+                        "adapted output distribution toward the frozen global "
+                        "model's, as per-code binary KL. Use with an --adapter; "
+                        "the adapter is the personalization and KD is the "
+                        "brake. Cannot be combined with --xm-k > 1 or "
+                        "--irm-rho > 0.")
+    # PerAda as the paper specifies it (--regime perada_fl), as opposed to the
+    # post-hoc KD fine-tune that --regime perada runs. See run_perada.
+    p.add_argument("--rate-mu", type=float, default=None,
+                   help="Weight of a relative penalty on the batch's emitted "
+                        "code volume vs the observed one, "
+                        "((sum p - sum y) / sum y)^2. Aimed at the arms that "
+                        "over-emit 2-4x (FedRep, LG-FedAvg). Plain risk only: "
+                        "refuses --xm-k > 1 and --irm-rho > 0, whose losses "
+                        "are computed elsewhere. 0 (default) = off.")
+    p.add_argument("--fedrep-alternate", action="store_true", default=None,
+                   help="FedRep's own schedule: each round, train the head "
+                        "with the global body frozen, then the body with the "
+                        "head frozen. Needs --regime fedrep and "
+                        "--local-epochs >= 2.")
+    p.add_argument("--perada-lambda", type=float, default=None,
+                   help="perada_fl: weight of (lambda/2)||v_m - w||^2 pulling "
+                        "each hospital's personal adapter toward the current "
+                        "global adapter, every round. Default 0.1, matching the "
+                        "Ditto setting in the baselines table.")
+    p.add_argument("--perada-kd-steps", type=int, default=None,
+                   help="perada_fl: server-side distillation steps per round "
+                        "(default 10; the paper uses 100). 0 disables KD, "
+                        "which leaves FedAvg-on-adapters plus a Ditto-style "
+                        "personal adapter.")
+    p.add_argument("--perada-kd-pool", type=int, default=None,
+                   help="perada_fl: records the server samples ONCE from the "
+                        "frozen trunk to distill on (default 1000).")
+    p.add_argument("--perada-kd-batch", type=int, default=None,
+                   help="perada_fl: batch size of a distillation step "
+                        "(default 64).")
     p.add_argument("--irm-rho", type=float, default=None,
                    help="IRMv1 penalty weight. 0 (default) trains the plain "
                         "risk. Above 0 each client optimises risk + rho * "
@@ -403,6 +499,44 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         "backward, so expect ~2x step cost. Typical post-warmup "
                         "values are 1e2-1e4; it needs a sweep. run_name gets an "
                         "_irm suffix.")
+    p.add_argument("--dp-clip", type=float, default=None,
+                   help="DP-FedAvg L2 clip norm S on each client's UPDATE. "
+                        "Enables the DP aggregation path. Set it from the "
+                        "measured update norms -- run once with --dp-sigma 0 "
+                        "and read the [dp] log lines. Requires "
+                        "--weighting uniform.")
+    p.add_argument("--dp-sigma", type=float, default=None,
+                   help="DP-FedAvg noise multiplier. Gaussian std on the mean "
+                        "update is sigma * dp_clip / n_clients. 0 clips but "
+                        "adds no noise, which is the control that separates "
+                        "the cost of clipping from the cost of noise. "
+                        "utils/dpaccount.py converts (sigma, rounds) to "
+                        "epsilon; all 8 sites participate every round, so no "
+                        "subsampling amplification is claimed.")
+    p.add_argument("--dp-mech", choices=["gaussian", "sgm"], default=None,
+                   help="Noise mechanism. 'gaussian' (default) is server-side "
+                        "DP-FedAvg. 'sgm' is Fed-SGM (Li et al. 2025): each "
+                        "client sketches its clipped update and adds noise "
+                        "before sending, with --dp-sigma as the ABSOLUTE noise "
+                        "std per sketch coordinate. Needs --dp-sketch-b.")
+    p.add_argument("--dp-sketch-b", type=int, default=None,
+                   help="Sketch dimension b for --dp-mech sgm.")
+    p.add_argument("--dp-adaptive", type=float, default=None,
+                   help="Target quantile for ADAPTIVE clipping (Andrew et al. "
+                        "2021). 0.5 aims the clip at the median client norm. "
+                        "Omitted/0 keeps --dp-clip fixed. The probe measured "
+                        "norms decaying ~30x over 10 rounds, which no single "
+                        "fixed clip fits.")
+    p.add_argument("--dp-sigma-b", type=float, default=None,
+                   help="Noise multiplier on the adaptive quantile bit. It is "
+                        "a second release, so its cost ADDS: use "
+                        "dpfed.effective_sigma(sigma, sigma_b) for epsilon. "
+                        "sigma_b = 4*sigma costs ~3%%.")
+    p.add_argument("--dp-adapt-lr", type=float, default=None,
+                   help="Step size for the geometric clip update. Default 1.0, "
+                        "NOT the usual 0.2: at 10 rounds a slower rate never "
+                        "catches the decay (replay lands at 0.535 vs a true "
+                        "median of 0.234).")
     p.add_argument("--irm-warmup", type=int, default=None,
                    help="rounds (fedavg) or epochs (centralized/local) to hold "
                         "rho at 1.0 before jumping to --irm-rho. IRM cannot be "
@@ -481,8 +615,26 @@ def make_run_name(cfg: dict) -> str:
             f"_{cohort}_{cfg['metrics']}")
     # fedavg_ft varies by ft_epochs at a fixed budget -- encode it so an ft sweep's
     # runs get distinct artifacts/results instead of clobbering one another.
-    if cfg.get("regime") == "fedavg_ft":
+    if cfg.get("regime") in FT_REGIMES:
         name += f"_ft{cfg.get('ft_epochs', cfg['local_epochs'])}"
+    # Baseline knobs. Two lambdas sharing a save_dir would clobber each other's
+    # checkpoints and results; see the comment below about warmup for what that
+    # costs when it goes unnoticed.
+    if cfg.get("fedprox_mu"):
+        name += f"_prox{cfg['fedprox_mu']:g}"
+    if cfg.get("ditto_lambda"):
+        name += f"_ditto{cfg['ditto_lambda']:g}"
+    if cfg.get("kd_lambda"):
+        name += f"_kd{cfg['kd_lambda']:g}"
+    if cfg.get("rate_mu"):
+        name += f"_rate{cfg['rate_mu']:g}"
+    if cfg.get("fedrep_alternate"):
+        name += "_alt"
+    if cfg.get("regime") == "perada_fl":
+        # All three change the trained arm, so all three are in the name.
+        name += (f"_pl{cfg.get('perada_lambda', 0.1):g}"
+                 f"_kds{cfg.get('perada_kd_steps', 10)}"
+                 f"p{cfg.get('perada_kd_pool', 1000)}")
     # Tag uniform-weighted FedAvg runs so they get distinct artifacts/results and
     # never clobber the sample-weighted ones (sample weighting keeps the old name).
     if cfg.get("weighting", "sample") == "uniform":
@@ -507,6 +659,15 @@ def make_run_name(cfg: dict) -> str:
     # their own save_dir rather than overwriting the baseline.
     if cfg.get("early_stop") is False:
         name += "_nes"
+    if (cfg.get("dp_clip") or 0.0) > 0:
+        # Both go in the name. Same reasoning as irm rho+warmup: two DP settings
+        # resolving to one save_dir makes a sweep a comparison of a run with
+        # itself.
+        name += f"_dpc{cfg['dp_clip']:g}s{cfg.get('dp_sigma') or 0.0:g}"
+        if (cfg.get("dp_adaptive") or 0.0) > 0:
+            name += f"ad{cfg['dp_adaptive']:g}"
+        if cfg.get("dp_mech") == "sgm":
+            name += f"_sgmb{cfg['dp_sketch_b']}"
     if cfg.get("latent_dim", 0) > 0:
         name += f"_z{cfg['latent_dim']}"
     if cfg.get("dropout", 0.0) > 0:
@@ -553,7 +714,94 @@ def make_run_name(cfg: dict) -> str:
             name += f"_{cfg['adapter_optim']}"
         if cfg.get("adapter_lr", 0.0):
             name += f"_alr{cfg['adapter_lr']:g}"
+    # A warm-started run is a different model from the same arm trained from
+    # scratch, and two sources (pub8 at 25 vs 100 rounds) are different models
+    # from each other, so the source's cohort and budget both go in the name.
+    if cfg.get("init_from"):
+        _, src = _init_source(cfg["init_from"])
+        src_cohort = os.path.basename(str(src["cohort_cache"]).rstrip("/"))
+        name += f"_from{src_cohort}R{src['n_rounds']}E{src['local_epochs']}"
     return name
+
+
+#: Architecture knobs a warm start must agree on. Matching tensor shapes is not
+#: enough: n_heads changes how attention splits a weight without changing its
+#: shape, so a mismatch would load cleanly and mean nothing.
+INIT_ARCH_KEYS = ("embed_dim", "n_heads", "n_layers", "n_ctx", "latent_dim")
+
+#: Checkpoint files ``--init-from`` accepts in a save dir.
+INIT_CKPTS = ("centralized_state.pt", "fedavg_state.pt")
+
+
+def _init_source(path: str) -> Tuple[str, dict]:
+    """Resolve ``--init-from`` to ``(checkpoint file, source run's config)``.
+
+    The source's ``config.json`` is required, not optional: it is the only
+    record of which vocabulary and architecture the weights were trained for,
+    and without it neither can be checked.
+    """
+    if os.path.isdir(path):
+        found = [os.path.join(path, f) for f in INIT_CKPTS
+                 if os.path.exists(os.path.join(path, f))]
+        if len(found) != 1:
+            raise FileNotFoundError(
+                f"--init-from {path}: expected exactly one of {INIT_CKPTS} in "
+                f"that directory, found {len(found)}. Pass the .pt file itself.")
+        ckpt = found[0]
+    elif os.path.exists(path):
+        ckpt = path
+    else:
+        raise FileNotFoundError(f"--init-from {path}: no such file or directory")
+    cfg_path = os.path.join(os.path.dirname(ckpt), "config.json")
+    if not os.path.exists(cfg_path):
+        raise FileNotFoundError(
+            f"--init-from {ckpt}: no config.json beside it, so its vocabulary "
+            f"and architecture cannot be verified. Refusing to warm-start.")
+    with open(cfg_path) as fh:
+        return ckpt, json.load(fh)
+
+
+def load_init_state(path: str, cfg: dict, code_vocab: Dict[str, int],
+                    log: Callable[[str], None] = print
+                    ) -> Dict[str, torch.Tensor]:
+    """Load ``--init-from`` weights after proving they fit this run.
+
+    Two checks, both of which would otherwise fail silently:
+
+    * **Vocabulary.** The embedding rows and output columns are indexed by
+      code. Two caches with the same 921 codes in a different order produce
+      identically shaped tensors, so the load succeeds and every code is read
+      as some other code. The code->index maps are compared exactly; the
+      ``vocab.json`` files themselves can differ in legacy fields that
+      ``load_processor`` ignores, so comparing bytes would be a false alarm.
+    * **Architecture.** See :data:`INIT_ARCH_KEYS`.
+
+    Returns:
+        The source's ``global_state``.
+    """
+    from utils.cohort import load_processor
+
+    ckpt, src = _init_source(path)
+    bad = {k: (src.get(k), cfg.get(k)) for k in INIT_ARCH_KEYS
+           if src.get(k) != cfg.get(k)}
+    if bad:
+        raise ValueError(
+            f"--init-from {ckpt} was trained with a different architecture: "
+            + ", ".join(f"{k} source={a} here={b}" for k, (a, b) in bad.items()))
+    src_vocab = load_processor(src["cohort_cache"]).code_vocab
+    if src_vocab != code_vocab:
+        moved = sum(1 for c, i in code_vocab.items() if src_vocab.get(c) != i)
+        raise ValueError(
+            f"--init-from {ckpt} was trained on {src['cohort_cache']}, whose "
+            f"vocabulary differs from this cohort's ({len(src_vocab)} vs "
+            f"{len(code_vocab)} codes, {moved} at a different index). The "
+            f"weights would load and decode every code as the wrong one.")
+    payload = torch.load(ckpt, map_location="cpu")
+    log(f"Init: warm start from {ckpt} (cohort "
+        f"{os.path.basename(str(src['cohort_cache']).rstrip('/'))}, "
+        f"{src['regime']} R{src['n_rounds']} E{src['local_epochs']}); "
+        f"vocabulary matches ({len(code_vocab)} codes)")
+    return payload["global_state"]
 
 
 def _load_yaml(path: str) -> dict:
@@ -607,16 +855,29 @@ def build_config(argv: List[str] = None) -> dict:
     # None, so "not None" reliably means "the user passed it on the command line".
     cli = {
         "regime": args.regime, "weighting": args.weighting,
-        "resume": args.resume, "cohort_cache": args.cohort_cache,
+        "resume": args.resume, "init_from": args.init_from,
+        "cohort_cache": args.cohort_cache,
         "ckpt_every": args.ckpt_every,
         "snapshot_every": args.snapshot_every,
         "rare_upweight": args.rare_upweight,
+        "dp_clip": args.dp_clip, "dp_sigma": args.dp_sigma,
+        "dp_mech": args.dp_mech, "dp_sketch_b": args.dp_sketch_b,
+        "dp_adaptive": args.dp_adaptive, "dp_sigma_b": args.dp_sigma_b,
+        "dp_adapt_lr": args.dp_adapt_lr,
         "tb_logdir": args.tb_logdir, "no_tb": args.no_tb,
         "log_every_epochs": args.log_every_epochs,
         "n_rounds": args.n_rounds, "local_epochs": args.local_epochs,
         "num_synth": args.num_synth, "metrics": args.metrics,
         "synth_per_hospital": args.synth_per_hospital,
         "ft_epochs": args.ft_epochs, "run_name": args.run_name,
+        "fedprox_mu": args.fedprox_mu, "ditto_lambda": args.ditto_lambda,
+        "kd_lambda": args.kd_lambda,
+        "perada_lambda": args.perada_lambda,
+        "rate_mu": args.rate_mu,
+        "fedrep_alternate": args.fedrep_alternate,
+        "perada_kd_steps": args.perada_kd_steps,
+        "perada_kd_pool": args.perada_kd_pool,
+        "perada_kd_batch": args.perada_kd_batch,
         "irm_rho": args.irm_rho, "irm_warmup": args.irm_warmup,
         "irm_schedule": args.irm_schedule, "xm_k": args.xm_k,
         "dropout": args.dropout, "latent_dim": args.latent_dim,
@@ -642,7 +903,15 @@ def build_config(argv: List[str] = None) -> dict:
     # Fall-back defaults for knobs not set by profile / YAML / CLI.
     cfg.setdefault("regime", "fedavg")
     cfg.setdefault("weighting", "sample")
+    cfg.setdefault("dp_clip", 0.0)
+    cfg.setdefault("dp_sigma", 0.0)
+    cfg.setdefault("dp_mech", "gaussian")
+    cfg.setdefault("dp_sketch_b", 0)
+    cfg.setdefault("dp_adaptive", 0.0)
+    cfg.setdefault("dp_sigma_b", 0.0)
+    cfg.setdefault("dp_adapt_lr", 1.0)
     cfg.setdefault("resume", False)
+    cfg.setdefault("init_from", None)
     cfg.setdefault("cohort_cache", DEFAULT_CACHE_DIR)
     cfg.setdefault("ckpt_every", 1)
     cfg.setdefault("snapshot_every", 0)      # 0 = keep no numbered snapshots
@@ -655,6 +924,15 @@ def build_config(argv: List[str] = None) -> dict:
     cfg.setdefault("adapter_iht_every", 1)
     cfg.setdefault("adapter_optim", "adam")
     cfg.setdefault("adapter_lr", 0.0)
+    cfg.setdefault("fedprox_mu", 0.0)
+    cfg.setdefault("ditto_lambda", 0.0)
+    cfg.setdefault("kd_lambda", 0.0)
+    cfg.setdefault("perada_lambda", 0.1)
+    cfg.setdefault("rate_mu", 0.0)
+    cfg.setdefault("fedrep_alternate", False)
+    cfg.setdefault("perada_kd_steps", 10)
+    cfg.setdefault("perada_kd_pool", 1000)
+    cfg.setdefault("perada_kd_batch", 64)
     cfg.setdefault("irm_rho", 0.0)
     cfg.setdefault("irm_warmup", 0)
     cfg.setdefault("irm_schedule", "step")
@@ -982,22 +1260,47 @@ def _fingerprint(sizes: Dict[str, int], split_sha: str = None) -> dict:
 
 
 def _save_ckpt(path: str, completed: int, global_state, fingerprint: dict,
-               key: str = "completed_rounds"):
+               key: str = "completed_rounds", extra: dict = None):
     """Atomically write the FedAvg checkpoint (tmp file + rename).
 
     The tmp-then-rename keeps the checkpoint valid even if the job is killed
     mid-write -- ``os.replace`` is atomic on POSIX, so we never leave a
     half-written file that a later resume would choke on.
+
+    Args:
+        extra: Additional top-level entries. Used by the key-partitioned
+            regimes to carry their per-client personal weights, which are NOT
+            in ``global_state`` and would otherwise be lost on resume -- and
+            lost silently, since the run would simply continue as plain FedAvg.
     """
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = path + ".tmp"
-    torch.save(
-        {key: completed, "global_state": global_state,
-         "fingerprint": fingerprint},
-        tmp,
-    )
+    payload = {key: completed, "global_state": global_state,
+               "fingerprint": fingerprint}
+    payload.update(extra or {})
+    torch.save(payload, tmp)
     os.replace(tmp, path)
 
+
+#: Regimes that spend part of the epoch budget on per-hospital fine-tuning
+#: rather than on federated rounds. They all share fedavg_ft's shape: FedAvg
+#: first, then a personal model per site. Listing them here is what keeps the
+#: budget split (total passes/hospital == total_epochs) equal across arms.
+FT_REGIMES = ("fedavg_ft", "ditto", "perada", "perada_fl")
+
+#: Regimes that run FedAvg rounds and produce ONE global generator.
+FEDAVG_REGIMES = ("fedavg", "fedavg_ft", "fedprox", "ditto", "perada",
+                  "perada_fl",
+                  "fedrep", "lg_fedavg")
+
+#: Which parameters each key-partitioned regime keeps at the client.
+PERSONAL_MODE = {"fedrep": "head", "lg_fedavg": "body"}
+
+#: Regimes where ONE generator serves every hospital. Everything else emits a
+#: per-hospital set, which is what `shared_generator` in the written synthetic
+#: tells the scoring scripts -- get this wrong and eight personalized models
+#: collapse into one classifier in Test 2.
+SHARED_GENERATOR_REGIMES = ("centralized", "fedavg", "fedprox")
 
 #: Accepted ``--irm-schedule`` values; see :func:`irm_rho_at`.
 IRM_SCHEDULES = ("step", "linear", "geom", "cosine", "decay")
@@ -1223,6 +1526,18 @@ def run_fedavg(
     selftrain_source: str = "global",
     client_trajectories: Dict[str, dict] = None,
     processor=None,
+    personal_mode: str = "none",
+    prox_mu: float = 0.0,
+    dp_clip: float = 0.0,
+    dp_sigma: float = 0.0,
+    dp_adaptive: float = 0.0,
+    dp_sigma_b: float = 0.0,
+    dp_adapt_lr: float = 1.0,
+    rate_mu: float = 0.0,
+    fedrep_alternate: bool = False,
+    adapter_lr: float = 0.0,
+    dp_mech: str = "gaussian",
+    dp_sketch_b: int = 0,
 ) -> object:
     """Train ``model`` with FedAvg across ``clients`` for ``n_rounds`` rounds.
 
@@ -1267,6 +1582,32 @@ def run_fedavg(
     fingerprint = _fingerprint(sizes, split_sha)
 
     global_state = _snapshot(model)
+    # Weights each client keeps out of the average: {cid: {key: tensor}}. Empty
+    # for plain FedAvg, and empty on round 0 for everyone, so every client still
+    # starts from identical broadcast weights -- which FedRep and LG-FedAvg both
+    # require.
+    personal: Dict[str, Dict[str, torch.Tensor]] = {}
+    pkeys = personal_keys(global_state, personal_mode)
+    if personal_mode != "none":
+        log(f"FedAvg: personal_mode={personal_mode} keeps "
+            f"{describe_parts(global_state, pkeys)} at each client")
+    # A frozen trunk (--adapter with --init-from) never moves, so it is never
+    # sent: only the trainable keys are averaged and the rest stay at the
+    # broadcast value. Averaging them anyway is a no-op in exact arithmetic,
+    # but it would misstate what the federation communicates. None means
+    # every key is shared, which keeps plain FedAvg on its original path.
+    comm = None
+    if any(not p.requires_grad for p in model.parameters()):
+        comm = {n for n, p in model.named_parameters() if p.requires_grad}
+        if pkeys or (dp_clip > 0 and dp_mech != "sgm") or fedrep_alternate:
+            raise ValueError(
+                "a frozen trunk cannot be combined with a personal slice, "
+                "Gaussian DP-FedAvg or fedrep_alternate: each assumes it owns "
+                "the choice of which keys are trained and averaged.")
+        n_comm = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        n_all = sum(p.numel() for p in model.parameters())
+        log(f"FedAvg: trunk frozen -- each client sends {n_comm:,} of "
+            f"{n_all:,} params per round ({100 * n_comm / n_all:.2f}%)")
     start_round = 0
     if resume and ckpt_path and os.path.exists(ckpt_path):
         ckpt = torch.load(ckpt_path, map_location="cpu")
@@ -1279,6 +1620,17 @@ def run_fedavg(
             )
         global_state = ckpt["global_state"]
         start_round = int(ckpt["completed_rounds"])
+        if personal_mode != "none":
+            # Resuming without these would quietly continue as plain FedAvg --
+            # no error, plausible numbers, wrong method. Refuse instead.
+            if "personal_states" not in ckpt:
+                raise ValueError(
+                    f"{ckpt_path} has no 'personal_states' but "
+                    f"personal_mode={personal_mode!r} needs them. It was "
+                    f"written by a plain-FedAvg run; resuming would silently "
+                    f"drop the per-client weights. Delete it and start fresh."
+                )
+            personal = ckpt["personal_states"]
         model.load_state_dict(global_state)
         log(f"FedAvg: resumed from {ckpt_path} at round {start_round}/{n_rounds}")
     elif resume and ckpt_path:
@@ -1293,6 +1645,23 @@ def run_fedavg(
 
     local_epochs = int(getattr(model, "_epochs", 1))
     split_epoch = _selftrain_split_epoch(selftrain_at, local_epochs)
+    # FedRep's own schedule (Collins et al. 2021): each round the client first
+    # fits its HEAD with the received global body frozen, then updates the BODY
+    # with its head frozen. Joint training -- the default here -- lets the head
+    # track a body that is about to be averaged away, which is the suspected
+    # cause of FedRep's over-emission: the released model pairs the final
+    # averaged body with a head fitted to a different one.
+    if fedrep_alternate:
+        if personal_mode != "head":
+            raise ValueError("fedrep_alternate is FedRep's schedule; it needs "
+                             f"personal_mode='head', got {personal_mode!r}")
+        if local_epochs < 2:
+            raise ValueError("fedrep_alternate splits each round into a head "
+                             "block and a body block, so it needs "
+                             "local_epochs >= 2")
+        if selftrain_frac > 0:
+            raise ValueError("fedrep_alternate cannot be combined with "
+                             "self-training")
     if selftrain_frac > 0:
         log(f"self-training: frac={selftrain_frac:g} from round {selftrain_start}, "
             f"generating after epoch {split_epoch}/{local_epochs} from the "
@@ -1361,12 +1730,62 @@ def run_fedavg(
             writer.add_scalar(f"selftrain_kept/hospital_{cid}",
                               kept / max(1, n_syn), step)
         return mixed
+    # The trained parameters: the only keys DP may noise. See dp_aggregate.
+    dp_keys = comm if comm is not None else {
+        n for n, p in model.named_parameters() if p.requires_grad}
+    if dp_mech == "sgm":
+        if dp_clip <= 0 or dp_sigma <= 0 or dp_sketch_b <= 0:
+            raise ValueError("--dp-mech sgm needs --dp-clip, --dp-sigma and "
+                             "--dp-sketch-b, all positive")
+        if dp_adaptive > 0:
+            raise ValueError("adaptive clipping's quantile release is not in "
+                             "the Fed-SGM accounting")
+        log(f"[dp] Fed-SGM: {len(dp_keys)} tensors, b={dp_sketch_b}, "
+            f"clip={dp_clip:g}, sigma_g={dp_sigma:g} -> epsilon "
+            f"{sgm_epsilon(dp_sigma, dp_sketch_b, n_rounds, dp_clip)[0]:.2f}")
+    elif dp_clip > 0 and dp_sigma > 0:
+        # The adaptive bit is a SECOND release about the same data, so its RDP
+        # adds. Report the sigma the accountant must use, not the raw one.
+        se = effective_sigma(dp_sigma, dp_sigma_b) if dp_adaptive > 0 else dp_sigma
+        log(f"[dp] clip={dp_clip:g} sigma={dp_sigma:g}"
+            + (f" adaptive(target={dp_adaptive:g}, lr={dp_adapt_lr:g},"
+               f" sigma_b={dp_sigma_b:g})" if dp_adaptive > 0 else "")
+            + f"  -> EFFECTIVE sigma for epsilon = {se:.4f}")
+
+    if dp_clip > 0 and pkeys:
+        raise ValueError(
+            "DP-FedAvg is not supported with a personal parameter slice "
+            f"(personal_mode={personal_mode!r}). The clipped delta and the "
+            "reference state would cover different keys, and the sensitivity "
+            "bound would not hold over the half that is never aggregated.")
+
+    # What a frozen-trunk run moved, measured from where it started. An adapter
+    # that barely trains and one that trains to no effect score the same, so
+    # only this tells them apart.
+    comm_start = ({k: global_state[k].clone() for k in comm}
+                  if comm is not None else None)
+
     for r in range(start_round, n_rounds):
+        # The state as BROADCAST this round. DP clips each client delta against
+        # this, not against the post-aggregation state, so it has to be taken
+        # before any client trains and kept for the aggregation step.
+        round_ref = ({k: v.detach().clone() for k, v in global_state.items()}
+                     if dp_clip > 0 else None)
         snapshots: List[Dict[str, torch.Tensor]] = []
         weights: List[float] = []
         round_final_losses: List[float] = []
+        if prox_mu > 0.0:
+            # FedProx: penalise drift from THIS round's broadcast weights. Built
+            # once per round -- every client is pulled toward the same point,
+            # and ProxRef reads the live parameters at penalty() time, so one
+            # object serves all eight. Rebuilding it per client cloned 25 MB
+            # four hundred times and was most of a 2h15 runtime.
+            set_prox_ref(model.halo_model, global_state)
         for cid in client_ids:
-            model.load_state_dict(global_state)
+            # Broadcast, but keep whatever this client held back last round.
+            # A bare load_state_dict(global_state) here is what turns FedRep or
+            # LG-FedAvg back into FedAvg without any error.
+            model.load_state_dict(merge_parts(global_state, personal.get(cid, {})))
 
             def _on_epoch_end(epoch, mean_loss, cid=cid, r=r):
                 """Log this client's per-epoch loss on a cumulative x-axis."""
@@ -1428,7 +1847,10 @@ def run_fedavg(
                             r * local_epochs + epoch_offset, irm_rho,
                             irm_warmup, irm_schedule,
                             n_rounds * local_epochs),
-                        xm_k=xm_k)
+                        xm_k=xm_k,
+                        prox_mu=prox_mu,
+                        rate_mu=rate_mu,
+                        adapter_lr=adapter_lr)
                 finally:
                     model._epochs = prev
 
@@ -1451,23 +1873,102 @@ def run_fedavg(
                     global_state=global_state) or local_train
                 _train_block(local_train, local_epochs - split_epoch,
                              split_epoch)
+            elif fedrep_alternate:
+                # Head first, against the body the server just sent, so the
+                # head the client keeps is fitted to a GLOBAL body. Then the
+                # body, with that head frozen. Same passes over the data as the
+                # joint path: local_epochs - 1 for the head, 1 for the body.
+                # train_model optimises only requires_grad parameters, so the
+                # freeze is what selects each block.
+                head_ep = local_epochs - 1
+                try:
+                    for n_, p_ in model.named_parameters():
+                        p_.requires_grad_(n_ in pkeys)
+                    _train_block(local_train, head_ep, 0)
+                    for n_, p_ in model.named_parameters():
+                        p_.requires_grad_(n_ not in pkeys)
+                    _train_block(local_train, 1, head_ep)
+                finally:
+                    for p_ in model.parameters():
+                        p_.requires_grad_(True)
             else:
                 # Unsplit: one call, exactly as before. at=0 must stay on this
                 # path so existing runs remain reproducible bit for bit.
                 _train_block(local_train, local_epochs, 0)
-            snapshots.append(_snapshot(model))
+            snap = _snapshot(model)
+            shared, mine = split_parts(snap, pkeys)
+            if pkeys:
+                personal[cid] = mine
+            if comm is not None:
+                shared = {k: shared[k] for k in comm}
+            # Only the shared half reaches the average; average_state_dicts is
+            # untouched and averages whatever it is handed.
+            snapshots.append(shared)
             weights.append(1.0 if weighting == "uniform" else float(sizes[cid]))
-            log(f"  round {r + 1}/{n_rounds}  client {cid}  (n={sizes[cid]}) done")
+            lr_ = getattr(model, "last_rate", None)
+            log(f"  round {r + 1}/{n_rounds}  client {cid}  (n={sizes[cid]}) done"
+                + (f"  emitted/observed {lr_['pred_over_obs']:.3f}" if lr_ else ""))
 
         if writer is not None and round_final_losses:
             writer.add_scalar("loss_train/round_mean",
                               sum(round_final_losses) / len(round_final_losses), r)
 
-        global_state = average_state_dicts(snapshots, weights)
+        if prox_mu > 0.0:
+            clear_prox_ref(model.halo_model)
+        if dp_clip > 0:
+            # DP-FedAvg: clip each client's DELTA against the weights they were
+            # broadcast this round, average, then noise. `round_ref` is that
+            # broadcast state -- not the post-aggregation state -- or the delta
+            # is measured against the wrong origin.
+            if dp_mech == "sgm":
+                avg_shared, dp_norms = sgm_aggregate(
+                    snapshots, round_ref, clip=dp_clip, sigma=dp_sigma,
+                    sketch_b=dp_sketch_b, keys=dp_keys, round_seed=r,
+                    weighting=weighting, device=device)
+            else:
+                avg_shared, dp_norms = dp_aggregate(
+                    snapshots, round_ref, clip=dp_clip, sigma=dp_sigma,
+                    weighting=weighting, keys=dp_keys)
+            log(f"  [dp] round {r + 1} client update norms: "
+                + " ".join(f"{n:.3f}" for n in dp_norms)
+                + f"   clip={dp_clip:g} sigma={dp_sigma:g}"
+                + f"  clipped={sum(1 for n in dp_norms if n > dp_clip)}/{len(dp_norms)}")
+            if dp_adaptive > 0:
+                # Andrew et al. (2021): move C toward a target quantile of the
+                # observed norms. dp_clip is rebound here, so every later round
+                # uses the updated value -- that is the whole mechanism.
+                dp_clip, b_bar = adapt_clip(
+                    dp_clip, dp_norms, target=dp_adaptive,
+                    lr=dp_adapt_lr, sigma_b=dp_sigma_b)
+                log(f"  [dp] adaptive: {b_bar:.3f} of clients under the old "
+                    f"clip (target {dp_adaptive:g}) -> new clip {dp_clip:.4f}")
+        else:
+            avg_shared = average_state_dicts(snapshots, weights)
+        if pkeys:
+            # `global_state` must stay a COMPLETE, loadable state dict: the
+            # model is loaded from it below, and the checkpoint has to match the
+            # architecture. Fill the personal keys with their average purely so
+            # the shape is right -- the loop never reads them back, each client
+            # uses its own slice from `personal`. Said out loud because a reader
+            # of fedavg_state.pt would otherwise take those keys at face value.
+            personal_avg = average_state_dicts(
+                [personal[cid] for cid in client_ids], weights)
+            global_state = merge_parts(avg_shared, personal_avg)
+        elif comm is not None:
+            global_state = {**global_state, **avg_shared}
+            moved = math.sqrt(sum(
+                (global_state[k] - comm_start[k]).pow(2).sum().item()
+                for k in comm))
+            log(f"  round {r + 1}: adapter moved {moved:.4f} (L2 from start)")
+            if writer is not None:
+                writer.add_scalar("adapter_moved", moved, r + 1)
+        else:
+            global_state = avg_shared
         model.load_state_dict(global_state)
         is_last = (r + 1) == n_rounds
         if ckpt_path and ((r + 1) % ckpt_every == 0 or is_last):
-            _save_ckpt(ckpt_path, r + 1, global_state, fingerprint)
+            _save_ckpt(ckpt_path, r + 1, global_state, fingerprint,
+                       extra={"personal_states": personal} if pkeys else None)
             log(f"round {r + 1}/{n_rounds} aggregated + checkpointed -> {ckpt_path}")
         else:
             log(f"round {r + 1}/{n_rounds} aggregated")
@@ -1525,6 +2026,10 @@ def run_fedavg(
         log(f"FedAvg: restored best global (round {best_round}/{n_rounds}, val "
             f"{stopper.best_score:.4f})")
 
+    # The per-client slices ride out on the model rather than changing the
+    # return type, which every existing caller depends on. Empty unless a
+    # key-partitioned regime asked for them.
+    model._personal_states = personal
     return model
 
 
@@ -1799,6 +2304,208 @@ def train_local(
     return models
 
 
+def _adapter_state(m) -> Dict[str, torch.Tensor]:
+    """The trainable (adapter) parameters of ``m``, keyed as in ``halo_model``."""
+    return {n: p.detach().cpu().clone()
+            for n, p in m.halo_model.named_parameters() if p.requires_grad}
+
+
+def _load_adapter(m, state: Dict[str, torch.Tensor], keys) -> None:
+    """Load adapter weights only, and prove every one of them landed.
+
+    ``strict=False`` is required -- the state holds the adapter, not the trunk
+    -- and it is exactly the setting that lets a renamed key vanish silently.
+    So both directions are checked: nothing unexpected, nothing missing.
+    """
+    _, unexpected = m.halo_model.load_state_dict(state, strict=False)
+    if unexpected:
+        raise KeyError(f"adapter state has keys the model lacks: "
+                       f"{unexpected[:3]}")
+    absent = set(keys) - set(state)
+    if absent:
+        raise KeyError(f"adapter state is missing {len(absent)} key(s), e.g. "
+                       f"{sorted(absent)[:3]}")
+
+
+def run_perada(
+    global_state: Dict[str, torch.Tensor],
+    build_model: Callable[[], object],
+    clients: Dict[str, object],
+    rounds: int,
+    processor,
+    lam: float = 0.1,
+    kd_steps: int = 10,
+    kd_pool: int = 1000,
+    kd_batch: int = 64,
+    adapter_rank: int = 8,
+    weighting: str = "sample",
+    device: str = "cpu",
+    log: Callable[[str], None] = print,
+    writer=None,
+    ckpt_dir: str = None,
+    fingerprint: dict = None,
+) -> Dict[str, object]:
+    """PerAda (Xie et al., CVPR 2024) over a frozen federated trunk.
+
+    The paper's algorithm, round by round, with only the adapters moving:
+
+      * client m, from the broadcast global adapter w:
+          local adapter   theta_m <- w, one epoch of BCE           -> sent up
+          personal adapter v_m, one epoch of BCE
+                          + (lambda/2) ||v_m - w||^2               -> kept
+      * server: w <- average of the theta_m, then ``kd_steps`` steps of
+        distillation -- student the global adapter, teacher the uniform
+        ensemble of the clients' local adapters, loss the per-code binary KL.
+
+    Each hospital's released generator is trunk + v_m.
+
+    THREE DEPARTURES FROM THE PAPER, all forced by the setting:
+
+      1. No pretrained backbone exists for EHR generation, so the frozen trunk
+         is ``global_state`` -- the output of the FedAvg rounds that precede
+         this call. It is never updated here.
+      2. The paper distills on a public auxiliary set (CIFAR-100 for
+         CIFAR-10). There is no public EHR set, so the server distills on
+         ``kd_pool`` records it samples ONCE from the trunk before round 1 and
+         reuses. Sampling is the expensive step, autoregressive and
+         sequential; the fixed pool keeps it a one-off, and a fixed set is
+         also what the paper's auxiliary data is.
+      3. ``kd_steps`` defaults to 10 against the paper's 100. As it goes to 0
+         this is FedAvg over adapters plus a Ditto-style personal adapter; read
+         a result near Ditto's with that in mind.
+
+    Budget: one epoch for theta_m plus one for v_m, so a round costs a client
+    two passes over its data -- the same as a FedAvg round at local_epochs=2,
+    which is what lets the caller split one ``total_epochs`` across trunk
+    rounds and PerAda rounds.
+
+    Not resumable mid-way. A rerun resumes the trunk from fedavg_state.pt and
+    repeats every PerAda round from round 1; it never continues from a partial
+    adapter state it cannot prove is consistent.
+
+    Returns:
+        ``{hospital_id: model}``, each trunk + its personal adapter. With
+        ``ckpt_dir`` set, also writes ``ft_<hid>.pt`` per hospital, in the same
+        form finetune_local does, so generate.py loads them unchanged.
+    """
+    from pyhealth.datasets import get_dataloader
+    from pyhealth.models.generators.adapters import apply_adapter
+    from pyhealth.models.generators.fedreg import binary_kl, get_prox_ref
+
+    def fresh(trainable: bool = True):
+        m = build_model()
+        m.load_state_dict(global_state)            # the frozen trunk u
+        apply_adapter(m.halo_model, "lora_head", adapter_rank)
+        if not trainable:
+            for p_ in m.halo_model.parameters():
+                p_.requires_grad_(False)
+            m.halo_model.eval()
+        m.to(device)
+        return m
+
+    # The server's distillation data: sampled once from the trunk, BEFORE any
+    # adapter exists, so it depends on nothing the rounds change.
+    gen = build_model()
+    gen.load_state_dict(global_state)
+    raw = gen.generate(num_samples=kd_pool, device=device)
+    kept = {f"kd_{i}": p["visits"] for i, p in enumerate(raw)
+            if p.get("visits")}
+    del gen, raw
+    if not kept:
+        raise RuntimeError("the trunk generated no non-empty records for the "
+                           "distillation pool")
+    kd_ds = _to_sample_dataset({"server": kept}, processor, "perada_kd_pool")
+    log(f"PerAda: {len(kept)} server-side distillation records sampled once "
+        f"from the frozen trunk; {kd_steps} KD steps/round at batch {kd_batch}")
+
+    worker = fresh()                   # reused for every client, every round:
+    student = fresh()                  # the trunk is frozen, so only the
+    teacher = fresh(trainable=False)   # adapter ever differs between uses
+    w = _adapter_state(worker)         # w^0 is the LoRA initialisation
+    keys = set(w)
+    n_ad = sum(v.numel() for v in w.values())
+    n_all = sum(p.numel() for p in worker.halo_model.parameters())
+    log(f"PerAda: {rounds} rounds over a frozen trunk; adapter lora_head "
+        f"r={adapter_rank}, {n_ad:,} of {n_all:,} params "
+        f"({100 * n_ad / n_all:.2f}%), lambda={lam:g}")
+    personal = {hid: {k: v.clone() for k, v in w.items()} for hid in clients}
+
+    kd_loader = get_dataloader(kd_ds, batch_size=kd_batch, shuffle=True)
+    kd_iter = iter(kd_loader)
+
+    for t in range(1, rounds + 1):
+        thetas, weights, drift = [], [], []
+        for hid, ds in clients.items():
+            _load_adapter(worker, w, keys)
+            worker.train_model(ds, val_dataset=None, device=device)
+            thetas.append(_adapter_state(worker))
+            weights.append(float(len(ds)) if weighting == "sample" else 1.0)
+
+            _load_adapter(worker, personal[hid], keys)
+            set_prox_ref(worker.halo_model, w)
+            worker.train_model(ds, val_dataset=None, device=device,
+                               prox_mu=lam)
+            drift.append(get_prox_ref(worker.halo_model).distance())
+            clear_prox_ref(worker.halo_model)
+            personal[hid] = _adapter_state(worker)
+
+        w = average_state_dicts(thetas, weights)
+
+        kd_first = kd_last = float("nan")
+        if kd_steps > 0:
+            _load_adapter(student, w, keys)
+            student.halo_model.train()
+            opt = torch.optim.Adam(
+                [p_ for p_ in student.halo_model.parameters()
+                 if p_.requires_grad], lr=student._lr)
+            for step in range(kd_steps):
+                try:
+                    batch = next(kd_iter)
+                except StopIteration:
+                    kd_iter = iter(kd_loader)
+                    batch = next(kd_iter)
+                ehr, mask = student._encode_visits(batch["visits"].to(device))
+                with torch.no_grad():
+                    target = None
+                    for th in thetas:
+                        _load_adapter(teacher, th, keys)
+                        _, p_t, _ = teacher.halo_model(
+                            ehr, position_ids=None, ehr_labels=ehr,
+                            ehr_masks=mask)
+                        target = p_t if target is None else target + p_t
+                    target = target / len(thetas)
+                _, p_s, _ = student.halo_model(
+                    ehr, position_ids=None, ehr_labels=ehr, ehr_masks=mask)
+                loss = binary_kl(p_s, target)
+                opt.zero_grad()
+                loss.backward()
+                opt.step()
+                if step == 0:
+                    kd_first = loss.item()
+                kd_last = loss.item()
+            w = _adapter_state(student)
+
+        mean_drift = float(np.mean(drift))
+        log(f"PerAda round {t}/{rounds}: mean ||v_m - w|| = {mean_drift:.4f}, "
+            f"KD {kd_first:.5f} -> {kd_last:.5f}")
+        if writer is not None:
+            writer.add_scalar("perada/personal_drift", mean_drift, t)
+            if kd_steps > 0:
+                writer.add_scalar("perada/kd_loss", kd_last, t)
+
+    models: Dict[str, object] = {}
+    for hid in clients:
+        m = fresh()
+        _load_adapter(m, personal[hid], keys)
+        models[hid] = m
+        if ckpt_dir:
+            path = os.path.join(ckpt_dir, f"ft_{hid}.pt")
+            _save_ckpt(path, 1, _snapshot(m), fingerprint,
+                       key="completed_finetune")
+            log(f"  PerAda hospital {hid} -> {path}")
+    return models
+
+
 def finetune_local(
     global_state: Dict[str, torch.Tensor],
     build_model: Callable[[], object],
@@ -1823,6 +2530,8 @@ def finetune_local(
     adapter_iht_every: int = 1,
     adapter_optim: str = "adam",
     adapter_lr: float = 0.0,
+    ditto_lambda: float = 0.0,
+    kd_lambda: float = 0.0,
 ) -> Dict[str, object]:
     """FedAvg + fine-tuning: personalize the shared global model per hospital.
 
@@ -1875,6 +2584,25 @@ def finetune_local(
         raise ValueError("--adapter last_mlp_iht needs --adapter-sparsity > 0, "
                          "otherwise it is just last_mlp under another name.")
 
+    if kd_lambda > 0.0 and (xm_k > 1 or irm_rho > 0.0):
+        raise ValueError(
+            "--kd-lambda cannot be combined with --xm-k > 1 or --irm-rho > 0: "
+            "three objectives over the same batch with no defined composition. "
+            "Run them as separate arms.")
+
+    # PerAda's teacher is the frozen final global -- identical for all eight
+    # hospitals, so build it once rather than per site.
+    teacher = None
+    if kd_lambda > 0.0:
+        t = build_model()
+        t.load_state_dict(global_state)
+        t.to(device)
+        t.halo_model.eval()          # no dropout noise in the distillation target
+        for p_ in t.halo_model.parameters():
+            p_.requires_grad_(False)
+        teacher = t.halo_model
+        log(f"PerAda: KD toward the frozen global, lambda={kd_lambda:g}")
+
     models: Dict[str, object] = {}
     for hid, train_subset in clients.items():
         log(f"FedAvg+FT: fine-tuning hospital {hid} from global "
@@ -1905,6 +2633,11 @@ def finetune_local(
             log(f"  {hid}: adapter {adapter} r={adapter_rank} -- training "
                 f"{n_tr:,} of {n_all:,} params ({100 * n_tr / n_all:.2f}%)"
                 + extra)
+
+        if ditto_lambda > 0.0:
+            # Ditto: the reference is the FROZEN final global w*, attached after
+            # the adapter so trainable_only sees the final parameter set.
+            set_prox_ref(m.halo_model, global_state)
 
         val_ds = (val_clients or {}).get(hid)
         stopper, use_val = make_site_stopper(
@@ -1939,6 +2672,11 @@ def finetune_local(
                       # a fedavg_ft run therefore means "IRM trunk, plain local
                       # fine-tuning", which is the composition worth testing.
                       irm_rho=0.0,
+                      # Ditto: pull the personal model back toward the frozen
+                      # final global. lambda=0 leaves plain fine-tuning.
+                      prox_mu=ditto_lambda,
+                      kd_lambda=kd_lambda,
+                      kd_teacher=teacher,
                       adapter_mu=adapter_mu,
                       adapter_l1=adapter_l1,
                       adapter_sparsity=adapter_sparsity,
@@ -1973,6 +2711,15 @@ def finetune_local(
                     hard_threshold_(m.halo_model, adapter_sparsity)
                     log(f"  {hid}: re-projected restored best state -- "
                         f"density {delta_stats(m.halo_model)['nnz_frac']:.4f}")
+        if ditto_lambda > 0.0:
+            from pyhealth.models.generators.fedreg import get_prox_ref
+            # How far lambda actually let this site move. Log it: the method IS
+            # a claim about this distance, and a value that does not shrink as
+            # lambda rises means the penalty is not biting.
+            log(f"  {hid}: ||v - w*|| = "
+                f"{get_prox_ref(m.halo_model).distance():.4f} "
+                f"(lambda={ditto_lambda:g})")
+            clear_prox_ref(m.halo_model)
         models[hid] = m
         if ckpt_dir:
             path = os.path.join(ckpt_dir, f"ft_{hid}.pt")
@@ -2167,7 +2914,25 @@ if __name__ == "__main__":
     # per-hospital fine-tuning and the REST on FedAvg, so total passes/hospital ==
     # total_epochs (same as every other regime). Plain fedavg spends all on FedAvg.
     fed_rounds = cfg["n_rounds"]
-    if regime == "fedavg_ft":
+    if regime == "perada_fl":
+        bad = []
+        if cfg["adapter"] != "lora_head":
+            bad.append(f"--adapter lora_head (got {cfg['adapter']!r}); "
+                       "generate.py re-applies the adapter from the config")
+        if cfg["ft_epochs"] % 2:
+            bad.append(f"an even --ft-epochs (got {cfg['ft_epochs']}): each "
+                       "PerAda round spends 2 passes, so rounds = ft_epochs/2")
+        if cfg["latent_dim"] or cfg["xm_k"] > 1 or cfg["irm_rho"] > 0:
+            bad.append("no --latent-dim / --xm-k / --irm-rho: the baseline "
+                       "is PerAda alone")
+        if cfg["kd_lambda"] or cfg["ditto_lambda"]:
+            bad.append("no --kd-lambda / --ditto-lambda: those belong to "
+                       "the post-hoc regimes; use --perada-lambda")
+        if bad:
+            raise ValueError("--regime perada_fl needs " + "; ".join(bad))
+    if cfg["dp_mech"] == "sgm" and regime != "fedavg":
+        raise ValueError("--dp-mech sgm is only wired into --regime fedavg")
+    if regime in FT_REGIMES:
         fed_budget = total_epochs - cfg["ft_epochs"]
         if fed_budget < cfg["local_epochs"]:
             raise ValueError(
@@ -2178,7 +2943,7 @@ if __name__ == "__main__":
         fed_rounds = fed_budget // cfg["local_epochs"]
         spent = fed_rounds * cfg["local_epochs"] + cfg["ft_epochs"]
         if spent != total_epochs:
-            print(f"[budget] fedavg_ft passes/hospital = {spent} "
+            print(f"[budget] {regime} passes/hospital = {spent} "
                   f"(target {total_epochs}; off by {total_epochs - spent} from "
                   f"integer rounds -- pick ft_epochs so total_epochs - ft_epochs "
                   f"is divisible by local_epochs for an exact match).")
@@ -2198,6 +2963,56 @@ if __name__ == "__main__":
             latent_dim=cfg["latent_dim"],
             save_dir=save_dir,
         )
+
+    # Warm start (--init-from) and a whole-run frozen trunk (--adapter outside
+    # the FT regimes). Both happen in prepare(), which every non-FT arm's model
+    # passes through, so centralized, local and fedavg start from the same
+    # weights and freeze the same parameters.
+    init_state = None
+    if cfg["init_from"]:
+        init_state = load_init_state(
+            cfg["init_from"], cfg,
+            sample_dataset.input_processors["visits"].code_vocab)
+        # HALO.train_model reloads save_dir/halo_model at the top of EVERY call
+        # if it exists, which would silently replace the warm start.
+        stale = os.path.join(save_dir, "halo_model")
+        if os.path.exists(stale):
+            raise ValueError(
+                f"{stale} exists and HALO.train_model would load it over the "
+                f"--init-from weights. Delete it or use a fresh --run-name.")
+    freeze_trunk = (cfg["adapter"] != "none"
+                    and regime in ("centralized", "local", "fedavg"))
+    if freeze_trunk:
+        bad = []
+        if init_state is None:
+            bad.append("--init-from: a frozen trunk that was never trained is "
+                       "random features, not a pretrained model")
+        if cfg["adapter"] not in ("lora_attn", "last_mlp", "lora_head"):
+            bad.append(f"a dense adapter (got {cfg['adapter']!r}); the sparse "
+                       "variants' constraint lives in finetune_local's loop")
+        if (cfg["adapter_mu"] or cfg["adapter_l1"] or cfg["adapter_sparsity"]
+                or cfg["adapter_optim"] != "adam"):
+            bad.append("no --adapter-mu/-l1/-sparsity/-optim: those are "
+                       "fine-tuning-stage knobs this path does not apply")
+        if cfg["adapter_lr"] and regime != "fedavg":
+            bad.append("no --adapter-lr: only the fedavg path applies it here")
+        if cfg["dp_clip"] and cfg["dp_mech"] != "sgm":
+            bad.append("--dp-mech sgm for --dp-clip: Gaussian DP over the "
+                       "adapter slice is not implemented")
+        if bad:
+            raise ValueError(f"--adapter with --regime {regime} needs "
+                             + "; ".join(bad))
+
+    def prepare(m):
+        """Load the warm start, then freeze the trunk if this run adapts it."""
+        if init_state is not None:
+            m.load_state_dict(init_state)
+        # After the load: apply_adapter wraps modules and renames their keys,
+        # so the trunk's plain state dict would no longer fit.
+        if freeze_trunk:
+            from pyhealth.models.generators.adapters import apply_adapter
+            apply_adapter(m.halo_model, cfg["adapter"], cfg["adapter_rank"])
+        return m
 
     # Optional TensorBoard writer for train-loss curves (cheap; scalars only).
     # Lazy import so tensorboard stays an optional dependency.
@@ -2263,7 +3078,8 @@ if __name__ == "__main__":
         if regime == "local":
             print(f"\nRegime: local-only -- {len(clients)} independent models, "
                   f"{total_epochs} epochs each")
-            models = train_local(lambda: build_model(total_epochs), clients,
+            models = train_local(lambda: prepare(build_model(total_epochs)),
+                                 clients,
                                  device=device, writer=writer,
                                  total_epochs=total_epochs, ckpt_dir=save_dir,
                                  ckpt_every=cfg["ckpt_every"],
@@ -2272,9 +3088,11 @@ if __name__ == "__main__":
                                  sample_weight_fn=sample_weight_fn,
                                  irm_rho=cfg["irm_rho"], irm_warmup=cfg["irm_warmup"],
                     irm_schedule=cfg["irm_schedule"], xm_k=cfg["xm_k"])
-            num_params = sum(p.numel()
-                             for p in next(iter(models.values())).parameters())
-            print(f"Each model: {num_params} parameters")
+            first = next(iter(models.values()))
+            num_params = sum(p.numel() for p in first.parameters())
+            n_train = sum(p.numel() for p in first.parameters()
+                          if p.requires_grad)
+            print(f"Each model: {num_params} parameters, {n_train} trainable")
             # STEP 5: every local model generates the SAME number of patients;
             # the pooled set is then a proportional subsample of those.
             synthetic, client_synth = generate_local(
@@ -2284,9 +3102,12 @@ if __name__ == "__main__":
             # centralized trains the single model for the full budget; fedavg and
             # fedavg_ft use local_epochs per round (the FedAvg local step).
             epochs = total_epochs if regime == "centralized" else cfg["local_epochs"]
-            model = build_model(epochs)
+            model = prepare(build_model(epochs))
             num_params = sum(p.numel() for p in model.parameters())
-            print(f"\nModel initialized with {num_params} parameters")
+            n_train = sum(p.numel() for p in model.parameters()
+                          if p.requires_grad)
+            print(f"\nModel initialized with {num_params} parameters, "
+                  f"{n_train} trainable")
             if regime == "centralized":
                 print(f"Regime: centralized -- 1 model on pooled data, "
                       f"{total_epochs} epochs")
@@ -2305,12 +3126,16 @@ if __name__ == "__main__":
                     sample_weight_fn=sample_weight_fn,
                     irm_rho=cfg["irm_rho"], irm_warmup=cfg["irm_warmup"],
                     irm_schedule=cfg["irm_schedule"], xm_k=cfg["xm_k"])
-            else:  # fedavg or fedavg_ft -- both start with a FedAvg run
+            else:  # every FedAvg-shaped regime starts with a FedAvg run
+                pmode = PERSONAL_MODE.get(regime, "none")
                 print(f"Regime: {regime} -- {len(clients)} clients, "
                       f"{cfg['local_epochs']} local epochs x {fed_rounds} rounds"
                       + (f", then {cfg['ft_epochs']} fine-tuning epochs/hospital "
                          f"(total {total_epochs} passes/hospital)"
-                         if regime == "fedavg_ft" else ""))
+                         if regime in FT_REGIMES else "")
+                      + (f", personal={pmode}" if pmode != "none" else "")
+                      + (f", prox mu={cfg['fedprox_mu']:g}"
+                         if cfg["fedprox_mu"] else ""))
                 # Checkpoint aggregated weights every --ckpt-every rounds; --resume
                 # continues from the last completed round (fedavg only).
                 ckpt_path = os.path.join(save_dir, "fedavg_state.pt")
@@ -2338,7 +3163,21 @@ if __name__ == "__main__":
                                     if es_cfg else None),
                            sample_weight_fn=sample_weight_fn,
                            irm_rho=cfg["irm_rho"], irm_warmup=cfg["irm_warmup"],
-                    irm_schedule=cfg["irm_schedule"], xm_k=cfg["xm_k"])
+                           irm_schedule=cfg["irm_schedule"], xm_k=cfg["xm_k"],
+                           personal_mode=pmode,
+                           prox_mu=cfg["fedprox_mu"],
+                           dp_clip=cfg.get("dp_clip") or 0.0,
+                           dp_sigma=cfg.get("dp_sigma") or 0.0,
+                           dp_adaptive=cfg.get("dp_adaptive") or 0.0,
+                           dp_sigma_b=cfg.get("dp_sigma_b") or 0.0,
+                           dp_adapt_lr=cfg.get("dp_adapt_lr") or 1.0,
+                           rate_mu=cfg.get("rate_mu") or 0.0,
+                           fedrep_alternate=bool(cfg.get("fedrep_alternate")),
+                           # Only a frozen-trunk run: under fedavg_ft this knob
+                           # belongs to the fine-tuning stage, not the rounds.
+                           adapter_lr=cfg["adapter_lr"] if freeze_trunk else 0.0,
+                           dp_mech=cfg["dp_mech"],
+                           dp_sketch_b=cfg["dp_sketch_b"])
             # STEP 5: generate synthetic patients from the single global/server
             # model. For fedavg_ft this stays the SHARED global model's output, so
             # the global eval (STEP 6) is directly comparable to plain fedavg.
@@ -2349,7 +3188,7 @@ if __name__ == "__main__":
             # output" are the same magnitude, rather than comparing one site's
             # share against a whole pooled system.
             want = cfg["num_synth"]
-            if regime in ("centralized", "fedavg"):
+            if regime in SHARED_GENERATOR_REGIMES:
                 want = max(want, len(clients) * cfg["synth_per_hospital"])
             full = model.generate(num_samples=want, device=device)
             client_synth = {hid: full for hid in clients}
@@ -2357,7 +3196,43 @@ if __name__ == "__main__":
             # prevalence resolution (1/num_synth) is identical across arms and
             # its numbers stay comparable. Only the per-hospital sets scale.
             synthetic = full[:cfg["num_synth"]]
-            if regime == "fedavg_ft":
+            if regime in PERSONAL_MODE:
+                # FedRep / LG-FedAvg: there is no fine-tuning phase. Each
+                # hospital's model IS the shared half plus the half it kept out
+                # of the average, which run_fedavg has been carrying all along.
+                personal = getattr(model, "_personal_states", {})
+                if not personal:
+                    raise RuntimeError(
+                        f"{regime} finished with no per-client weights; the "
+                        "partitioned path did not run.")
+                global_state = _snapshot(model)
+                part_models = {}
+                for hid in clients:
+                    m = build_model(cfg["local_epochs"])
+                    m.load_state_dict(merge_parts(global_state, personal[hid]))
+                    part_models[hid] = m
+                    _save_ckpt(os.path.join(save_dir, f"ft_{hid}.pt"), 1,
+                               m.state_dict(), fingerprint,
+                               key="completed_finetune")
+                synthetic, client_synth = generate_local(
+                    part_models, sizes, cfg["num_synth"],
+                    cfg["synth_per_hospital"], device=device)
+            elif regime == "perada_fl":
+                ft_models = run_perada(
+                    _snapshot(model), lambda: build_model(1), clients,
+                    rounds=cfg["ft_epochs"] // 2,
+                    processor=sample_dataset.input_processors["visits"],
+                    lam=cfg["perada_lambda"],
+                    kd_steps=cfg["perada_kd_steps"],
+                    kd_pool=cfg["perada_kd_pool"],
+                    kd_batch=cfg["perada_kd_batch"],
+                    adapter_rank=cfg["adapter_rank"],
+                    weighting=cfg["weighting"], device=device, writer=writer,
+                    ckpt_dir=save_dir, fingerprint=fingerprint)
+                _, client_synth = generate_local(
+                    ft_models, sizes, cfg["num_synth"],
+                    cfg["synth_per_hospital"], device=device)
+            elif regime in FT_REGIMES:
                 # Personalize: fine-tune the global model on each hospital, then
                 # score each hospital against its OWN fine-tuned model in STEP 7.
                 global_state = _snapshot(model)
@@ -2375,7 +3250,9 @@ if __name__ == "__main__":
                     adapter_sparsity=cfg["adapter_sparsity"],
                     adapter_iht_every=cfg["adapter_iht_every"],
                     adapter_optim=cfg["adapter_optim"],
-                    adapter_lr=cfg["adapter_lr"])
+                    adapter_lr=cfg["adapter_lr"],
+                    ditto_lambda=cfg["ditto_lambda"],
+                    kd_lambda=cfg["kd_lambda"])
                 _, client_synth = generate_local(
                     ft_models, sizes, cfg["num_synth"],
                     cfg["synth_per_hospital"], device=device)
@@ -2394,7 +3271,7 @@ if __name__ == "__main__":
     # centralized and fedavg genuinely share one generator.
     synth_path = write_synthetic(
         save_dir, synthetic, client_synth,
-        shared_generator=regime in ("centralized", "fedavg"))
+        shared_generator=regime in SHARED_GENERATOR_REGIMES)
     print(f"Saved synthetic data -> {synth_path}")
 
     # STEP 7: score it. The whole suite lives in eval.py and is runnable

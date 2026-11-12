@@ -17,7 +17,10 @@
 set -euo pipefail
 source .venv/bin/activate
 CACHE="$FEDCOHORT_CACHE/hilo8_random"
-FULL="--profile full --regime fedavg --cohort-cache $CACHE --no-early-stop $ARGS"
+# REGIME and ES_FLAG default to what every sweep before this one used, so
+# existing callers are unchanged; a caller that needs a centralized arm or
+# early stopping overrides them via --export.
+FULL="--profile full --regime ${REGIME:-fedavg} --cohort-cache $CACHE ${ES_FLAG---no-early-stop} $ARGS"
 
 DIR=$(python examples/fedpyhealth/train.py $FULL --print-save-dir)
 echo "arm=$ARM  save_dir=$DIR"

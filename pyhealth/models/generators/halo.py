@@ -818,7 +818,11 @@ class HALO(BaseModel):
                     adapter_iht_every: int = 1,
                     adapter_optim: str = "adam",
                     adapter_lr: float = 0.0,
-                    xm_k: int = 1) -> None:
+                    xm_k: int = 1,
+                    prox_mu: float = 0.0,
+                    kd_lambda: float = 0.0,
+                    kd_teacher=None,
+                    rate_mu: float = 0.0) -> None:
         """Train the HALO model with a custom loop.
 
         Named ``train_model`` (not ``train``) to avoid shadowing
@@ -939,6 +943,26 @@ class HALO(BaseModel):
         self.to(device)
         print(f"Training on: {device}")
 
+        # RATE PENALTY. Only wired into the plain-risk branch; the IRM and
+        # best-of-K branches compute their loss elsewhere and would silently
+        # ignore it. Refuse rather than run a penalty that is not there.
+        if rate_mu > 0.0 and (xm_k > 1 or callable(irm_rho) or irm_rho > 0):
+            raise ValueError(
+                "rate_mu is implemented for the plain risk only; it cannot be "
+                "combined with xm_k > 1 or irm_rho > 0.")
+
+        if prox_mu > 0.0:
+            # The reference is a plain attribute, not a buffer, so it is not
+            # carried along by self.to(device) -- move it here, after the model.
+            from pyhealth.models.generators.fedreg import get_prox_ref
+            ref = get_prox_ref(self.halo_model)
+            if ref is None:
+                raise ValueError(
+                    "prox_mu > 0 but no proximal reference is set on the model; "
+                    "the caller must call set_prox_ref() with the weights to "
+                    "pull toward.")
+            ref.to(device)
+
         os.makedirs(self.save_dir, exist_ok=True)
         # Only what is unfrozen. Identical to optimising every parameter when
         # nothing is frozen, but an adapter run freezes the trunk and handing
@@ -981,6 +1005,8 @@ class HALO(BaseModel):
             epoch_loss_sum, epoch_batches = 0.0, 0
             epoch_risk_sum, epoch_penalty_sum = 0.0, 0.0
             xm_spread_sum, xm_ent_sum, xm_batches = 0.0, 0.0, 0
+            epoch_kd_sum = 0.0
+            rate_pred_sum, rate_obs_sum = 0.0, 0.0
             for batch in batch_iter:
                 visits = batch["visits"].to(self.device)
                 batch_ehr, batch_mask = self._encode_visits(visits)
@@ -1051,17 +1077,53 @@ class HALO(BaseModel):
                             / math.log(xm_k))
                     xm_batches += 1
                 else:
-                    risk, _, _ = self.halo_model(
+                    # ONE z per batch, reused by the teacher below. Drawing a
+                    # second z for the teacher would distil between two
+                    # different conditionals and the KD term would be measuring
+                    # the latent, not the model.
+                    z_used = self._draw_z(batch_ehr.shape[0])
+                    risk, code_probs, shift_lab = self.halo_model(
                         batch_ehr,
                         position_ids=None,
                         ehr_labels=batch_ehr,
                         ehr_masks=batch_mask,
                         pos_loss_weight=self.config.pos_loss_weight,
                         sample_weights=sw,
-                        z=self._draw_z(batch_ehr.shape[0]),
+                        z=z_used,
                     )
                     loss = risk
                     epoch_risk_sum += risk.item()
+                    # Emitted vs observed code VOLUME under teacher forcing.
+                    # Tracked on every run, penalty or not, so a penalised arm
+                    # can be read against its own unpenalised twin. Masked
+                    # positions are already zero on both sides.
+                    pred_vol = code_probs.sum()
+                    obs_vol = shift_lab.sum()
+                    rate_pred_sum += pred_vol.item()
+                    rate_obs_sum += obs_vol.item()
+                    if rate_mu > 0.0:
+                        # Relative, batch-level: it pins the AVERAGE number of
+                        # codes emitted, not any single visit's, which is the
+                        # mildest constraint that still acts on over-emission.
+                        rel = (pred_vol - obs_vol) / obs_vol.clamp_min(1.0)
+                        loss = loss + rate_mu * rel.pow(2)
+                    if kd_lambda > 0.0:
+                        # PerAda: pull this site's output distribution toward the
+                        # frozen global's. Teacher is in eval() so dropout does
+                        # not add noise to the target.
+                        from pyhealth.models.generators.fedreg import binary_kl
+                        with torch.no_grad():
+                            _, teacher_probs, _ = kd_teacher(
+                                batch_ehr,
+                                position_ids=None,
+                                ehr_labels=batch_ehr,
+                                ehr_masks=batch_mask,
+                                pos_loss_weight=self.config.pos_loss_weight,
+                                z=z_used,
+                            )
+                        kd = binary_kl(code_probs, teacher_probs)
+                        loss = loss + kd_lambda * kd
+                        epoch_kd_sum += kd.item()
                 if adapter_mu > 0.0:
                     # FedProx, specialised to a frozen trunk: a LoRA delta of
                     # zero IS the federated global, so L2 on the trainable
@@ -1071,6 +1133,15 @@ class HALO(BaseModel):
                     # exception.
                     from pyhealth.models.generators.adapters import adapter_l2
                     loss = loss + (adapter_mu / 2.0) * adapter_l2(self.halo_model)
+                if prox_mu > 0.0:
+                    # The LITERAL proximal term, ||theta - theta_ref||^2 against
+                    # weights the caller froze. Distinct from adapter_mu above,
+                    # which for every variant except the delta-sparse ones is an
+                    # L2 toward ZERO -- a nuclear-norm shrink, not a proximal
+                    # pull. Keeping them separate is deliberate: unifying them
+                    # would silently change what every existing LoRA run means.
+                    from pyhealth.models.generators.fedreg import prox_penalty
+                    loss = loss + (prox_mu / 2.0) * prox_penalty(self.halo_model)
                 loss.backward()
                 optimizer.step()
                 if adapter_l1 > 0.0:
@@ -1094,6 +1165,15 @@ class HALO(BaseModel):
             self.last_irm = {"risk": epoch_risk_sum / n_b,
                              "penalty": epoch_penalty_sum / n_b,
                              "rho": rho}
+            # KD reported apart from the risk for the same reason IRM is: a
+            # distillation term that collapses to zero because the student has
+            # copied the teacher outright is invisible in the total.
+            self.last_kd = {"kd": epoch_kd_sum / n_b, "lambda": kd_lambda}
+            # >1 means the model puts more probability mass on codes than the
+            # data holds. Teacher-forced, so it can read ~1 while generation
+            # still over-emits -- generation compounds, this does not.
+            self.last_rate = ({"pred_over_obs": rate_pred_sum / rate_obs_sum,
+                               "mu": rate_mu} if rate_obs_sum > 0 else None)
 
             # Project BEFORE the callback, so any snapshot an early stopper
             # takes from on_epoch_end is of the projected weights. The final

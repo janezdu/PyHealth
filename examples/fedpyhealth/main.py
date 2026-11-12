@@ -50,7 +50,10 @@ PARTITION = "gpuA100x4"
 CPUS_PER_TASK = 16
 MAIL_USER = "zd16@illinois.edu"
 
-REGIMES = ("fedavg", "fedavg_ft", "centralized", "local")
+REGIMES = ("fedavg", "fedavg_ft", "centralized", "local",
+           # Literature baselines; see notes and train.py's regime dispatch.
+           "fedprox", "ditto", "perada", "perada_fl", "fedrep",
+           "lg_fedavg")
 
 # Per-job resources. Both profiles load the FULL eICU (a tiny run is small in
 # compute, not in data), so both need the same memory; only the wall clock
@@ -502,7 +505,12 @@ NAME_AFFECTING = ("--n-rounds", "--local-epochs", "--ft-epochs", "--weighting",
                   "--latent-dim",
                   "--adapter", "--adapter-mu", "--adapter-l1",
                   "--adapter-sparsity", "--adapter-iht-every",
-                  "--adapter-optim", "--adapter-lr")
+                  "--adapter-optim", "--adapter-lr",
+                  # Baseline knobs. Omitting one here lets two lambda values
+                  # build the same run name and clobber each other's save_dir.
+                  "--fedprox-mu", "--ditto-lambda", "--kd-lambda",
+                  "--perada-lambda", "--perada-kd-steps", "--perada-kd-pool",
+                  "--rate-mu")
 
 
 #: Boolean train.py flags that must appear in the run name. The suffix has to
@@ -511,7 +519,8 @@ NAME_AFFECTING = ("--n-rounds", "--local-epochs", "--ft-epochs", "--weighting",
 # hilo8 centralized baseline stopped at epoch 37 of 100, so a full-budget run
 # is a different model and must not share its save_dir. Without this suffix the
 # control run would overwrite the very baseline it is meant to be compared to.
-NAME_AFFECTING_BOOL = {"--rare-upweight": "_rw", "--no-early-stop": "_nes"}
+NAME_AFFECTING_BOOL = {"--rare-upweight": "_rw", "--no-early-stop": "_nes",
+                       "--fedrep-alternate": "_alt"}
 
 
 def run_name_for(regime: str, profile: str, cohort_file: str,
@@ -532,6 +541,16 @@ def run_name_for(regime: str, profile: str, cohort_file: str,
     for flag, suffix in NAME_AFFECTING_BOOL.items():
         if flag in passthrough:
             name += suffix
+    # --init-from takes a PATH, which cannot go into a name verbatim. Its
+    # source run's name can, and must: without it a warm-started run and the
+    # from-scratch run of the same arm share a save_dir, and the --resume this
+    # launcher adds would continue the wrong one.
+    src = _flag_value(passthrough, "--init-from")
+    if src:
+        base = os.path.basename(src.rstrip("/"))
+        if base.endswith(".pt"):
+            base = os.path.basename(os.path.dirname(os.path.abspath(src)))
+        name += f"_from{base[:-len('_save')] if base.endswith('_save') else base}"
     for i, arg in enumerate(passthrough):
         if arg in NAME_AFFECTING and i + 1 < len(passthrough):
             name += f"_{arg.lstrip('-').replace('-', '')}{passthrough[i + 1]}"
@@ -692,6 +711,7 @@ TRAIN_ONLY_VALUED = (
     "--snapshot-every",
     "--tb-logdir", "--log-every-epochs", "--run-name", "--es-patience",
     "--es-min-steps", "--es-min-val-patients", "--es-fallback",
+    "--init-from",
 )
 TRAIN_ONLY_BOOL = ("--resume", "--no-tb", "--no-early-stop",
                    "--rare-upweight", "--irm-unweighted-envs")

@@ -48,10 +48,13 @@ REGIMES = [
     ("centralized", "centralized", "#184f95", "one generator, pooled raw data"),
 ]
 
-#: ``(payload key, test1 metric, axis label, higher-is-better)``. Pearson is the
-#: figure's default because R^2 is measured against the identity line and goes
-#: far enough negative to need its own scale, which would cost the shared-axis
-#: reading the diagonal depends on.
+#: ``(payload key, test1 metric, axis label, higher-is-better)``. R^2 is the
+#: figure's default: it is measured against the identity line, so it answers
+#: "does the model reproduce the prevalence" rather than "is it monotone in the
+#: prevalence", which is what Pearson answers and is too weak a bar here -- a
+#: model can rank codes perfectly and still be wrong about every rate.
+#: The cost is that R^2 goes far enough negative to need a clipped scale (the
+#: centralized arm lands at -44 / -70 and is drawn off-scale).
 METRICS = [
     ("pearson_rare", "PrevVal_Rare_Prevalence_Pearson",
      "Prevalence Pearson $r$, rare codes", True),
@@ -66,7 +69,7 @@ METRICS = [
 #: Which two metrics the static PNG panels show. The interactive HTML carries
 #: all six; a paper figure has to pick, and the head/tail pair is the pick that
 #: shows the reversal sharpening on the tail.
-PNG_PANELS = ("pearson_all", "pearson_rare")
+PNG_PANELS = ("r2_all", "r2_rare")
 
 DEFAULTS = {
     "spec": "_outputs/results/tests/test1_RW_n8000_capped_pooledrare.json",
