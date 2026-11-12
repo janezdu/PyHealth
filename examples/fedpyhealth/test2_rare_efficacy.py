@@ -265,7 +265,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--skip-real-local", action="store_true",
                    help="skip the 8 real_local classifiers (saves time on a "
                         "re-score where that baseline is already known)")
-    p.add_argument("--classifier", default="rnn", choices=["rnn", "logreg"],
+    p.add_argument("--classifier", default="rnn", choices=["rnn", "logreg", "gbm"],
                    help="downstream model. 'rnn' (default) is what every "
                         "existing result used, so it stays the default. "
                         "'logreg' fits one L2 logistic regression per code on "
@@ -280,6 +280,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         "regularises harder, which is the knob that matters "
                         "for the smallest sites (142 records).")
     p.add_argument("--logreg-max-iter", type=int, default=2000)
+    p.add_argument("--gbm-max-iter", type=int, default=200,
+                   help="boosting iterations for --classifier gbm. sklearn's "
+                        "HistGradientBoostingClassifier early-stops on an "
+                        "internal validation split, so this is a ceiling "
+                        "rather than a fixed count.")
+    p.add_argument("--gbm-learning-rate", type=float, default=0.1)
+    p.add_argument("--gbm-max-leaf-nodes", type=int, default=31)
     p.add_argument("--epochs", type=int, default=10)
     p.add_argument("--batch-size", type=int, default=64)
     p.add_argument("--embedding-dim", type=int, default=128)
@@ -662,6 +669,60 @@ def train_and_score_logreg(
         clf.fit(Xtr, col)
         y_prob[:, j] = clf.predict_proba(Xva)[:, 1]
     print(f"  [{tag}] logreg on {len(train_records)} records, "
+          f"{Ytr.shape[1] - degenerate}/{Ytr.shape[1]} columns fittable",
+          flush=True)
+    return y_prob
+
+
+def train_and_score_gbm(
+    train_records, val_records, input_proc, label_proc, args, tag: str
+) -> np.ndarray:
+    """One histogram gradient-boosted tree ensemble per label column.
+
+    The third point on the capacity axis. ``logreg`` is a linear model that
+    cannot overfit a few hundred records the way the RNN does; ``gbm`` is
+    non-linear and can represent code interactions, but is still fit on the
+    SAME ``bag_of_codes`` matrix the logreg uses, so the three classifiers
+    differ in model class and in nothing else. That is the whole point: if the
+    arm ordering moves between them, it is the downstream model talking, not
+    the generators.
+
+    sklearn's HistGradientBoostingClassifier rather than XGBoost: no new
+    dependency, and PyHealth's own XGBoostModel builds its feature matrix from
+    visit counts (``nested_multihot``) rather than set membership, which would
+    confound the model change with a feature change.
+
+    Unlike the logreg path there is no class_weight="balanced" -- the
+    histogram implementation does not take one -- so at these prevalences the
+    trees see very few positives per column. Read a degenerate-looking column
+    as that, not as a bug.
+
+    A column with one class present is unfittable; those keep the training-set
+    prevalence as a constant score, exactly as the ``prior`` arm does, so they
+    neither help nor hurt an arm's macro mean.
+    """
+    from sklearn.ensemble import HistGradientBoostingClassifier
+
+    Xtr, Xva = bag_of_codes(train_records, input_proc), bag_of_codes(
+        val_records, input_proc)
+    Ytr = np.stack([label_proc.process(r["rare_labels"]).numpy()
+                    for r in train_records])
+    y_prob = np.zeros((len(val_records), Ytr.shape[1]), dtype=np.float64)
+    degenerate = 0
+    for j in range(Ytr.shape[1]):
+        col = Ytr[:, j]
+        if col.min() == col.max():
+            y_prob[:, j] = float(col.mean())
+            degenerate += 1
+            continue
+        clf = HistGradientBoostingClassifier(
+            max_iter=args.gbm_max_iter,
+            learning_rate=args.gbm_learning_rate,
+            max_leaf_nodes=args.gbm_max_leaf_nodes,
+            random_state=SEED)
+        clf.fit(Xtr, col)
+        y_prob[:, j] = clf.predict_proba(Xva)[:, 1]
+    print(f"  [{tag}] gbm on {len(train_records)} records, "
           f"{Ytr.shape[1] - degenerate}/{Ytr.shape[1]} columns fittable",
           flush=True)
     return y_prob
@@ -1251,6 +1312,9 @@ def main(argv=None) -> None:
 
             if args.classifier == "logreg":
                 y_prob = train_and_score_logreg(
+                    recs, val_records, input_proc, label_proc, args, name)
+            elif args.classifier == "gbm":
+                y_prob = train_and_score_gbm(
                     recs, val_records, input_proc, label_proc, args, name)
             else:
                 y_prob = train_and_score(
