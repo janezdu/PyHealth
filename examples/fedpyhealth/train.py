@@ -237,6 +237,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         "every hospital regardless of its real size. Defaults "
                         "to --num-synth")
     p.add_argument("--metrics", choices=["privacy", "utility", "all"])
+    p.add_argument("--no-eval", dest="run_eval", action="store_false",
+                   default=None,
+                   help="train and write synthetic.json, but skip the end-of-run "
+                        "scoring (the privacy suite is the slow part). Re-score "
+                        "later with eval.py --save-dir <save_dir>")
     p.add_argument("--resume", action="store_true", default=None,
                    help="resume from the on-disk checkpoint if present (all "
                         "four regimes checkpoint; local keeps one file per "
@@ -868,6 +873,7 @@ def build_config(argv: List[str] = None) -> dict:
         "log_every_epochs": args.log_every_epochs,
         "n_rounds": args.n_rounds, "local_epochs": args.local_epochs,
         "num_synth": args.num_synth, "metrics": args.metrics,
+        "run_eval": args.run_eval,
         "synth_per_hospital": args.synth_per_hospital,
         "ft_epochs": args.ft_epochs, "run_name": args.run_name,
         "fedprox_mu": args.fedprox_mu, "ditto_lambda": args.ditto_lambda,
@@ -956,6 +962,7 @@ def build_config(argv: List[str] = None) -> dict:
     # budget and the small sites get the same handful of gradient steps that
     # made fedavg_ft look worse than local.
     cfg.setdefault("early_stop", True)
+    cfg.setdefault("run_eval", True)
     cfg.setdefault("es_patience", 5)
     cfg.setdefault("es_min_delta", 0.0)
     # Never stop inside the first few steps: a generator's val loss sits nearly
@@ -3274,19 +3281,22 @@ if __name__ == "__main__":
         shared_generator=regime in SHARED_GENERATOR_REGIMES)
     print(f"Saved synthetic data -> {synth_path}")
 
-    # STEP 7: score it. The whole suite lives in eval.py and is runnable
-    # standalone against this save_dir, so a metric fix costs a CPU job rather
-    # than another ~18h of GPU. Deleting this call is all it takes to make
-    # train.py training-only.
-    index_to_code = {
-        v: k for k, v in sample_dataset.input_processors["visits"].code_vocab.items()
-    }
-    results_path = evaluate_and_save(
-        cfg, manifest, clients, client_tests, pooled_train, pooled_test,
-        synthetic, client_synth, index_to_code, info,
-        num_params=num_params, split_sha=split_sha,
-    )
-    print(f"\nSaved results -> {results_path}")
+    if cfg["run_eval"]:
+        # STEP 7: score it. The whole suite lives in eval.py and is runnable
+        # standalone against this save_dir, so a metric fix costs a CPU job
+        # rather than another ~18h of GPU. --no-eval skips this step and makes
+        # train.py training-only.
+        vocab = sample_dataset.input_processors["visits"].code_vocab
+        index_to_code = {v: k for k, v in vocab.items()}
+        results_path = evaluate_and_save(
+            cfg, manifest, clients, client_tests, pooled_train, pooled_test,
+            synthetic, client_synth, index_to_code, info,
+            num_params=num_params, split_sha=split_sha,
+        )
+        print(f"\nSaved results -> {results_path}")
+    else:
+        print("\nSkipping evaluation (--no-eval). Score later with: "
+              f"python examples/fedpyhealth/eval.py --save-dir {save_dir}")
 
     # Say plainly whether the booked GPU earned its keep. Cheap to print,
     # and it is the number nobody thinks to look up in sacct afterwards.
