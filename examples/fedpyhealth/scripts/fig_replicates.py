@@ -23,6 +23,13 @@ for arm, _, _ in ARMS:
             'all': (agg('test1_repsfed4_gen_b200', n, A), agg('test1_repsfed4_spec_b200', n, A)),
             'rare': (agg('test1_repsfed4_gen_b200', n, R), agg('test1_repsfed4_spec_b200', n, R)),
         }
+# FedLIBRA trained at batch 128 on the workstation, scored there with the same
+# Test 1 flags. Inlined rather than read from _outputs because its score JSON
+# has not been copied back from that machine; replace with an agg() call once
+# test1_rep4_fedlibra_b128_{spec,gen}_b200.json land here.
+#   (generalized, personalized)
+PC_B128 = {'all': (0.245, 0.597), 'rare': (-0.135, 0.347)}
+
 for n, src in [('local', 'loc_unw_full'), ('centralized', 'cent_rw_es')]:
     data[n] = {
         'all': (agg('test1_rwes2x2_gen_b200', src, A), agg('test1_rwes2x2_spec_b200', src, A)),
@@ -94,6 +101,17 @@ def panel_svg(key, title, x0, x1, y0, y1, ox):
                  f'stroke="{col}" stroke-width="2.2"/>')
         for gx, sv in p[1:]:
             o.append(f'<circle cx="{sx(gx):.1f}" cy="{sy(sv):.1f}" r="5.5" fill="{col}"/>')
+
+    # FedLIBRA at batch 128, one run, different machine -- a lighter green so it
+    # reads as the same arm under a different condition, not as a fourth rep.
+    gx, sv = PC_B128[key]
+    fl = [data[f'fedlibra_rep{r}'][key] for r in (1, 2, 3)]
+    mx = sum(q[0] for q in fl) / 3
+    my = sum(q[1] for q in fl) / 3
+    o.append(f'<line x1="{sx(mx):.1f}" y1="{sy(my):.1f}" x2="{sx(gx):.1f}" '
+             f'y2="{sy(sv):.1f}" stroke="#5aa96f" stroke-width="1.4" '
+             f'stroke-dasharray="3 3" opacity="0.8"/>')
+    o.append(f'<circle cx="{sx(gx):.1f}" cy="{sy(sv):.1f}" r="6" fill="#5aa96f"/>')
     return '\n'.join(o)
 
 
@@ -110,12 +128,15 @@ legend.append(f'<circle cx="{LEFT+7}" cy="{TOP+PH+84}" r="6.5" fill="var(--panel
               f'stroke="var(--muted)" stroke-width="2.2"/>')
 legend.append(f'<text x="{LEFT+20}" y="{TOP+PH+88}" font-size="13" fill="var(--ink)">'
               f'rep 1 — the published run (Aug 27–Sep 7 code)</text>')
+legend.append(f'<circle cx="{LEFT+7}" cy="{TOP+PH+110}" r="6" fill="#5aa96f"/>')
+legend.append(f'<text x="{LEFT+20}" y="{TOP+PH+114}" font-size="13" fill="var(--ink)">'
+              f'FedLIBRA at batch 128 \u2014 one run, on the workstation</text>')
 legend.append(f'<circle cx="{LEFT+372}" cy="{TOP+PH+84}" r="5.5" fill="var(--muted)"/>')
 legend.append(f'<text x="{LEFT+385}" y="{TOP+PH+88}" font-size="13" fill="var(--ink)">'
               f'reps 2 and 3 — retrained on current code</text>')
 
 W = LEFT + 2 * PW + GAP + 30
-H = TOP + PH + 110
+H = TOP + PH + 136
 
 svg = f'''<svg viewBox="0 0 {W} {H}" xmlns="http://www.w3.org/2000/svg" role="img"
   aria-label="Two scatter panels, All Codes and Rare Codes, plotting personalized against generalized prevalence R-squared. Each of the four federated arms appears three times: the published run as an open circle and two retrained runs as filled circles, joined by a dashed line. For FedAvg, FedAvg plus full fine-tune and FedAvg plus LoRA fine-tune the published run sits far from the two retrained runs, which coincide. FedLIBRA's three runs coincide.">
