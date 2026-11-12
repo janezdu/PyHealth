@@ -181,3 +181,7 @@ test-resources/meds_demo/
 # Generated Synthea outputs and dataset caches
 .artifacts/
 examples/.artifacts/
+
+# Core dumps (a crashed process's memory image; several GB each, sparse)
+core.claude.*
+core.*.delta.ncsa.illinois.edu
