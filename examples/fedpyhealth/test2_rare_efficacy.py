@@ -287,14 +287,17 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         "rather than a fixed count.")
     p.add_argument("--gbm-learning-rate", type=float, default=0.1)
     p.add_argument("--gbm-max-leaf-nodes", type=int, default=31)
-    p.add_argument("--gbm-jobs", type=int, default=0,
+    p.add_argument("--gbm-jobs", type=int, default=4,
                    help="label columns to fit concurrently for --classifier "
                         "gbm. The columns are independent, so this is pure "
-                        "throughput and does not change any score. 0 picks "
-                        "min(n_columns, cpu_count). 1 restores the old "
-                        "sequential path. Inner OpenMP threads are divided "
-                        "among the workers so the two levels do not "
-                        "oversubscribe the cores.")
+                        "throughput and does not change any score. 1 is the "
+                        "sequential path. MEMORY SCALES WITH THIS: each "
+                        "worker holds its own copy of the binned feature "
+                        "matrix and its own histograms, and 30 workers was "
+                        "measured at 8.7 GB resident, which stalled a 16 GB "
+                        "job. Raise it only with --mem to match. Inner "
+                        "OpenMP threads are divided among the workers so the "
+                        "two levels do not oversubscribe the cores.")
     p.add_argument("--epochs", type=int, default=10)
     p.add_argument("--batch-size", type=int, default=64)
     p.add_argument("--embedding-dim", type=int, default=128)
@@ -754,7 +757,7 @@ def train_and_score_gbm(
     # over and the threads spend their time contending instead of working.
     n_cpu = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") \
         else (os.cpu_count() or 1)
-    n_jobs = max(1, min(args.gbm_jobs or min(n_cols, n_cpu), n_cols, n_cpu))
+    n_jobs = max(1, min(args.gbm_jobs or 4, n_cols, n_cpu))
     inner = max(1, n_cpu // n_jobs)
     results = Parallel(n_jobs=n_jobs, prefer="threads")(
         delayed(fit_column)(j, inner) for j in range(n_cols))
