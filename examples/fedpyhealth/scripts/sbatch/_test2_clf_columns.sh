@@ -63,8 +63,8 @@ for d in $(echo "$RUNS" | grep -o '_outputs/[^ ]*_save'); do
 done
 
 mkdir -p "$RES"
-for clf in logreg gbm; do
-  for seed in 0 1 2; do
+for clf in ${CLFS:-logreg gbm}; do
+  for seed in ${SEEDS:-0 1 2}; do
     out="$RES/test2_clf_${clf}_seed${seed}.json"
     [ -f "$out" ] && { echo "skip $out"; continue; }
     echo
