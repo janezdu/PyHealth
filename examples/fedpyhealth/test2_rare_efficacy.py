@@ -720,18 +720,26 @@ def train_and_score_gbm(
     y_prob = np.zeros((len(val_records), Ytr.shape[1]), dtype=np.float64)
     n_cols = Ytr.shape[1]
 
-    def fit_column(j):
-        """Score one label column. Independent of every other column."""
-        col = Ytr[:, j]
-        if col.min() == col.max():
-            return j, float(col.mean()), True
-        clf = HistGradientBoostingClassifier(
-            max_iter=args.gbm_max_iter,
-            learning_rate=args.gbm_learning_rate,
-            max_leaf_nodes=args.gbm_max_leaf_nodes,
-            random_state=SEED)
-        clf.fit(Xtr, col)
-        return j, clf.predict_proba(Xva)[:, 1], False
+    def fit_column(j, inner_threads):
+        """Score one label column. Independent of every other column.
+
+        The OpenMP limit is applied HERE, not around the Parallel call.
+        omp_set_num_threads is per-thread state, so a limit set on the
+        calling thread never reaches joblib's workers: each one would
+        otherwise build a full-size pool of its own, which on a 32-core
+        allocation meant ~960 threads and more contention than work.
+        """
+        with threadpool_limits(limits=inner_threads):
+            col = Ytr[:, j]
+            if col.min() == col.max():
+                return j, float(col.mean()), True
+            clf = HistGradientBoostingClassifier(
+                max_iter=args.gbm_max_iter,
+                learning_rate=args.gbm_learning_rate,
+                max_leaf_nodes=args.gbm_max_leaf_nodes,
+                random_state=SEED)
+            clf.fit(Xtr, col)
+            return j, clf.predict_proba(Xva)[:, 1], False
 
     # The columns share Xtr/Xva and nothing else, and each fit is seeded, so
     # fitting them concurrently gives the same numbers as the sequential loop.
@@ -748,9 +756,8 @@ def train_and_score_gbm(
         else (os.cpu_count() or 1)
     n_jobs = max(1, min(args.gbm_jobs or min(n_cols, n_cpu), n_cols, n_cpu))
     inner = max(1, n_cpu // n_jobs)
-    with threadpool_limits(limits=inner):
-        results = Parallel(n_jobs=n_jobs, prefer="threads")(
-            delayed(fit_column)(j) for j in range(n_cols))
+    results = Parallel(n_jobs=n_jobs, prefer="threads")(
+        delayed(fit_column)(j, inner) for j in range(n_cols))
 
     degenerate = 0
     for j, val, is_degen in results:
