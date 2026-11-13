@@ -287,6 +287,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         "rather than a fixed count.")
     p.add_argument("--gbm-learning-rate", type=float, default=0.1)
     p.add_argument("--gbm-max-leaf-nodes", type=int, default=31)
+    p.add_argument("--gbm-jobs", type=int, default=0,
+                   help="label columns to fit concurrently for --classifier "
+                        "gbm. The columns are independent, so this is pure "
+                        "throughput and does not change any score. 0 picks "
+                        "min(n_columns, cpu_count). 1 restores the old "
+                        "sequential path. Inner OpenMP threads are divided "
+                        "among the workers so the two levels do not "
+                        "oversubscribe the cores.")
     p.add_argument("--epochs", type=int, default=10)
     p.add_argument("--batch-size", type=int, default=64)
     p.add_argument("--embedding-dim", type=int, default=128)
@@ -701,29 +709,51 @@ def train_and_score_gbm(
     prevalence as a constant score, exactly as the ``prior`` arm does, so they
     neither help nor hurt an arm's macro mean.
     """
+    from joblib import Parallel, delayed
     from sklearn.ensemble import HistGradientBoostingClassifier
+    from threadpoolctl import threadpool_limits
 
     Xtr, Xva = bag_of_codes(train_records, input_proc), bag_of_codes(
         val_records, input_proc)
     Ytr = np.stack([label_proc.process(r["rare_labels"]).numpy()
                     for r in train_records])
     y_prob = np.zeros((len(val_records), Ytr.shape[1]), dtype=np.float64)
-    degenerate = 0
-    for j in range(Ytr.shape[1]):
+    n_cols = Ytr.shape[1]
+
+    def fit_column(j):
+        """Score one label column. Independent of every other column."""
         col = Ytr[:, j]
         if col.min() == col.max():
-            y_prob[:, j] = float(col.mean())
-            degenerate += 1
-            continue
+            return j, float(col.mean()), True
         clf = HistGradientBoostingClassifier(
             max_iter=args.gbm_max_iter,
             learning_rate=args.gbm_learning_rate,
             max_leaf_nodes=args.gbm_max_leaf_nodes,
             random_state=SEED)
         clf.fit(Xtr, col)
-        y_prob[:, j] = clf.predict_proba(Xva)[:, 1]
+        return j, clf.predict_proba(Xva)[:, 1], False
+
+    # The columns share Xtr/Xva and nothing else, and each fit is seeded, so
+    # fitting them concurrently gives the same numbers as the sequential loop.
+    # Threads rather than processes: HistGradientBoostingClassifier does its
+    # work in OpenMP-parallel Cython that releases the GIL, and the feature
+    # matrix is shared instead of pickled to every worker. The outer and inner
+    # levels would otherwise each try to claim every core, so the inner
+    # OpenMP pool is capped to the share each worker is entitled to.
+    n_jobs = args.gbm_jobs or min(n_cols, os.cpu_count() or 1)
+    n_jobs = max(1, min(n_jobs, n_cols))
+    inner = max(1, (os.cpu_count() or 1) // n_jobs)
+    with threadpool_limits(limits=inner):
+        results = Parallel(n_jobs=n_jobs, prefer="threads")(
+            delayed(fit_column)(j) for j in range(n_cols))
+
+    degenerate = 0
+    for j, val, is_degen in results:
+        y_prob[:, j] = val
+        degenerate += is_degen
     print(f"  [{tag}] gbm on {len(train_records)} records, "
-          f"{Ytr.shape[1] - degenerate}/{Ytr.shape[1]} columns fittable",
+          f"{n_cols - degenerate}/{n_cols} columns fittable, "
+          f"{n_jobs} columns at a time x {inner} thread(s)",
           flush=True)
     return y_prob
 
