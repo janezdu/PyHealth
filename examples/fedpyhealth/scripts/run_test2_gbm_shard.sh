@@ -77,6 +77,6 @@ $PY examples/fedpyhealth/test2_rare_efficacy.py --cohort-cache "$CACHE" $RUNS $E
     --rlsp --classifier gbm \
     --fold test --code-pool all --min-positives 20 \
     --n-eval-codes 30 --eval-seed "$SEED" \
-    --train-budget 8000 --out "$OUT"
+    --train-budget 8000 --resume --out "$OUT"
 echo "### shard $SHARD done in $((($(date +%s)-START)/60)) min  ($(date +%H:%M:%S))"
 echo "Use that number to decide whether the next shard needs its own hour."

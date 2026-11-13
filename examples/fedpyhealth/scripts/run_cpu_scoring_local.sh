@@ -79,7 +79,7 @@ gbm () {
         --rlsp --classifier gbm \
         --fold test --code-pool all --min-positives 20 \
         --n-eval-codes 30 --eval-seed "$seed" \
-        --train-budget 8000 --out "$out"
+        --train-budget 8000 --resume --out "$out"
   done
 }
 
