@@ -740,9 +740,14 @@ def train_and_score_gbm(
     # matrix is shared instead of pickled to every worker. The outer and inner
     # levels would otherwise each try to claim every core, so the inner
     # OpenMP pool is capped to the share each worker is entitled to.
-    n_jobs = args.gbm_jobs or min(n_cols, os.cpu_count() or 1)
-    n_jobs = max(1, min(n_jobs, n_cols))
-    inner = max(1, (os.cpu_count() or 1) // n_jobs)
+    # sched_getaffinity, NOT cpu_count: under SLURM the latter reports every
+    # core on the node (128 here) rather than the cpuset the job was given, so
+    # sizing either pool from it oversubscribes the allocation several times
+    # over and the threads spend their time contending instead of working.
+    n_cpu = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") \
+        else (os.cpu_count() or 1)
+    n_jobs = max(1, min(args.gbm_jobs or min(n_cols, n_cpu), n_cols, n_cpu))
+    inner = max(1, n_cpu // n_jobs)
     with threadpool_limits(limits=inner):
         results = Parallel(n_jobs=n_jobs, prefer="threads")(
             delayed(fit_column)(j) for j in range(n_cols))
